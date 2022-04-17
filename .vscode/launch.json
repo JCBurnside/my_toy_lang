@@ -11,9 +11,10 @@
             "program": "${workspaceFolder}/target/debug/my_toy_lang.exe",
             "args": [],
             "stopAtEntry": false,
-            "cwd": "${workapceFolder}",
+            "cwd": "${workspaceFolder}",
             "environment": [],
-            "console": "externalTerminal"
+            "console": "externalTerminal",
+            "preLaunchTask": "MyTask"
         }
     ]
 }
