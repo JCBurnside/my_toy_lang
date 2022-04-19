@@ -38,7 +38,6 @@ impl<'str> Lexer<'str> {
             .sum();
         let peeked = chars.peek();
         if peeked == Some(&'\n') {
-            println!("new line detected.  recurse");
             self.should_begin = true;
             chars.next();
             return self.lex();
@@ -56,6 +55,21 @@ impl<'str> Lexer<'str> {
             let pos = self.pos;
             self.pos += ws;
             return (Token::BeginBlock(ws), pos);
+<<<<<<< HEAD
+=======
+        }
+        if peeked == Some(&'(') {
+            let pos = self.pos;
+            self.pos += 1;
+            self.chars.next();
+            return (Token::GroupOpen, pos)
+        }
+        if peeked == Some(&')') {
+            let pos = self.pos;
+            self.pos += 1;
+            self.chars.next();
+            return (Token::GroupClose, pos)
+>>>>>>> main
         }
         self.should_begin = false;
         let token: String = chars
@@ -135,6 +149,13 @@ impl<'str> Lexer<'str> {
 
         if token == "=" {
             return (Token::Equals, pos);
+<<<<<<< HEAD
+=======
+        }
+
+        if token == "->" {
+            return (Token::Arrow,pos);
+>>>>>>> main
         }
 
         if token
@@ -190,7 +211,7 @@ mod tests {
     use crate::tokens::Token;
 
     use super::TokenStream;
-
+    use itertools::Itertools;
     #[test]
     fn single_tokens() {
         assert_eq!(
@@ -255,9 +276,36 @@ mod tests {
                 .collect_vec(),
             [Token::Return, Token::EoF],
             "return token"
+<<<<<<< HEAD
         )
+=======
+        );
+
+        assert_eq!(
+            TokenStream::from_source("(")
+                .map(|(a,_)| a)
+                .collect_vec(),
+            [Token::GroupOpen,Token::EoF],
+            "open group token"
+        );
+
+        assert_eq!(
+            TokenStream::from_source(")")
+                .map(|(a,_)|a)
+                .collect_vec(),
+            [Token::GroupClose, Token::EoF],
+            "close group token"
+        );
+
+        assert_eq!(
+            TokenStream::from_source("->")
+                .map(|(a,_)| a)
+                .collect_vec(),
+            [Token::Arrow,Token::EoF],
+            "Arrow token"
+        );
+>>>>>>> main
     }
-    use itertools::Itertools;
 
     #[test]
     fn literals_edge_cases() {
@@ -301,6 +349,8 @@ mod tests {
 let bar : int32 = 1
 
 let baz = \"foo bar baz\"
+
+let group_test arg : ( int32 -> int32 ) -> int32
 "
             )
             .map(|(a, _)| a)
@@ -313,6 +363,7 @@ let baz = \"foo bar baz\"
                 Token::EndBlock(0),
                 Token::Let, Token::Ident("bar".to_owned()), Token::Colon, Token::Ident("int32".to_owned()), Token::Equals, Token::Integer("1".to_owned()),
                 Token::Let, Token::Ident("baz".to_owned()), Token::Equals, Token::StringLiteral("\"foo bar baz\"".to_owned()),
+                Token::Let, Token::Ident("group_test".to_owned()), Token::Ident("arg".to_owned()), Token::Colon, Token::GroupOpen, Token::Ident("int32".to_owned()), Token::Arrow, Token::Ident("int32".to_owned()), Token::GroupClose, Token::Arrow, Token::Ident("int32".to_owned()),
                 Token::EoF,
             ]
         )
