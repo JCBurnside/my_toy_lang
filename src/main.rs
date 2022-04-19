@@ -1,7 +1,9 @@
 #![feature(let_chains)]
 #![feature(stmt_expr_attributes)]
+#![cfg_attr(test, allow(dead_code))]
 use inkwell::context::Context;
 
+mod ast;
 mod lexer;
 mod parser;
 mod tokens;
