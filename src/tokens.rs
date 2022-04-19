@@ -1,6 +1,7 @@
 #[derive(PartialEq, Eq, Debug)]
 pub enum Token {
     Let,
+    Return,
     Ident(String),
     Equals,
     // Fn, //to be added latter to distinquish between value and function with 0 args
@@ -13,6 +14,10 @@ pub enum Token {
 
     Op(String),
     //meta tokens
+    Arrow,      // ->
+    GroupOpen,  // (
+    GroupClose, // )
+    Colon,
     BeginBlock(usize),
     EndBlock(usize),
     EoF,

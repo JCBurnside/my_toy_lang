@@ -2,6 +2,7 @@ use itertools::Itertools;
 use std::{iter::Peekable, str::Chars};
 struct Lexer<'str> {
     chars: Box<Peekable<Chars<'str>>>,
+    pos: usize,
     indent_level: usize,
     should_begin: bool,
 }
@@ -12,18 +13,19 @@ impl<'str> Lexer<'str> {
     pub fn new(source: &'str str) -> Self {
         Self {
             chars: Box::new(source.chars().peekable()),
+            pos: 0,
             indent_level: 0,
             should_begin: false,
         }
     }
 
-    pub fn lex(&mut self) -> Token {
+    pub fn lex(&mut self) -> (Token, usize) {
         if self.chars.peek().is_none() {
-            return Token::EoF;
+            return (Token::EoF, self.pos);
         }
         let chars = self.chars.as_mut();
         let ws = chars
-            .peeking_take_while(|c| dbg!(c) != &'\n' && c.is_ascii_whitespace())
+            .peeking_take_while(|c| c != &'\n' && c.is_ascii_whitespace())
             .map(|c| {
                 if c == ' ' {
                     1
@@ -36,7 +38,6 @@ impl<'str> Lexer<'str> {
             .sum();
         let peeked = chars.peek();
         if peeked == Some(&'\n') {
-            println!("new line detected.  recurse");
             self.should_begin = true;
             chars.next();
             return self.lex();
@@ -44,96 +45,128 @@ impl<'str> Lexer<'str> {
         if ws < self.indent_level && self.should_begin {
             self.indent_level = ws;
             self.should_begin = false;
-            return Token::EndBlock(ws);
+            let pos = self.pos;
+            self.pos += ws;
+            return (Token::EndBlock(ws), pos);
         }
         if ws > self.indent_level && self.should_begin {
             self.indent_level = ws;
             self.should_begin = false;
-            return Token::BeginBlock(ws);
+            let pos = self.pos;
+            self.pos += ws;
+            return (Token::BeginBlock(ws), pos);
+        }
+        if peeked == Some(&'(') {
+            let pos = self.pos;
+            self.pos += 1;
+            self.chars.next();
+            return (Token::GroupOpen, pos)
+        }
+        if peeked == Some(&')') {
+            let pos = self.pos;
+            self.pos += 1;
+            self.chars.next();
+            return (Token::GroupClose, pos)
         }
         self.should_begin = false;
         let token: String = chars
             .peeking_take_while(|c| !c.is_ascii_whitespace())
             .collect();
-        dbg!(&token);
+
         if token.starts_with('\'') {
-            return Token::CharLiteral(
-                if token.ends_with('\'')
-                    && token.len() > 1
-                    && token.chars().nth(token.len().saturating_sub(2)) != Some('\\')
-                {
-                    token
-                } else {
-                    let mut should_skip = false;
-                    token
-                        + &chars
-                            .take_while(|c| {
-                                if should_skip {
-                                    should_skip = false;
-                                    true
-                                } else if c == &'\\' {
-                                    should_skip = true;
-                                    true
-                                } else {
-                                    c != &'\''
-                                }
-                            })
-                            .collect::<String>()
-                        + "'"
-                },
-            );
+            let token = if token.ends_with('\'')
+                && token.len() > 1
+                && token.chars().nth(token.len().saturating_sub(2)) != Some('\\')
+            {
+                token
+            } else {
+                let mut should_skip = false;
+                token
+                    + &chars
+                        .take_while(|c| {
+                            if should_skip {
+                                should_skip = false;
+                                true
+                            } else if c == &'\\' {
+                                should_skip = true;
+                                true
+                            } else {
+                                c != &'\''
+                            }
+                        })
+                        .collect::<String>()
+                    + "'"
+            };
+            let pos = self.pos;
+            self.pos += token.len();
+            return (Token::CharLiteral(token), pos);
         }
         if token.starts_with('\"') {
-            return Token::StringLiteral(
-                if token.ends_with('\"')
-                    && token.len() > 1
-                    && token.chars().nth(token.len().saturating_sub(2)) != Some('\\')
-                {
-                    token
-                } else {
-                    let mut should_skip = false;
-                    token
-                        + &chars
-                            .take_while(|c| {
-                                if should_skip {
-                                    should_skip = false;
-                                    true
-                                } else if c == &'\\' {
-                                    should_skip = true;
-                                    true
-                                } else {
-                                    c != &'\"'
-                                }
-                            })
-                            .collect::<String>()
-                        + "\""
-                },
-            );
+            let token = if token.ends_with('\"')
+                && token.len() > 1
+                && token.chars().nth(token.len().saturating_sub(2)) != Some('\\')
+            {
+                token
+            } else {
+                let mut should_skip = false;
+                token
+                    + &chars
+                        .take_while(|c| {
+                            if should_skip {
+                                should_skip = false;
+                                true
+                            } else if c == &'\\' {
+                                should_skip = true;
+                                true
+                            } else {
+                                c != &'\"'
+                            }
+                        })
+                        .collect::<String>()
+                    + "\""
+            };
+            let pos = self.pos;
+            self.pos += token.len();
+            return (Token::StringLiteral(token), pos);
+        }
+
+        let pos = self.pos;
+        self.pos += token.len();
+        if token == ":" {
+            return (Token::Colon, pos);
         }
 
         if token.chars().all(char::is_numeric) {
-            return Token::Integer(token);
+            return (Token::Integer(token), pos);
         }
 
         if token.chars().all(|c| c.is_numeric() || c == '.') {
-            return Token::FloatingPoint(token);
+            return (Token::FloatingPoint(token), pos);
         }
 
         if token == "=" {
-            return Token::Equals;
+            return (Token::Equals, pos);
+        }
+
+        if token == "->" {
+            return (Token::Arrow,pos);
         }
 
         if token
             .chars()
             .all(|c| matches!(c, '>' | '<' | '!' | '@' | '$' | '=' | '&' | '|'))
         {
-            return Token::Op(token);
+            return (Token::Op(token), pos);
         }
 
         if token == "let" {
-            return Token::Let;
+            return (Token::Let, pos);
         }
-        Token::Ident(token)
+
+        if token == "return" {
+            return (Token::Return, pos);
+        }
+        (Token::Ident(token), pos)
     }
 }
 
@@ -153,17 +186,17 @@ impl<'src> TokenStream<'src> {
 }
 
 impl<'str> Iterator for TokenStream<'str> {
-    type Item = Token;
+    type Item = (Token, usize);
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.ended {
             None
         } else {
-            let token = self.lexer.lex();
+            let (token, span) = self.lexer.lex();
             if token.is_eof() {
                 self.ended = true;
             }
-            Some(token)
+            Some((token, span))
         }
     }
 }
@@ -172,72 +205,126 @@ mod tests {
     use crate::tokens::Token;
 
     use super::TokenStream;
-
+    use itertools::Itertools;
     #[test]
     fn single_tokens() {
         assert_eq!(
-            TokenStream::from_source("let").collect::<Vec<_>>(),
+            TokenStream::from_source("let")
+                .map(|(a, _)| a)
+                .collect_vec(),
             vec![Token::Let, Token::EoF],
             "let token"
         );
         assert_eq!(
-            TokenStream::from_source("1").collect::<Vec<_>>(),
+            TokenStream::from_source(":").map(|(a, _)| a).collect_vec(),
+            [Token::Colon, Token::EoF],
+            "colon"
+        );
+        assert_eq!(
+            TokenStream::from_source("1").map(|(a, _)| a).collect_vec(),
             vec![Token::Integer("1".to_owned()), Token::EoF],
             "int token"
         );
         assert_eq!(
-            TokenStream::from_source("1.0").collect::<Vec<_>>(),
+            TokenStream::from_source("1.0")
+                .map(|(a, _)| a)
+                .collect_vec(),
             vec![Token::FloatingPoint("1.0".to_owned()), Token::EoF],
             "float token"
         );
         assert_eq!(
-            TokenStream::from_source("=").collect::<Vec<_>>(),
+            TokenStream::from_source("=").map(|(a, _)| a).collect_vec(),
             vec![Token::Equals, Token::EoF],
             "equals token"
         );
         assert_eq!(
-            TokenStream::from_source("'l'").collect::<Vec<_>>(),
+            TokenStream::from_source("'l'")
+                .map(|(a, _)| a)
+                .collect_vec(),
             vec![Token::CharLiteral("'l'".to_owned()), Token::EoF],
             "char token"
         );
         assert_eq!(
-            TokenStream::from_source("\"let\"").collect::<Vec<_>>(),
+            TokenStream::from_source("\"let\"")
+                .map(|(a, _)| a)
+                .collect_vec(),
             vec![Token::StringLiteral("\"let\"".to_owned()), Token::EoF],
             "string token"
         );
         assert_eq!(
-            TokenStream::from_source("foo").collect::<Vec<_>>(),
+            TokenStream::from_source("foo")
+                .map(|(a, _)| a)
+                .collect_vec(),
             vec![Token::Ident("foo".to_owned()), Token::EoF],
             "ident token"
         );
         assert_eq!(
-            TokenStream::from_source("!=").collect::<Vec<_>>(),
+            TokenStream::from_source("!=").map(|(a, _)| a).collect_vec(),
             vec![Token::Op("!=".to_owned()), Token::EoF],
             "op token"
         );
+
+        assert_eq!(
+            TokenStream::from_source("return")
+                .map(|(a, _)| a)
+                .collect_vec(),
+            [Token::Return, Token::EoF],
+            "return token"
+        );
+
+        assert_eq!(
+            TokenStream::from_source("(")
+                .map(|(a,_)| a)
+                .collect_vec(),
+            [Token::GroupOpen,Token::EoF],
+            "open group token"
+        );
+
+        assert_eq!(
+            TokenStream::from_source(")")
+                .map(|(a,_)|a)
+                .collect_vec(),
+            [Token::GroupClose, Token::EoF],
+            "close group token"
+        );
+
+        assert_eq!(
+            TokenStream::from_source("->")
+                .map(|(a,_)| a)
+                .collect_vec(),
+            [Token::Arrow,Token::EoF],
+            "Arrow token"
+        );
     }
-    use itertools::Itertools;
 
     #[test]
     fn literals_edge_cases() {
         assert_eq!(
-            TokenStream::from_source("\"foo bar \\\"baz\"").collect_vec(),
+            TokenStream::from_source("\"foo bar \\\"baz\"")
+                .map(|(a, _)| a)
+                .collect_vec(),
             vec![
                 Token::StringLiteral("\"foo bar \\\"baz\"".to_owned()),
                 Token::EoF
             ]
         );
         assert_eq!(
-            TokenStream::from_source("\"\"").collect_vec(),
+            TokenStream::from_source("\"\"")
+                .map(|(a, _)| a)
+                .collect_vec(),
             vec![Token::StringLiteral("\"\"".to_owned()), Token::EoF]
         );
         assert_eq!(
-            TokenStream::from_source("\" \"").collect_vec(),
+            TokenStream::from_source("\" \"")
+                .map(|(a, _)| a)
+                .collect_vec(),
             vec![Token::StringLiteral("\" \"".to_owned()), Token::EoF]
         );
 
         assert_eq!(
-            TokenStream::from_source("' '").collect_vec(),
+            TokenStream::from_source("' '")
+                .map(|(a, _)| a)
+                .collect_vec(),
             vec![Token::CharLiteral("' '".to_owned()), Token::EoF]
         );
     }
@@ -247,22 +334,26 @@ mod tests {
         assert_eq!(
             TokenStream::from_source(
                 "let foo =
-\t1.0
+\treturn 1.0
 
-let bar = 1
+let bar : int32 = 1
 
 let baz = \"foo bar baz\"
+
+let group_test arg : ( int32 -> int32 ) -> int32
 "
             )
+            .map(|(a, _)| a)
             .collect_vec(),
             #[rustfmt::skip]
             [
                 Token::Let,Token::Ident("foo".to_owned()),Token::Equals,
                 Token::BeginBlock(4),
-                    Token::FloatingPoint("1.0".to_owned()),
+                    Token::Return, Token::FloatingPoint("1.0".to_owned()),
                 Token::EndBlock(0),
-                Token::Let, Token::Ident("bar".to_owned()), Token::Equals, Token::Integer("1".to_owned()),
+                Token::Let, Token::Ident("bar".to_owned()), Token::Colon, Token::Ident("int32".to_owned()), Token::Equals, Token::Integer("1".to_owned()),
                 Token::Let, Token::Ident("baz".to_owned()), Token::Equals, Token::StringLiteral("\"foo bar baz\"".to_owned()),
+                Token::Let, Token::Ident("group_test".to_owned()), Token::Ident("arg".to_owned()), Token::Colon, Token::GroupOpen, Token::Ident("int32".to_owned()), Token::Arrow, Token::Ident("int32".to_owned()), Token::GroupClose, Token::Arrow, Token::Ident("int32".to_owned()),
                 Token::EoF,
             ]
         )
