@@ -55,8 +55,6 @@ impl<'str> Lexer<'str> {
             let pos = self.pos;
             self.pos += ws;
             return (Token::BeginBlock(ws), pos);
-<<<<<<< HEAD
-=======
         }
         if peeked == Some(&'(') {
             let pos = self.pos;
@@ -69,7 +67,6 @@ impl<'str> Lexer<'str> {
             self.pos += 1;
             self.chars.next();
             return (Token::GroupClose, pos)
->>>>>>> main
         }
         self.should_begin = false;
         let token: String = chars

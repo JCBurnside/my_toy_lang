@@ -14,12 +14,9 @@ pub enum Token {
 
     Op(String),
     //meta tokens
-<<<<<<< HEAD
-=======
     Arrow,      // ->
     GroupOpen,  // (
     GroupClose, // )
->>>>>>> main
     Colon,
     BeginBlock(usize),
     EndBlock(usize),
