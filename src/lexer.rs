@@ -146,13 +146,10 @@ impl<'str> Lexer<'str> {
 
         if token == "=" {
             return (Token::Equals, pos);
-<<<<<<< HEAD
-=======
         }
 
         if token == "->" {
             return (Token::Arrow,pos);
->>>>>>> main
         }
 
         if token
@@ -273,9 +270,6 @@ mod tests {
                 .collect_vec(),
             [Token::Return, Token::EoF],
             "return token"
-<<<<<<< HEAD
-        )
-=======
         );
 
         assert_eq!(
@@ -301,7 +295,6 @@ mod tests {
             [Token::Arrow,Token::EoF],
             "Arrow token"
         );
->>>>>>> main
     }
 
     #[test]
