@@ -18,9 +18,10 @@ pub enum Token {
     GroupOpen,  // (
     GroupClose, // )
     Colon,
-    BeginBlock(usize),
-    EndBlock(usize),
+    BeginBlock,
+    EndBlock,
     EoF,
+    IndentError(usize),
 }
 
 impl Token {

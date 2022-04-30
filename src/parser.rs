@@ -44,7 +44,7 @@ impl<'str> Parser<'str> {
     fn next_expr(&mut self) -> ParserResult {
         match self.stream.peek() {
             Some((Token::Let, _)) => self.declaration(),
-            Some((Token::BeginBlock(_), _)) => self.collect_block(),
+            Some((Token::BeginBlock, _)) => self.collect_block(),
             Some((
                 Token::CharLiteral(_)
                 | Token::StringLiteral(_)
@@ -108,7 +108,7 @@ impl<'str> Parser<'str> {
                     if let Some((Token::Colon,_next)) = self.stream.next()
                     && let Some((Token::Ident(ty),_ty_span)) = self.stream.next()
                     && let Some((Token::Equals,_)) = self.stream.next() {
-                        let value = if let Some((Token::BeginBlock(_),_)) = self.stream.peek() {
+                        let value = if let Some((Token::BeginBlock,_)) = self.stream.peek() {
                             self.collect_block()?
                         } else {
                             self.literal()?
@@ -147,20 +147,12 @@ impl<'str> Parser<'str> {
     }
 
     fn collect_block(&mut self) -> ParserResult {
-        if let Some((Token::BeginBlock(depth), span_start)) = self.stream.next() {
+        if let Some((Token::BeginBlock, span_start)) = self.stream.next() {
             let mut sub_expr = Vec::new();
             loop {
-                if let Some((Token::EndBlock(end_depth), span)) = self.stream.peek() {
-                    if end_depth == &depth {
-                        self.stream.next();
-                        break;
-                    }
-                    if end_depth < &depth {
-                        return Err(ParseError {
-                            span: (span_start, *span),
-                            reason: ParseErrorReason::IndentError,
-                        });
-                    }
+                if let Some((Token::EndBlock, span)) = self.stream.peek() {
+                    self.stream.next();
+                    break;
                 } else if let Some((Token::EoF, _)) = self.stream.peek() {
                     break;
                 }
@@ -200,7 +192,7 @@ mod tests {
         );
         let mut parser = Parser::from_source(
             "let foo : int32 =
-\treturn 5
+\treturn 5+
 ",
         );
         assert_eq!(
@@ -224,9 +216,7 @@ mod tests {
 
     #[test]
     fn multiple_statements() {
-        let mut parser = Parser::from_source(
-            r###"
-let foo : int32 = 3
+        const SRC: &'static str = r###"let foo : int32 = 3
 
 let bar : int32 =
     let baz : &str = "merp \" yes"
@@ -234,9 +224,10 @@ let bar : int32 =
 
 let ^^ lhs rhs : int32 -> int32 -> int32 =
     return 1
-"###,
-        );
+"###;
+        let mut parser = Parser::from_source(SRC);
 
+        dbg!(&SRC[27..63]);
         assert_eq!(
             ast::Expr::Declaration {
                 is_op: false,
