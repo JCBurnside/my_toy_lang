@@ -1,5 +1,6 @@
-#![feature(let_chains)]
 #![feature(stmt_expr_attributes)]
+#![feature(drain_filter)]
+#![feature(iter_advance_by)]
 use inkwell::context::Context;
 
 mod lexer;
