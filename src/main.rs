@@ -1,6 +1,7 @@
 #![feature(stmt_expr_attributes)]
 #![feature(iter_advance_by)]
 #![feature(drain_filter)]
+#![feature(let_chains)]
 #![cfg_attr(test, allow(dead_code))]
 use inkwell::context::Context;
 

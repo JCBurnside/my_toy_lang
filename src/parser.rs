@@ -1,4 +1,4 @@
-use std::iter::Peekable;
+use std::{iter::Peekable, str::Chars};
 
 use crate::{ast, lexer::TokenStream, tokens::Token};
 #[derive(Debug)]
@@ -19,23 +19,27 @@ enum ParseErrorReason {
 
 pub type ParserResult = Result<crate::ast::Expr, ParseError>;
 
-pub struct Parser<'str> {
-    stream: Peekable<TokenStream<'str>>,
+pub struct Parser<T> where TokenStream<T> : Iterator {
+    stream: Peekable<TokenStream<T>>,
 }
 
-impl<'str> Parser<'str> {
-    pub fn from_stream(stream: TokenStream<'str>) -> Self {
-        Self {
-            stream: stream.peekable(),
-        }
-    }
-
+impl <'str> Parser<Peekable<Chars<'str>>> {
     #[cfg(test)]
     fn from_source(source: &'str str) -> Self {
         Self {
             stream: TokenStream::from_source(source).peekable(),
         }
     }
+}
+
+impl<T> Parser<T> where TokenStream<T> : Iterator<Item = (Token,usize)> {
+    pub fn from_stream(stream: TokenStream<T>) -> Self {
+        Self {
+            stream: stream.peekable(),
+        }
+    }
+
+    
 
     fn peek_expr(&self) -> Option<ParserResult> {
         None
@@ -48,8 +52,8 @@ impl<'str> Parser<'str> {
             Some((
                 Token::CharLiteral(_)
                 | Token::StringLiteral(_)
-                | Token::FloatingPoint(_)
-                | Token::Integer(_),
+                | Token::FloatingPoint(_,_)
+                | Token::Integer(_,_),
                 _,
             )) => self.literal(),
             Some((Token::Return, _)) => self.ret(),
@@ -85,12 +89,12 @@ impl<'str> Parser<'str> {
                 value: s,
                 ty: ast::Type::ValueType("str".to_owned()),
             }),
-            Token::Integer(i) => Ok(ast::Expr::Literal {
-                value: i,
+            Token::Integer(is_neg,i) => Ok(ast::Expr::Literal {
+                value: if is_neg { "-".to_owned() + &i } else { i },
                 ty: ast::Type::ValueType("int32".to_owned()),
             }),
-            Token::FloatingPoint(f) => Ok(ast::Expr::Literal {
-                value: f,
+            Token::FloatingPoint(is_neg,f) => Ok(ast::Expr::Literal {
+                value:if is_neg { "-".to_owned() + &f } else { f },
                 ty: ast::Type::ValueType("float32".to_owned()),
             }),
             _ => Err(ParseError {
@@ -107,7 +111,7 @@ impl<'str> Parser<'str> {
                 Token::Ident(ident)=> {
                     if let Some((Token::Colon,_next)) = self.stream.next()
                     && let Some((Token::Ident(ty),_ty_span)) = self.stream.next()
-                    && let Some((Token::Equals,_)) = self.stream.next() {
+                    && let Some((Token::Op("=".to_owned()),_)) = self.stream.next() {
                         let value = if let Some((Token::BeginBlock,_)) = self.stream.peek() {
                             self.collect_block()?
                         } else {
@@ -124,7 +128,7 @@ impl<'str> Parser<'str> {
                 Token::Op(ident) => {
                     if let Some((Token::Colon,_next)) = self.stream.next()
                     && let Some((Token::Ident(ty),_ty_span)) = self.stream.next()
-                    && let Some((Token::Equals,_)) = self.stream.next() {
+                    && let Some((Token::Op("=".to_owned()),_)) = self.stream.next() {
                         let literal = self.literal()?;
                         Ok(ast::Expr::Declaration { is_op: true, ident:ident, ty:Some(ast::Type::ValueType(ty)), args: None, value: Box::new(literal) })
                     } else {
