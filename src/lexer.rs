@@ -52,20 +52,24 @@ impl <I:Iterator<Item=char> + Clone> Lexer<Peekable<I>> {
             })
             .fold((0usize,0usize),|(sum,count),curr| (sum + curr,count + 1));
         self.curr_pos += count;
+        if self.start_line {
+            self.start_line = false;
+            let ends = self.whitespaces.drain_filter(|x| *x<ws).count();
+            return if ends == 0 { 
+                self.whitespaces.push(ws);
+                (Token::BeginBlock,self.curr_pos) 
+            } else {
+                self.end_blocks_to_gen = ends; 
+                self.lex() 
+            }
+        }
         if let Some(c) = self.source_stream.next() {
             if c == '\n' {
                 self.start_line = true;
                 return self.lex()
             }
             
-            if self.start_line {
-                self.start_line = false;
-                let ends = self.whitespaces.drain_filter(|x| *x<ws).count();
-                return if ends > 0 { 
-                    self.whitespaces.push(ws);
-                    (Token::BeginBlock,self.curr_pos) 
-                } else { self.lex() }
-            }
+            
             self.curr_pos+=1;
             match c {
                 '(' => (Token::GroupOpen,self.curr_pos),
@@ -349,15 +353,15 @@ mod tests {
     fn token_chain() {
         assert_eq!(
             TokenStream::from_source(
-                "let foo =
-\treturn 1.0
+                r#"let foo =
+    return 1.0
 
 let bar : int32 = 1
 
-let baz = \"foo bar baz\"
+let baz = "foo bar baz"
 
 let group_test arg : ( int32 -> int32 ) -> int32
-"
+"#
             )
             .map(|(a, _)| dbg!(a))
             .collect_vec(),
