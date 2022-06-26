@@ -53,9 +53,9 @@ impl <I:Iterator<Item=char> + Clone> Lexer<Peekable<I>> {
             .fold((0usize,0usize),|(sum,count),curr| (sum + curr,count + 1));
         self.curr_pos += count;
         if self.start_line {
-            self.start_line = false;
-            let ends = self.whitespaces.drain_filter(|x| *x<ws).count();
-            return if ends == 0 { 
+             self.start_line = false;
+            let ends = self.whitespaces.drain_filter(|x| *x>ws).count();
+            return if ends == 0 && ws > 0{ 
                 self.whitespaces.push(ws);
                 (Token::BeginBlock,self.curr_pos) 
             } else {
@@ -130,8 +130,7 @@ impl <I:Iterator<Item=char> + Clone> Lexer<Peekable<I>> {
                 }
 
                 operators!() => {
-                    let inside : String = self.source_stream.clone().take_while(|c| matches!(c,operators!())).collect();
-                    self.source_stream.nth(inside.len());
+                    let inside : String = self.source_stream.peeking_take_while(|c| matches!(c,operators!())).collect();
                     self.curr_pos += inside.len();
                     let inside = c.to_string() + &inside;
                     (Token::Op(inside),self.curr_pos)
@@ -351,9 +350,12 @@ mod tests {
 
     #[test]
     fn token_chain() {
+        use Token::*;
         assert_eq!(
             TokenStream::from_source(
-                r#"let foo =
+r#"let depth1 =
+    let depth2 =
+        'c'
     return 1.0
 
 let bar : int32 = 1
@@ -367,14 +369,18 @@ let group_test arg : ( int32 -> int32 ) -> int32
             .collect_vec(),
             #[rustfmt::skip]
             [
-                Token::Let,Token::Ident("foo".to_owned()),Token::Op("=".to_owned()),
-                Token::BeginBlock,
-                    Token::Return, Token::FloatingPoint(false,"1.0".to_owned()),
-                Token::EndBlock,
-                Token::Let, Token::Ident("bar".to_owned()), Token::Colon, Token::Ident("int32".to_owned()), Token::Op("=".to_owned()), Token::Integer(false,"1".to_owned()),
-                Token::Let, Token::Ident("baz".to_owned()), Token::Op("=".to_owned()),  Token::StringLiteral("\"foo bar baz\"".to_owned()),
-                Token::Let, Token::Ident("group_test".to_owned()), Token::Ident("arg".to_owned()), Token::Colon, Token::GroupOpen, Token::Ident("int32".to_owned()), Token::Arrow, Token::Ident("int32".to_owned()), Token::GroupClose, Token::Arrow, Token::Ident("int32".to_owned()),
-                Token::EoF,
+                Let, Ident("depth1".to_owned()), Op("=".to_owned()),
+                BeginBlock,
+                    Let, Ident("depth2".to_owned()), Op("=".to_owned()),
+                    BeginBlock,
+                        CharLiteral("c".to_owned()),
+                    EndBlock,
+                    Return, FloatingPoint(false,"1.0".to_owned()),
+                EndBlock,
+                Let, Ident("bar".to_owned()), Colon, Ident("int32".to_owned()), Op("=".to_owned()), Integer(false,"1".to_owned()),
+                Let, Ident("baz".to_owned()), Op("=".to_owned()),  StringLiteral("foo bar baz".to_owned()),
+                Let, Ident("group_test".to_owned()), Ident("arg".to_owned()), Colon, GroupOpen, Ident("int32".to_owned()), Arrow, Ident("int32".to_owned()), GroupClose, Arrow, Ident("int32".to_owned()),
+                EoF,
             ]
         )
     }
