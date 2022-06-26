@@ -1,4 +1,3 @@
-#![feature(let_chains)]
 #![feature(stmt_expr_attributes)]
 #![feature(iter_advance_by)]
 #![feature(drain_filter)]

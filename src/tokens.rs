@@ -3,12 +3,11 @@ pub enum Token {
     Let,
     Return,
     Ident(String),
-    Equals,
     // Fn, //to be added latter to distinquish between value and function with 0 args
 
     //literals
-    Integer(String),
-    FloatingPoint(String),
+    Integer(bool,String),
+    FloatingPoint(bool,String),
     StringLiteral(String),
     CharLiteral(String),
 
@@ -21,7 +20,8 @@ pub enum Token {
     BeginBlock,
     EndBlock,
     EoF,
-    IndentError(usize),
+    
+    Error(&'static str/*reason*/),
 }
 
 impl Token {
