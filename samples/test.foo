@@ -5,4 +5,5 @@ let bar : int32 =
     return 2
 
 let ^^ lhs rhs : int32 -> int32 -> int32 =
+    bar foo
     return 1
