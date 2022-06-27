@@ -439,6 +439,7 @@ let group_test arg : ( int32 -> int32 ) -> int32
                 EndBlock,
                 Let, Op("^^".to_owned()), Ident("lhs".to_owned()), Ident("rhs".to_owned()), Colon, Ident("int32".to_owned()), Arrow, Ident("int32".to_owned()), Arrow, Ident("int32".to_owned()), Op("=".to_owned()),
                 BeginBlock,
+                    Ident("bar".to_string()), Ident("foo".to_owned()),
                     Return, Integer(false, "1".to_owned()),
                 EoF
             ]

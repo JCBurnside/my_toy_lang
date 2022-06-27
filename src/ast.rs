@@ -1,4 +1,5 @@
 #[derive(PartialEq, Debug)]
+#[allow(unused)]
 pub enum Expr {
     BinaryOpCall {
         ident: String,
@@ -21,19 +22,19 @@ pub enum Expr {
     },
     Literal {
         value: String,
-        ty: Type,
+        ty: TypeName,
     },
     Declaration {
         is_op: bool,
         ident: String,
-        ty: Option<Type>,
-        args: Option<Vec<(String, Option<Type>)>>,
+        ty: Option<TypeName>,
+        args: Option<Vec<(String, Option<TypeName>)>>,
         value: Box<Expr>,
     },
 }
 
 #[derive(PartialEq, Debug)]
-pub enum Type {
-    FnType(Box<Type>, Box<Type>),
+pub enum TypeName {
+    FnType(Box<TypeName>, Box<TypeName>),
     ValueType(String),
 }
