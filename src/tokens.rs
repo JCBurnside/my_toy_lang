@@ -6,8 +6,8 @@ pub enum Token {
     // Fn, //to be added latter to distinquish between value and function with 0 args
 
     //literals
-    Integer(bool,String),
-    FloatingPoint(bool,String),
+    Integer(bool, String),
+    FloatingPoint(bool, String),
     StringLiteral(String),
     CharLiteral(String),
 
@@ -20,8 +20,8 @@ pub enum Token {
     BeginBlock,
     EndBlock,
     EoF,
-    
-    Error(&'static str/*reason*/),
+
+    Error(&'static str /*reason*/),
 }
 
 impl Token {

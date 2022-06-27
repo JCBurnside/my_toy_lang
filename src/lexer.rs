@@ -1,40 +1,40 @@
-use std::{str::Chars, iter::Peekable};
+use std::{iter::Peekable, str::Chars};
 struct Lexer<I> {
-    source_stream :I,
-    curr_pos : usize,
-    whitespaces : Vec<usize>,
-    end_blocks_to_gen : usize,
-    start_line : bool,
+    source_stream: I,
+    curr_pos: usize,
+    whitespaces: Vec<usize>,
+    end_blocks_to_gen: usize,
+    start_line: bool,
 }
 
 macro_rules! operators {
     () => {
-        '|' | '>' | '<' | '!' | '@' |  '$' | '=' | '&' | '+' | '-' | '\\' | '/' | '*' 
+        '|' | '>' | '<' | '!' | '@' |  '$' | '=' | '&' | '+' | '-' | '\\' | '/' | '*' | '^'
     };
 }
 
 use itertools::Itertools;
 
 use crate::tokens::Token;
-impl <I:Iterator<Item=char> + Clone> Lexer<Peekable<I>> {
+impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
     #[allow(dead_code)]
-    pub fn new<II:IntoIterator<IntoIter = I>>(source: II) -> Self {
+    pub fn new<II: IntoIterator<IntoIter = I>>(source: II) -> Self {
         Self {
             source_stream: source.into_iter().peekable(),
-            curr_pos : 0,
-            whitespaces : vec![],
-            end_blocks_to_gen : 0,
-            start_line : false,
+            curr_pos: 0,
+            whitespaces: vec![],
+            end_blocks_to_gen: 0,
+            start_line: false,
         }
     }
 
     pub fn lex(&mut self) -> (Token, usize) {
         if self.end_blocks_to_gen > 0 {
             self.end_blocks_to_gen -= 1;
-            return (Token::EndBlock,self.curr_pos);
+            return (Token::EndBlock, self.curr_pos);
         }
         if self.source_stream.peek() == None {
-            return (Token::EoF,self.curr_pos);
+            return (Token::EoF, self.curr_pos);
         }
 
         if self.source_stream.peek() == Some(&'\n') {
@@ -43,128 +43,170 @@ impl <I:Iterator<Item=char> + Clone> Lexer<Peekable<I>> {
             return self.lex();
         }
 
-        let (ws,count) = self.source_stream
+        let (ws, count) = self
+            .source_stream
             .peeking_take_while(|c| c != &'\n' && c.is_ascii_whitespace())
             .map(|c| match c {
                 ' ' => 1,
                 '\t' => 4,
                 _ => 0,
             })
-            .fold((0usize,0usize),|(sum,count),curr| (sum + curr,count + 1));
+            .fold((0usize, 0usize), |(sum, count), curr| {
+                (sum + curr, count + 1)
+            });
         self.curr_pos += count;
         if self.start_line {
-             self.start_line = false;
-            let ends = self.whitespaces.drain_filter(|x| *x>ws).count();
-            return if ends == 0 && ws > 0{ 
-                self.whitespaces.push(ws);
-                (Token::BeginBlock,self.curr_pos) 
-            } else {
-                self.end_blocks_to_gen = ends; 
-                self.lex() 
+            self.start_line = false;
+            if self.whitespaces.last().unwrap_or(&0) == &ws {
+                return self.lex();
             }
+            let ends = self.whitespaces.drain_filter(|x| *x > ws).count();
+            return if ends == 0 && ws > 0 {
+                self.whitespaces.push(ws);
+                (Token::BeginBlock, self.curr_pos)
+            } else {
+                self.end_blocks_to_gen = ends;
+                self.lex()
+            };
         }
         if let Some(c) = self.source_stream.next() {
+            self.curr_pos += 1;
             if c == '\n' {
                 self.start_line = true;
-                return self.lex()
+                return self.lex();
             }
-            
-            
-            self.curr_pos+=1;
+
             match c {
-                '(' => (Token::GroupOpen,self.curr_pos),
-                ')' => (Token::GroupClose,self.curr_pos),
+                '(' => (Token::GroupOpen, self.curr_pos),
+                ')' => (Token::GroupClose, self.curr_pos),
                 '\'' => {
                     let mut prev = '\0';
-                    let inside = self.source_stream.peeking_take_while(|c| 
-                        if prev == '\\' {
-                            prev = *c;
-                            true
-                        } else {
-                            prev = *c;
-                            c != &'\n' && c != &'\''
-                        }
-                    ).collect::<String>();
+                    let inside = self
+                        .source_stream
+                        .peeking_take_while(|c| {
+                            if prev == '\\' {
+                                prev = *c;
+                                true
+                            } else {
+                                prev = *c;
+                                c != &'\n' && c != &'\''
+                            }
+                        })
+                        .collect::<String>();
                     self.curr_pos += inside.len();
                     if prev == '\n' {
-                        (Token::Error("unclosed litteral"),self.curr_pos)
+                        (Token::Error("unclosed litteral"), self.curr_pos)
                     } else {
                         self.source_stream.advance_by(1).unwrap();
-                        (Token::CharLiteral(inside),self.curr_pos)
+                        (Token::CharLiteral(inside), self.curr_pos)
                     }
                 }
                 '"' => {
                     let mut prev = '\0';
-                    let inside = self.source_stream.peeking_take_while(|c| 
-                        if prev == '\\' {
-                            prev = *c;
-                            true
-                        } else {
-                            prev = *c;
-                            c != &'\n' && c != &'"'
-                        }
-                    ).collect::<String>();
+                    let inside = self
+                        .source_stream
+                        .peeking_take_while(|c| {
+                            if prev == '\\' {
+                                prev = *c;
+                                true
+                            } else {
+                                prev = *c;
+                                c != &'\n' && c != &'"'
+                            }
+                        })
+                        .collect::<String>();
                     self.curr_pos += inside.len();
                     if prev == '\n' {
-                        (Token::Error("unclosed litteral"),self.curr_pos)
+                        (Token::Error("unclosed litteral"), self.curr_pos)
                     } else {
                         self.source_stream.advance_by(1).unwrap();
-                        (Token::StringLiteral(inside),self.curr_pos)
+                        (Token::StringLiteral(inside), self.curr_pos)
                     }
                 }
 
-                '-' if self.source_stream.peek() == Some(&'>') && self.source_stream.clone().nth(2).map_or(true,|c| !c.is_whitespace()) => {
+                '-' if self.source_stream.peek() == Some(&'>')
+                    && self
+                        .source_stream
+                        .clone()
+                        .nth(2)
+                        .map_or(true, |c| !c.is_whitespace()) =>
+                {
                     self.curr_pos += 1;
                     self.source_stream.next();
-                    (Token::Arrow,self.curr_pos)
+                    (Token::Arrow, self.curr_pos)
                 }
 
-                '-' | '+' if self.source_stream.clone().next().map_or(false, |c| c.is_numeric()||c=='.') => {
-                    let inside : String = self.source_stream.peeking_take_while(|c| !c.is_whitespace()).collect();
-                    self.curr_pos+=inside.len();
+                '-' | '+'
+                    if self
+                        .source_stream
+                        .clone()
+                        .next()
+                        .map_or(false, |c| c.is_numeric() || c == '.') =>
+                {
+                    let inside: String = self
+                        .source_stream
+                        .peeking_take_while(|c| !c.is_whitespace())
+                        .collect();
+                    self.curr_pos += inside.len();
                     if inside.contains('.') {
-                        (Token::FloatingPoint(c == '-',inside),self.curr_pos)
+                        (Token::FloatingPoint(c == '-', inside), self.curr_pos)
                     } else {
-                        (Token::Integer(c=='-', inside), self.curr_pos)
+                        (Token::Integer(c == '-', inside), self.curr_pos)
                     }
                 }
 
                 operators!() => {
-                    let inside : String = self.source_stream.peeking_take_while(|c| matches!(c,operators!())).collect();
+                    let inside: String = self
+                        .source_stream
+                        .peeking_take_while(|c| matches!(c, operators!()))
+                        .collect();
                     self.curr_pos += inside.len();
                     let inside = c.to_string() + &inside;
-                    (Token::Op(inside),self.curr_pos)
+                    (Token::Op(inside), self.curr_pos)
                 }
 
-                'l' if self.source_stream.clone().take_while(|c| !c.is_whitespace()).collect::<String>() == "et" => {
+                'l' if self
+                    .source_stream
+                    .clone()
+                    .take_while(|c| !c.is_whitespace())
+                    .collect::<String>()
+                    == "et" =>
+                {
                     self.source_stream.advance_by(2).unwrap();
                     self.curr_pos += 2;
-                    (Token::Let,self.curr_pos)
+                    (Token::Let, self.curr_pos)
                 }
-                'r' if self.source_stream.clone().take_while(|c| !c.is_whitespace()).collect::<String>() == "eturn" => {
+                'r' if self
+                    .source_stream
+                    .clone()
+                    .take_while(|c| !c.is_whitespace())
+                    .collect::<String>()
+                    == "eturn" =>
+                {
                     self.source_stream.advance_by(5).unwrap();
                     self.curr_pos += 5;
-                    (Token::Return,self.curr_pos)
+                    (Token::Return, self.curr_pos)
                 }
-                ':' => (Token::Colon,self.curr_pos),
-                c=> {
-                    let inner : String = self.source_stream.peeking_take_while(|c| !c.is_whitespace()).collect();
-                    self.curr_pos+= inner.len();
+                ':' => (Token::Colon, self.curr_pos),
+                c => {
+                    let inner: String = self
+                        .source_stream
+                        .peeking_take_while(|c| !c.is_whitespace())
+                        .collect();
+                    self.curr_pos += inner.len();
                     let inner = c.to_string() + &inner;
                     if inner.chars().all(|c| c.is_numeric()) {
-                        (Token::Integer(false, inner),self.curr_pos)
+                        (Token::Integer(false, inner), self.curr_pos)
                     } else if inner.chars().all(|c| c.is_numeric() || c == '.') {
-                        (Token::FloatingPoint(false, inner),self.curr_pos,)
-                    } 
-                    else {
-                        (Token::Ident(inner),self.curr_pos)
+                        (Token::FloatingPoint(false, inner), self.curr_pos)
+                    } else {
+                        (Token::Ident(inner), self.curr_pos)
                     }
                 }
             }
         } else {
-            (Token::Error("Unkown Error"),self.curr_pos)
+            (Token::Error("Unkown Lexer Error"), self.curr_pos)
         }
-
     }
 }
 
@@ -173,7 +215,7 @@ pub struct TokenStream<I> {
     ended: bool,
 }
 
-impl <'src> TokenStream<Peekable<Chars<'src>>> {
+impl<'src> TokenStream<Peekable<Chars<'src>>> {
     #[allow(dead_code)]
     pub fn from_source(src: &'src str) -> Self {
         Self {
@@ -182,15 +224,17 @@ impl <'src> TokenStream<Peekable<Chars<'src>>> {
         }
     }
 }
-impl <I:Iterator<Item=char> + Clone> TokenStream<Peekable<I>> {
+impl<I: Iterator<Item = char> + Clone> TokenStream<Peekable<I>> {
     #[allow(dead_code)]
-    pub fn from_iter<II:IntoIterator<IntoIter = I>>(src:II) -> Self {
-        Self { lexer: Lexer::new(src.into_iter()), ended: false }
+    pub fn from_iter<II: IntoIterator<IntoIter = I>>(src: II) -> Self {
+        Self {
+            lexer: Lexer::new(src.into_iter()),
+            ended: false,
+        }
     }
-
 }
 
-impl <T:Iterator<Item=char> + Clone> Iterator for TokenStream<Peekable<T>> {
+impl<T: Iterator<Item = char> + Clone> Iterator for TokenStream<Peekable<T>> {
     type Item = (Token, usize);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -227,14 +271,14 @@ mod tests {
         );
         assert_eq!(
             TokenStream::from_source("1").map(|(a, _)| a).collect_vec(),
-            vec![Token::Integer(false,"1".to_owned()), Token::EoF],
+            vec![Token::Integer(false, "1".to_owned()), Token::EoF],
             "int token"
         );
         assert_eq!(
             TokenStream::from_source("1.0")
                 .map(|(a, _)| a)
                 .collect_vec(),
-            vec![Token::FloatingPoint(false,"1.0".to_owned()), Token::EoF],
+            vec![Token::FloatingPoint(false, "1.0".to_owned()), Token::EoF],
             "float token"
         );
         assert_eq!(
@@ -273,34 +317,28 @@ mod tests {
         );
 
         assert_eq!(
-            TokenStream::from_source("(")
-                .map(|(a,_)| a)
-                .collect_vec(),
-            [Token::GroupOpen,Token::EoF],
+            TokenStream::from_source("(").map(|(a, _)| a).collect_vec(),
+            [Token::GroupOpen, Token::EoF],
             "open group token"
         );
 
         assert_eq!(
-            TokenStream::from_source(")")
-                .map(|(a,_)|a)
-                .collect_vec(),
+            TokenStream::from_source(")").map(|(a, _)| a).collect_vec(),
             [Token::GroupClose, Token::EoF],
             "close group token"
         );
 
         assert_eq!(
-            TokenStream::from_source("->")
-                .map(|(a,_)| a)
-                .collect_vec(),
-            [Token::Arrow,Token::EoF],
+            TokenStream::from_source("->").map(|(a, _)| a).collect_vec(),
+            [Token::Arrow, Token::EoF],
             "Arrow token"
         );
 
         assert_eq!(
             TokenStream::from_source("\n\t")
-                .map(|(a,_)|a)
+                .map(|(a, _)| a)
                 .collect_vec(),
-            [Token::BeginBlock,Token::EoF],
+            [Token::BeginBlock, Token::EoF],
             "Begin block"
         )
     }
@@ -309,9 +347,9 @@ mod tests {
     fn singled_out() {
         assert_eq!(
             TokenStream::from_source("\n\tlet")
-                .map(|(a,_)|dbg!(a))
+                .map(|(a, _)| dbg!(a))
                 .collect_vec(),
-            [Token::BeginBlock,Token::Let,Token::EoF],
+            [Token::BeginBlock, Token::Let, Token::EoF],
             "Begin block"
         )
     }
@@ -353,7 +391,7 @@ mod tests {
         use Token::*;
         assert_eq!(
             TokenStream::from_source(
-r#"let depth1 =
+                r#"let depth1 =
     let depth2 =
         'c'
     return 1.0
@@ -381,6 +419,28 @@ let group_test arg : ( int32 -> int32 ) -> int32
                 Let, Ident("baz".to_owned()), Op("=".to_owned()),  StringLiteral("foo bar baz".to_owned()),
                 Let, Ident("group_test".to_owned()), Ident("arg".to_owned()), Colon, GroupOpen, Ident("int32".to_owned()), Arrow, Ident("int32".to_owned()), GroupClose, Arrow, Ident("int32".to_owned()),
                 EoF,
+            ]
+        )
+    }
+
+    #[test]
+    fn from_file() {
+        const SRC: &'static str = include_str!("../samples/test.foo");
+        use Token::*;
+        assert_eq!(
+            TokenStream::from_source(SRC).map(|(a, _)| a).collect_vec(),
+            #[rustfmt::skip]
+            [
+                Let, Ident("foo".to_owned()), Colon, Ident("int32".to_owned()), Op("=".to_owned()), Integer(false, "3".to_owned()),
+                Let, Ident("bar".to_owned()), Colon, Ident("int32".to_owned()), Op("=".to_owned()),
+                BeginBlock,
+                    Let, Ident("baz".to_owned()), Colon, Ident("str".to_owned()), Op("=".to_owned()), StringLiteral("merp \\\" yes".to_owned()),
+                    Return, Integer(false, "2".to_owned()),
+                EndBlock,
+                Let, Op("^^".to_owned()), Ident("lhs".to_owned()), Ident("rhs".to_owned()), Colon, Ident("int32".to_owned()), Arrow, Ident("int32".to_owned()), Arrow, Ident("int32".to_owned()), Op("=".to_owned()),
+                BeginBlock,
+                    Return, Integer(false, "1".to_owned()),
+                EoF
             ]
         )
     }
