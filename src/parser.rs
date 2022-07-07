@@ -35,12 +35,11 @@ impl<'str> Parser<Peekable<Chars<'str>>> {
             stream: TokenStream::from_source(source).peekable(),
         }
     }
-
 }
 
 impl<T> Parser<T>
 where
-TokenStream<T>: Iterator<Item = (Token, usize)>,
+    TokenStream<T>: Iterator<Item = (Token, usize)>,
 {
     pub fn from_stream(stream: TokenStream<T>) -> Self {
         Self {
@@ -51,7 +50,7 @@ TokenStream<T>: Iterator<Item = (Token, usize)>,
     fn peek_expr(&self) -> Option<ParserResult> {
         None
     }
-    
+
     fn next_expr(&mut self) -> ParserResult {
         match self.stream.peek() {
             Some((Token::Let, _)) => self.declaration(),
@@ -63,7 +62,7 @@ TokenStream<T>: Iterator<Item = (Token, usize)>,
                 | Token::Integer(_, _),
                 _,
             )) => self.literal(),
-            Some((Token::Ident(_),_)) => self.function_call(),
+            Some((Token::Ident(_), _)) => self.function_call(),
             Some((Token::Return, _)) => self.ret(),
             _ => Err(ParseError {
                 span: (0, 0),
@@ -73,7 +72,7 @@ TokenStream<T>: Iterator<Item = (Token, usize)>,
     }
 
     fn function_call(&mut self) -> ParserResult {
-        if let Some((Token::Ident(name),span)) = self.stream.next() {
+        if let Some((Token::Ident(name), span)) = self.stream.next() {
             let mut args = vec![];
             while let Some((
                 Token::Ident(_)
@@ -100,15 +99,18 @@ TokenStream<T>: Iterator<Item = (Token, usize)>,
                     })
                 });
             }
-            Ok(ast::Expr::FnCall { ident: name, args: args })
+            Ok(ast::Expr::FnCall {
+                ident: name,
+                args: args,
+            })
         } else {
-            Err(ParseError{
-                span:(0,0),
-                reason:ParseErrorReason::UnknownError,
+            Err(ParseError {
+                span: (0, 0),
+                reason: ParseErrorReason::UnknownError,
             })
         }
     }
-    
+
     fn ret(&mut self) -> ParserResult {
         let (token, span) = self.stream.next().unwrap();
         if token == Token::Return {
@@ -475,10 +477,11 @@ mod tests {
                 value: Box::new(ast::Expr::Block {
                     sub: vec![
                         ast::Expr::FnCall {
-                            ident:"bar".to_owned(),
-                            args:vec![
-                                ast::Expr::FnCall { ident: "foo".to_owned(), args: vec![] }
-                            ],
+                            ident: "bar".to_owned(),
+                            args: vec![ast::Expr::FnCall {
+                                ident: "foo".to_owned(),
+                                args: vec![]
+                            }],
                         },
                         ast::Expr::Return {
                             expr: Box::new(ast::Expr::Literal {

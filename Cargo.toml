@@ -8,3 +8,4 @@ edition = "2021"
 [dependencies]
 inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "master", features = ["llvm13-0"] }
 itertools = "0.10.3"
+utf8-chars = "2.0.1"
