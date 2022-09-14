@@ -2,7 +2,7 @@ use std::{iter::Peekable, str::Chars};
 
 use itertools::Itertools;
 
-use crate::{ast, lexer::TokenStream, tokens::Token};
+use crate::{ast, lexer::TokenStream, tokens::Token,util::ExtraUtilFunctions};
 #[derive(Debug)]
 pub struct ParseError {
     span: (usize, usize),
@@ -47,11 +47,11 @@ where
         }
     }
 
-    fn peek_expr(&self) -> Option<ParserResult> {
+    fn _peek_expr(&self) -> Option<ParserResult> {
         None
     }
 
-    fn next_expr(&mut self) -> ParserResult {
+    pub fn next_expr(&mut self) -> ParserResult {
         match self.stream.peek() {
             Some((Token::Let, _)) => self.declaration(),
             Some((Token::BeginBlock, _)) => self.collect_block(),
@@ -115,7 +115,7 @@ where
         let (token, span) = self.stream.next().unwrap();
         if token == Token::Return {
             Ok(ast::Expr::Return {
-                expr: Box::new(self.literal()?),
+                expr: self.literal()?.boxed(),
             })
         } else {
             Err(ParseError {
@@ -157,8 +157,8 @@ where
             if let Some((Token::Arrow, _)) = self.stream.peek() {
                 self.stream.advance_by(1).unwrap();
                 Ok(ast::TypeName::FnType(
-                    Box::new(ast::TypeName::ValueType(ty)),
-                    Box::new(self.collect_type()?),
+                    ast::TypeName::ValueType(ty).boxed(),
+                    self.collect_type()?.boxed(),
                 ))
             } else {
                 Ok(ast::TypeName::ValueType(ty))
@@ -197,7 +197,7 @@ where
                             } else {
                                 self.literal()?
                             };
-                            Ok(ast::Expr::Declaration { is_op: false, ident, ty: Some(ty), args: None, value: Box::new(value)})
+                            Ok(ast::Expr::Declaration { is_op: false, ident, ty: Some(ty), args: None, value: value.boxed()})
                         } else {
                             Err(ParseError{
                                 span:(start,ident_span+ident.len()),
@@ -216,9 +216,11 @@ where
                                 });
                             }
                         }
-                        if let Some((Token::Colon, _next)) = self.stream.next() {
+                        if let Some((Token::Colon, _next)) = self.stream.peek() {
+                            self.stream.next();
                             let ty = self.collect_type()?;
-                            if let Some((Token::Op(eq),eq_span)) = self.stream.next()
+                            let next = self.stream.next(); 
+                            if let Some((Token::Op(eq),eq_span)) = next
                             && eq == "="
                             {
                                 let value = if let Some((Token::BeginBlock,_)) = self.stream.peek() {
@@ -226,7 +228,7 @@ where
                                 } else {
                                     self.literal()?
                                 };
-                                Ok(ast::Expr::Declaration { is_op: false, ident, ty: Some(ty), args: Some(args.into_iter().map(|s| (s,None)).collect()), value: Box::new(value)})
+                                Ok(ast::Expr::Declaration { is_op: false, ident, ty: Some(ty), args: Some(args.into_iter().map(|s| (s,None)).collect()), value: value.boxed()})
                             } else {
                                 Err(ParseError{
                                     span:(start,ident_span+ident.len()),
@@ -246,7 +248,7 @@ where
                                     ident,
                                     ty: None,
                                     args: Some(args.into_iter().map(|s| (s,None)).collect()),
-                                    value: Box::new(value)
+                                    value: value.boxed()
                                 })
                             } else {
                                 Err(ParseError {
@@ -274,7 +276,7 @@ where
                             } else {
                                 self.literal()?
                             };
-                            Ok(ast::Expr::Declaration { is_op: true, ident, ty: Some(ty), args: None, value: Box::new(value)})
+                            Ok(ast::Expr::Declaration { is_op: true, ident, ty: Some(ty), args: None, value: value.boxed()})
                         } else {
                             Err(ParseError{
                                 span:(start,ident_span+ident.len()),
@@ -303,7 +305,7 @@ where
                                 } else {
                                     self.literal()?
                                 };
-                                Ok(ast::Expr::Declaration { is_op: true, ident, ty: Some(ty), args: Some(args.into_iter().map(|arg|(arg,None)).collect()), value: Box::new(value)})
+                                Ok(ast::Expr::Declaration { is_op: true, ident, ty: Some(ty), args: Some(args.into_iter().map(|arg|(arg,None)).collect()), value: value.boxed()})
                             } else {
                                 Err(ParseError{
                                     span:(start,ident_span+ident.len()),
@@ -318,7 +320,7 @@ where
                                 } else {
                                     self.literal()?
                                 };
-                                Ok(ast::Expr::Declaration { is_op: true, ident, ty: None, args: Some(args.into_iter().map(|s| (s,None)).collect()), value: Box::new(value)})
+                                Ok(ast::Expr::Declaration { is_op: true, ident, ty: None, args: Some(args.into_iter().map(|s| (s,None)).collect()), value: value.boxed()})
                             } else {
                                 Err(ParseError {
                                     span:(ident_span,ident_span+ident.len()),
@@ -370,7 +372,7 @@ where
 #[cfg(test)]
 mod tests {
     use crate::ast::{self, TypeName};
-
+    use crate::util::ExtraUtilFunctions;
     use super::Parser;
 
     #[test]
@@ -383,10 +385,10 @@ mod tests {
                 ident: "foo".to_owned(),
                 ty: Some(TypeName::ValueType("int32".to_owned())),
                 args: None,
-                value: Box::new(ast::Expr::Literal {
+                value: ast::Expr::Literal {
                     value: "5".to_owned(),
                     ty: ast::TypeName::ValueType("int32".to_owned())
-                })
+                }.boxed()
             },
             parser.next_expr().expect("failed to parse")
         );
@@ -401,14 +403,43 @@ mod tests {
                 ident: "foo".to_owned(),
                 ty: Some(ast::TypeName::ValueType("int32".to_owned())),
                 args: None,
-                value: Box::new(ast::Expr::Block {
+                value: ast::Expr::Block {
                     sub: vec![ast::Expr::Return {
-                        expr: Box::new(ast::Expr::Literal {
+                        expr: ast::Expr::Literal {
                             value: "5".to_owned(),
                             ty: TypeName::ValueType("int32".to_owned())
-                        })
+                        }.boxed()
                     }]
-                })
+                }.boxed()
+            },
+            parser.next_expr().expect("failed to parse")
+        )
+    }
+
+    #[test]
+    fn complex_rt() {
+        const SRC: &'static str = r#"
+let foo _ : ( int32 -> int32 ) -> int32 =
+    return 0
+"#;
+        let mut parser = Parser::from_source(SRC);
+        assert_eq!(
+            ast::Expr::Declaration { 
+                is_op: false,
+                ident: "foo".to_owned(), 
+                ty: Some(TypeName::FnType(
+                    TypeName::FnType(
+                        TypeName::ValueType("int32".to_owned()).boxed(),
+                        TypeName::ValueType("int32".to_owned()).boxed()
+                    ).boxed(), 
+                    TypeName::ValueType("int32".to_owned()).boxed()
+                    )), 
+                args: Some(vec![("_".to_owned(),None)]), 
+                value: ast::Expr::Block { 
+                sub: vec![
+                    ast::Expr::Return { expr: ast::Expr::Literal { value: "0".to_owned(), ty: TypeName::ValueType("int32".to_owned()) }.boxed() }
+                ]
+                }.boxed()
             },
             parser.next_expr().expect("failed to parse")
         )
@@ -424,10 +455,10 @@ mod tests {
                 ident: "foo".to_owned(),
                 ty: Some(ast::TypeName::ValueType("int32".to_owned())),
                 args: None,
-                value: Box::new(ast::Expr::Literal {
+                value: ast::Expr::Literal {
                     value: "3".to_owned(),
                     ty: ast::TypeName::ValueType("int32".to_owned())
-                }),
+                }.boxed(),
             },
             parser.next_expr().unwrap(),
             "simple declaration"
@@ -436,28 +467,31 @@ mod tests {
             ast::Expr::Declaration {
                 is_op: false,
                 ident: "bar".to_owned(),
-                ty: Some(ast::TypeName::ValueType("int32".to_owned())),
-                args: None,
-                value: Box::new(ast::Expr::Block {
+                ty: Some(ast::TypeName::FnType(
+                    ast::TypeName::ValueType("int32".to_owned()).boxed(),
+                    ast::TypeName::ValueType("int32".to_owned()).boxed()
+                )),
+                args: Some(vec![("quz".to_owned(),None)]),
+                value: ast::Expr::Block {
                     sub: vec![
                         ast::Expr::Declaration {
                             is_op: false,
                             ident: "baz".to_owned(),
                             ty: Some(ast::TypeName::ValueType("str".to_owned())),
                             args: None,
-                            value: Box::new(ast::Expr::Literal {
+                            value: ast::Expr::Literal {
                                 value: "merp \\\" yes".to_owned(),
                                 ty: ast::TypeName::ValueType("str".to_owned())
-                            })
+                            }.boxed()
                         },
                         ast::Expr::Return {
-                            expr: Box::new(ast::Expr::Literal {
+                            expr: ast::Expr::Literal {
                                 value: "2".to_owned(),
                                 ty: ast::TypeName::ValueType("int32".to_owned())
-                            })
+                            }.boxed()
                         }
                     ]
-                })
+                }.boxed()
             },
             parser.next_expr().unwrap(),
             "declaration with block"
@@ -467,14 +501,14 @@ mod tests {
                 is_op: true,
                 ident: "^^".to_owned(),
                 ty: Some(ast::TypeName::FnType(
-                    Box::new(ast::TypeName::ValueType("int32".to_owned())),
-                    Box::new(ast::TypeName::FnType(
-                        Box::new(ast::TypeName::ValueType("int32".to_owned())),
-                        Box::new(ast::TypeName::ValueType("int32".to_owned())),
-                    )),
+                    ast::TypeName::ValueType("int32".to_owned()).boxed(),
+                    ast::TypeName::FnType(
+                        ast::TypeName::ValueType("int32".to_owned()).boxed(),
+                        ast::TypeName::ValueType("int32".to_owned()).boxed(),
+                    ).boxed(),
                 )),
                 args: Some(vec![("lhs".to_string(), None), ("rhs".to_string(), None)]),
-                value: Box::new(ast::Expr::Block {
+                value: ast::Expr::Block {
                     sub: vec![
                         ast::Expr::FnCall {
                             ident: "bar".to_owned(),
@@ -484,13 +518,13 @@ mod tests {
                             }],
                         },
                         ast::Expr::Return {
-                            expr: Box::new(ast::Expr::Literal {
+                            expr: ast::Expr::Literal {
                                 value: "1".to_owned(),
                                 ty: ast::TypeName::ValueType("int32".to_owned())
-                            })
+                            }.boxed()
                         }
                     ]
-                }),
+                }.boxed(),
             },
             parser.next_expr().unwrap(),
             "operator declaration w/ function call",
