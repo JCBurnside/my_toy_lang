@@ -432,7 +432,7 @@ let group_test arg : ( int32 -> int32 ) -> int32
             #[rustfmt::skip]
             [
                 Let, Ident("foo".to_owned()), Colon, Ident("int32".to_owned()), Op("=".to_owned()), Integer(false, "3".to_owned()),
-                Let, Ident("bar".to_owned()), Colon, Ident("int32".to_owned()), Op("=".to_owned()),
+                Let, Ident("bar".to_owned()), Ident("quz".to_owned()), Colon, Ident("int32".to_owned()), Arrow, Ident("int32".to_owned()), Op("=".to_owned()),
                 BeginBlock,
                     Let, Ident("baz".to_owned()), Colon, Ident("str".to_owned()), Op("=".to_owned()), StringLiteral("merp \\\" yes".to_owned()),
                     Return, Integer(false, "2".to_owned()),

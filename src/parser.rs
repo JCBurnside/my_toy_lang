@@ -1,8 +1,8 @@
-use std::{iter::Peekable, str::Chars};
+use std::{iter::Peekable, str::Chars, num::NonZeroUsize};
 
 use itertools::Itertools;
 
-use crate::{ast, lexer::TokenStream, tokens::Token};
+use crate::{ast, lexer::TokenStream, tokens::Token,util::ExtraUtilFunctions};
 #[derive(Debug)]
 pub struct ParseError {
     span: (usize, usize),
@@ -35,12 +35,11 @@ impl<'str> Parser<Peekable<Chars<'str>>> {
             stream: TokenStream::from_source(source).peekable(),
         }
     }
-
 }
 
 impl<T> Parser<T>
 where
-TokenStream<T>: Iterator<Item = (Token, usize)>,
+    TokenStream<T>: Iterator<Item = (Token, usize)>,
 {
     pub fn from_stream(stream: TokenStream<T>) -> Self {
         Self {
@@ -48,11 +47,11 @@ TokenStream<T>: Iterator<Item = (Token, usize)>,
         }
     }
 
-    fn peek_expr(&self) -> Option<ParserResult> {
+    fn _peek_expr(&self) -> Option<ParserResult> {
         None
     }
-    
-    fn next_expr(&mut self) -> ParserResult {
+
+    pub fn next_expr(&mut self) -> ParserResult {
         match self.stream.peek() {
             Some((Token::Let, _)) => self.declaration(),
             Some((Token::BeginBlock, _)) => self.collect_block(),
@@ -63,7 +62,7 @@ TokenStream<T>: Iterator<Item = (Token, usize)>,
                 | Token::Integer(_, _),
                 _,
             )) => self.literal(),
-            Some((Token::Ident(_),_)) => self.function_call(),
+            Some((Token::Ident(_), _)) => self.function_call(),
             Some((Token::Return, _)) => self.ret(),
             _ => Err(ParseError {
                 span: (0, 0),
@@ -73,11 +72,10 @@ TokenStream<T>: Iterator<Item = (Token, usize)>,
     }
 
     fn function_call(&mut self) -> ParserResult {
-        if let Some((Token::Ident(name),span)) = self.stream.next() {
+        if let Some((Token::Ident(name), span)) = self.stream.next() {
             let mut args = vec![];
             while let Some((
                 Token::Ident(_)
-                // |Token::Op(_)
                 |Token::FloatingPoint(_, _)
                 |Token::Integer(_,_)
                 |Token::StringLiteral(_)
@@ -100,20 +98,23 @@ TokenStream<T>: Iterator<Item = (Token, usize)>,
                     })
                 });
             }
-            Ok(ast::Expr::FnCall { ident: name, args: args })
+            Ok(ast::Expr::FnCall {
+                ident: name,
+                args: args,
+            })
         } else {
-            Err(ParseError{
-                span:(0,0),
-                reason:ParseErrorReason::UnknownError,
+            Err(ParseError {
+                span: (0, 0),
+                reason: ParseErrorReason::UnknownError,
             })
         }
     }
-    
+
     fn ret(&mut self) -> ParserResult {
         let (token, span) = self.stream.next().unwrap();
         if token == Token::Return {
             Ok(ast::Expr::Return {
-                expr: Box::new(self.literal()?),
+                expr: self.literal()?.boxed(),
             })
         } else {
             Err(ParseError {
@@ -154,9 +155,10 @@ TokenStream<T>: Iterator<Item = (Token, usize)>,
         if let Some((Token::Ident(ty), span)) = ty {
             if let Some((Token::Arrow, _)) = self.stream.peek() {
                 self.stream.advance_by(1).unwrap();
+                let result = self.collect_type()?;
                 Ok(ast::TypeName::FnType(
-                    Box::new(ast::TypeName::ValueType(ty)),
-                    Box::new(self.collect_type()?),
+                    ast::TypeName::ValueType(ty).boxed(),
+                    result.boxed(),
                 ))
             } else {
                 Ok(ast::TypeName::ValueType(ty))
@@ -164,7 +166,13 @@ TokenStream<T>: Iterator<Item = (Token, usize)>,
         } else if let Some((Token::GroupOpen, span)) = ty {
             let ty = self.collect_type()?;
             if let Some((Token::GroupClose, _)) = self.stream.next() {
-                Ok(ty)
+                if let Some((Token::Arrow,_)) = self.stream.peek() {
+                    self.stream.advance_by(1).unwrap();
+                    let result = self.collect_type()?;
+                    Ok(ast::TypeName::FnType(ty.boxed(), result.boxed()))
+                } else {
+                    Ok(ty)
+                }
             } else {
                 Err(ParseError {
                     span: (span, 0),
@@ -195,7 +203,7 @@ TokenStream<T>: Iterator<Item = (Token, usize)>,
                             } else {
                                 self.literal()?
                             };
-                            Ok(ast::Expr::Declaration { is_op: false, ident, ty: Some(ty), args: None, value: Box::new(value)})
+                            Ok(ast::Expr::Declaration { is_op: false, ident, ty: Some(ty), args: None, value: value.boxed()})
                         } else {
                             Err(ParseError{
                                 span:(start,ident_span+ident.len()),
@@ -214,9 +222,11 @@ TokenStream<T>: Iterator<Item = (Token, usize)>,
                                 });
                             }
                         }
-                        if let Some((Token::Colon, _next)) = self.stream.next() {
+                        if let Some((Token::Colon, _next)) = self.stream.peek() {
+                            self.stream.next();
                             let ty = self.collect_type()?;
-                            if let Some((Token::Op(eq),eq_span)) = self.stream.next()
+                            let next = self.stream.next(); 
+                            if let Some((Token::Op(eq),eq_span)) = next
                             && eq == "="
                             {
                                 let value = if let Some((Token::BeginBlock,_)) = self.stream.peek() {
@@ -224,7 +234,7 @@ TokenStream<T>: Iterator<Item = (Token, usize)>,
                                 } else {
                                     self.literal()?
                                 };
-                                Ok(ast::Expr::Declaration { is_op: false, ident, ty: Some(ty), args: Some(args.into_iter().map(|s| (s,None)).collect()), value: Box::new(value)})
+                                Ok(ast::Expr::Declaration { is_op: false, ident, ty: Some(ty), args: Some(args.into_iter().map(|s| (s,None)).collect()), value: value.boxed()})
                             } else {
                                 Err(ParseError{
                                     span:(start,ident_span+ident.len()),
@@ -244,7 +254,7 @@ TokenStream<T>: Iterator<Item = (Token, usize)>,
                                     ident,
                                     ty: None,
                                     args: Some(args.into_iter().map(|s| (s,None)).collect()),
-                                    value: Box::new(value)
+                                    value: value.boxed()
                                 })
                             } else {
                                 Err(ParseError {
@@ -272,7 +282,7 @@ TokenStream<T>: Iterator<Item = (Token, usize)>,
                             } else {
                                 self.literal()?
                             };
-                            Ok(ast::Expr::Declaration { is_op: true, ident, ty: Some(ty), args: None, value: Box::new(value)})
+                            Ok(ast::Expr::Declaration { is_op: true, ident, ty: Some(ty), args: None, value: value.boxed()})
                         } else {
                             Err(ParseError{
                                 span:(start,ident_span+ident.len()),
@@ -301,7 +311,7 @@ TokenStream<T>: Iterator<Item = (Token, usize)>,
                                 } else {
                                     self.literal()?
                                 };
-                                Ok(ast::Expr::Declaration { is_op: true, ident, ty: Some(ty), args: Some(args.into_iter().map(|arg|(arg,None)).collect()), value: Box::new(value)})
+                                Ok(ast::Expr::Declaration { is_op: true, ident, ty: Some(ty), args: Some(args.into_iter().map(|arg|(arg,None)).collect()), value: value.boxed()})
                             } else {
                                 Err(ParseError{
                                     span:(start,ident_span+ident.len()),
@@ -316,7 +326,7 @@ TokenStream<T>: Iterator<Item = (Token, usize)>,
                                 } else {
                                     self.literal()?
                                 };
-                                Ok(ast::Expr::Declaration { is_op: true, ident, ty: None, args: Some(args.into_iter().map(|s| (s,None)).collect()), value: Box::new(value)})
+                                Ok(ast::Expr::Declaration { is_op: true, ident, ty: None, args: Some(args.into_iter().map(|s| (s,None)).collect()), value: value.boxed()})
                             } else {
                                 Err(ParseError {
                                     span:(ident_span,ident_span+ident.len()),
@@ -368,7 +378,7 @@ TokenStream<T>: Iterator<Item = (Token, usize)>,
 #[cfg(test)]
 mod tests {
     use crate::ast::{self, TypeName};
-
+    use crate::util::ExtraUtilFunctions;
     use super::Parser;
 
     #[test]
@@ -381,10 +391,10 @@ mod tests {
                 ident: "foo".to_owned(),
                 ty: Some(TypeName::ValueType("int32".to_owned())),
                 args: None,
-                value: Box::new(ast::Expr::Literal {
+                value: ast::Expr::Literal {
                     value: "5".to_owned(),
                     ty: ast::TypeName::ValueType("int32".to_owned())
-                })
+                }.boxed()
             },
             parser.next_expr().expect("failed to parse")
         );
@@ -399,17 +409,74 @@ mod tests {
                 ident: "foo".to_owned(),
                 ty: Some(ast::TypeName::ValueType("int32".to_owned())),
                 args: None,
-                value: Box::new(ast::Expr::Block {
+                value: ast::Expr::Block {
                     sub: vec![ast::Expr::Return {
-                        expr: Box::new(ast::Expr::Literal {
+                        expr: ast::Expr::Literal {
                             value: "5".to_owned(),
                             ty: TypeName::ValueType("int32".to_owned())
-                        })
+                        }.boxed()
                     }]
-                })
+                }.boxed()
             },
             parser.next_expr().expect("failed to parse")
         )
+    }
+
+    #[test]
+    fn higher_kinded() {
+        const ARG: &'static str = r#"
+let foo _ : ( int32 -> int32 ) -> int32 =
+    return 0
+"#;
+        let mut parser = Parser::from_source(ARG);
+        assert_eq!(
+            ast::Expr::Declaration { 
+                is_op: false,
+                ident: "foo".to_owned(), 
+                ty: Some(TypeName::FnType(
+                    TypeName::FnType(
+                        TypeName::ValueType("int32".to_owned()).boxed(),
+                        TypeName::ValueType("int32".to_owned()).boxed()
+                    ).boxed(), 
+                    TypeName::ValueType("int32".to_owned()).boxed()
+                    )), 
+                args: Some(vec![("_".to_owned(),None)]), 
+                value: ast::Expr::Block { 
+                sub: vec![
+                    ast::Expr::Return { expr: ast::Expr::Literal { value: "0".to_owned(), ty: TypeName::ValueType("int32".to_owned()) }.boxed() }
+                ]
+                }.boxed()
+            },
+            parser.next_expr().expect("failed to parse"),
+            "function as arg"
+        );
+        const RT : &'static str = r#"
+let foo _ : int32 -> ( int32 -> int32 ) =
+    return 0
+"#;
+        let mut parser = Parser::from_source(RT);
+        assert_eq!(
+            ast::Expr::Declaration { 
+                is_op: false,
+                ident: "foo".to_owned(), 
+                ty: Some(TypeName::FnType(
+                    TypeName::ValueType("int32".to_owned()).boxed(),
+                    TypeName::FnType(
+                        TypeName::ValueType("int32".to_owned()).boxed(),
+                        TypeName::ValueType("int32".to_owned()).boxed()
+                    ).boxed(), 
+                    )), 
+                args: Some(vec![("_".to_owned(),None)]), 
+                value: ast::Expr::Block { 
+                sub: vec![
+                    ast::Expr::Return { expr: ast::Expr::Literal { value: "0".to_owned(), ty: TypeName::ValueType("int32".to_owned()) }.boxed() }
+                ]
+                }.boxed()
+            },
+            parser.next_expr().expect("failed to parse"),
+            "function as rt"
+        );
+        
     }
 
     #[test]
@@ -422,10 +489,10 @@ mod tests {
                 ident: "foo".to_owned(),
                 ty: Some(ast::TypeName::ValueType("int32".to_owned())),
                 args: None,
-                value: Box::new(ast::Expr::Literal {
+                value: ast::Expr::Literal {
                     value: "3".to_owned(),
                     ty: ast::TypeName::ValueType("int32".to_owned())
-                }),
+                }.boxed(),
             },
             parser.next_expr().unwrap(),
             "simple declaration"
@@ -434,28 +501,31 @@ mod tests {
             ast::Expr::Declaration {
                 is_op: false,
                 ident: "bar".to_owned(),
-                ty: Some(ast::TypeName::ValueType("int32".to_owned())),
-                args: None,
-                value: Box::new(ast::Expr::Block {
+                ty: Some(ast::TypeName::FnType(
+                    ast::TypeName::ValueType("int32".to_owned()).boxed(),
+                    ast::TypeName::ValueType("int32".to_owned()).boxed()
+                )),
+                args: Some(vec![("quz".to_owned(),None)]),
+                value: ast::Expr::Block {
                     sub: vec![
                         ast::Expr::Declaration {
                             is_op: false,
                             ident: "baz".to_owned(),
                             ty: Some(ast::TypeName::ValueType("str".to_owned())),
                             args: None,
-                            value: Box::new(ast::Expr::Literal {
+                            value: ast::Expr::Literal {
                                 value: "merp \\\" yes".to_owned(),
                                 ty: ast::TypeName::ValueType("str".to_owned())
-                            })
+                            }.boxed()
                         },
                         ast::Expr::Return {
-                            expr: Box::new(ast::Expr::Literal {
+                            expr: ast::Expr::Literal {
                                 value: "2".to_owned(),
                                 ty: ast::TypeName::ValueType("int32".to_owned())
-                            })
+                            }.boxed()
                         }
                     ]
-                })
+                }.boxed()
             },
             parser.next_expr().unwrap(),
             "declaration with block"
@@ -465,29 +535,30 @@ mod tests {
                 is_op: true,
                 ident: "^^".to_owned(),
                 ty: Some(ast::TypeName::FnType(
-                    Box::new(ast::TypeName::ValueType("int32".to_owned())),
-                    Box::new(ast::TypeName::FnType(
-                        Box::new(ast::TypeName::ValueType("int32".to_owned())),
-                        Box::new(ast::TypeName::ValueType("int32".to_owned())),
-                    )),
+                    ast::TypeName::ValueType("int32".to_owned()).boxed(),
+                    ast::TypeName::FnType(
+                        ast::TypeName::ValueType("int32".to_owned()).boxed(),
+                        ast::TypeName::ValueType("int32".to_owned()).boxed(),
+                    ).boxed(),
                 )),
                 args: Some(vec![("lhs".to_string(), None), ("rhs".to_string(), None)]),
-                value: Box::new(ast::Expr::Block {
+                value: ast::Expr::Block {
                     sub: vec![
                         ast::Expr::FnCall {
-                            ident:"bar".to_owned(),
-                            args:vec![
-                                ast::Expr::FnCall { ident: "foo".to_owned(), args: vec![] }
-                            ],
+                            ident: "bar".to_owned(),
+                            args: vec![ast::Expr::FnCall {
+                                ident: "foo".to_owned(),
+                                args: vec![]
+                            }],
                         },
                         ast::Expr::Return {
-                            expr: Box::new(ast::Expr::Literal {
+                            expr: ast::Expr::Literal {
                                 value: "1".to_owned(),
                                 ty: ast::TypeName::ValueType("int32".to_owned())
-                            })
+                            }.boxed()
                         }
                     ]
-                }),
+                }.boxed(),
             },
             parser.next_expr().unwrap(),
             "operator declaration w/ function call",

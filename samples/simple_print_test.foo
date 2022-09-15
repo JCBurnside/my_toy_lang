@@ -1,0 +1,2 @@
+let main _ : int -> int = 
+    print "foo"

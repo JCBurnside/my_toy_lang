@@ -1,6 +1,6 @@
 let foo : int32 = 3
 
-let bar : int32 =
+let bar quz : int32 -> int32 =
     let baz : str = "merp \" yes"
     return 2
 
