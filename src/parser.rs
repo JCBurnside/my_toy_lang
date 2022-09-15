@@ -1,4 +1,4 @@
-use std::{iter::Peekable, str::Chars};
+use std::{iter::Peekable, str::Chars, num::NonZeroUsize};
 
 use itertools::Itertools;
 
@@ -76,7 +76,6 @@ where
             let mut args = vec![];
             while let Some((
                 Token::Ident(_)
-                // |Token::Op(_)
                 |Token::FloatingPoint(_, _)
                 |Token::Integer(_,_)
                 |Token::StringLiteral(_)
@@ -156,9 +155,10 @@ where
         if let Some((Token::Ident(ty), span)) = ty {
             if let Some((Token::Arrow, _)) = self.stream.peek() {
                 self.stream.advance_by(1).unwrap();
+                let result = self.collect_type()?;
                 Ok(ast::TypeName::FnType(
                     ast::TypeName::ValueType(ty).boxed(),
-                    self.collect_type()?.boxed(),
+                    result.boxed(),
                 ))
             } else {
                 Ok(ast::TypeName::ValueType(ty))
@@ -166,7 +166,13 @@ where
         } else if let Some((Token::GroupOpen, span)) = ty {
             let ty = self.collect_type()?;
             if let Some((Token::GroupClose, _)) = self.stream.next() {
-                Ok(ty)
+                if let Some((Token::Arrow,_)) = self.stream.peek() {
+                    self.stream.advance_by(1).unwrap();
+                    let result = self.collect_type()?;
+                    Ok(ast::TypeName::FnType(ty.boxed(), result.boxed()))
+                } else {
+                    Ok(ty)
+                }
             } else {
                 Err(ParseError {
                     span: (span, 0),
@@ -417,12 +423,12 @@ mod tests {
     }
 
     #[test]
-    fn complex_rt() {
-        const SRC: &'static str = r#"
+    fn higher_kinded() {
+        const ARG: &'static str = r#"
 let foo _ : ( int32 -> int32 ) -> int32 =
     return 0
 "#;
-        let mut parser = Parser::from_source(SRC);
+        let mut parser = Parser::from_source(ARG);
         assert_eq!(
             ast::Expr::Declaration { 
                 is_op: false,
@@ -441,8 +447,36 @@ let foo _ : ( int32 -> int32 ) -> int32 =
                 ]
                 }.boxed()
             },
-            parser.next_expr().expect("failed to parse")
-        )
+            parser.next_expr().expect("failed to parse"),
+            "function as arg"
+        );
+        const RT : &'static str = r#"
+let foo _ : int32 -> ( int32 -> int32 ) =
+    return 0
+"#;
+        let mut parser = Parser::from_source(RT);
+        assert_eq!(
+            ast::Expr::Declaration { 
+                is_op: false,
+                ident: "foo".to_owned(), 
+                ty: Some(TypeName::FnType(
+                    TypeName::ValueType("int32".to_owned()).boxed(),
+                    TypeName::FnType(
+                        TypeName::ValueType("int32".to_owned()).boxed(),
+                        TypeName::ValueType("int32".to_owned()).boxed()
+                    ).boxed(), 
+                    )), 
+                args: Some(vec![("_".to_owned(),None)]), 
+                value: ast::Expr::Block { 
+                sub: vec![
+                    ast::Expr::Return { expr: ast::Expr::Literal { value: "0".to_owned(), ty: TypeName::ValueType("int32".to_owned()) }.boxed() }
+                ]
+                }.boxed()
+            },
+            parser.next_expr().expect("failed to parse"),
+            "function as rt"
+        );
+        
     }
 
     #[test]
