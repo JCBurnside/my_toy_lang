@@ -40,7 +40,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
         if self.source_stream.peek() == Some(&'\n') {
             self.start_line = true;
             self.source_stream.advance_by(1).unwrap();
-            return self.lex();
+            return (Token::NewLine, self.curr_pos);
         }
 
         let (ws, count) = self
@@ -73,7 +73,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
             self.curr_pos += 1;
             if c == '\n' {
                 self.start_line = true;
-                return self.lex();
+                return (Token::NewLine, self.curr_pos);
             }
 
             match c {
@@ -338,12 +338,13 @@ mod tests {
             TokenStream::from_source("\n\t")
                 .map(|(a, _)| a)
                 .collect_vec(),
-            [Token::BeginBlock, Token::EoF],
+            [Token::NewLine, Token::BeginBlock, Token::EoF],
             "Begin block"
         )
     }
 
     #[test]
+    #[ignore = "Used only for debugging tests.  for specific cases"]
     fn singled_out() {
         assert_eq!(
             TokenStream::from_source("\n\tlet")
@@ -403,21 +404,24 @@ let baz = "foo bar baz"
 let group_test arg : ( int32 -> int32 ) -> int32
 "#
             )
-            .map(|(a, _)| dbg!(a))
+            .map(|(a, _)| a)
             .collect_vec(),
             #[rustfmt::skip]
             [
-                Let, Ident("depth1".to_owned()), Op("=".to_owned()),
+                Let, Ident("depth1".to_owned()), Op("=".to_owned()), NewLine,
                 BeginBlock,
-                    Let, Ident("depth2".to_owned()), Op("=".to_owned()),
+                    Let, Ident("depth2".to_owned()), Op("=".to_owned()), NewLine,
                     BeginBlock,
-                        CharLiteral("c".to_owned()),
+                        CharLiteral("c".to_owned()), NewLine,
                     EndBlock,
-                    Return, FloatingPoint(false,"1.0".to_owned()),
+                    Return, FloatingPoint(false,"1.0".to_owned()), NewLine,
+                    NewLine,
                 EndBlock,
-                Let, Ident("bar".to_owned()), Colon, Ident("int32".to_owned()), Op("=".to_owned()), Integer(false,"1".to_owned()),
-                Let, Ident("baz".to_owned()), Op("=".to_owned()),  StringLiteral("foo bar baz".to_owned()),
-                Let, Ident("group_test".to_owned()), Ident("arg".to_owned()), Colon, GroupOpen, Ident("int32".to_owned()), Arrow, Ident("int32".to_owned()), GroupClose, Arrow, Ident("int32".to_owned()),
+                Let, Ident("bar".to_owned()), Colon, Ident("int32".to_owned()), Op("=".to_owned()), Integer(false,"1".to_owned()),NewLine,
+                NewLine,
+                Let, Ident("baz".to_owned()), Op("=".to_owned()),  StringLiteral("foo bar baz".to_owned()),NewLine,
+                NewLine,
+                Let, Ident("group_test".to_owned()), Ident("arg".to_owned()), Colon, GroupOpen, Ident("int32".to_owned()), Arrow, Ident("int32".to_owned()), GroupClose, Arrow, Ident("int32".to_owned()),NewLine,
                 EoF,
             ]
         )
@@ -431,17 +435,43 @@ let group_test arg : ( int32 -> int32 ) -> int32
             TokenStream::from_source(SRC).map(|(a, _)| a).collect_vec(),
             #[rustfmt::skip]
             [
-                Let, Ident("foo".to_owned()), Colon, Ident("int32".to_owned()), Op("=".to_owned()), Integer(false, "3".to_owned()),
-                Let, Ident("bar".to_owned()), Ident("quz".to_owned()), Colon, Ident("int32".to_owned()), Arrow, Ident("int32".to_owned()), Op("=".to_owned()),
+                Let, Ident("foo".to_owned()), Colon, Ident("int32".to_owned()), Op("=".to_owned()), Integer(false, "3".to_owned()),NewLine,
+                NewLine,
+                Let, Ident("bar".to_owned()), Ident("quz".to_owned()), Colon, Ident("int32".to_owned()), Arrow, Ident("int32".to_owned()), Op("=".to_owned()),NewLine,
                 BeginBlock,
-                    Let, Ident("baz".to_owned()), Colon, Ident("str".to_owned()), Op("=".to_owned()), StringLiteral("merp \\\" yes".to_owned()),
-                    Return, Integer(false, "2".to_owned()),
+                    Let, Ident("baz".to_owned()), Colon, Ident("str".to_owned()), Op("=".to_owned()), StringLiteral("merp \\\" yes".to_owned()),NewLine,
+                    Return, Integer(false, "2".to_owned()),NewLine,
                 EndBlock,
-                Let, Op("^^".to_owned()), Ident("lhs".to_owned()), Ident("rhs".to_owned()), Colon, Ident("int32".to_owned()), Arrow, Ident("int32".to_owned()), Arrow, Ident("int32".to_owned()), Op("=".to_owned()),
+                NewLine,
+                Let, Op("^^".to_owned()), Ident("lhs".to_owned()), Ident("rhs".to_owned()), Colon, Ident("int32".to_owned()), Arrow, Ident("int32".to_owned()), Arrow, Ident("int32".to_owned()), Op("=".to_owned()),NewLine,
                 BeginBlock,
-                    Ident("bar".to_string()), Ident("foo".to_owned()),
+                    Ident("bar".to_string()), Ident("foo".to_owned()),NewLine,
                     Return, Integer(false, "1".to_owned()),
                 EoF
+            ]
+        )
+    }
+
+    #[test]
+    fn chain_fn_calls() {
+        const SRC: &'static str = r#"
+let main _ : int32 -> int32 = 
+    put_int32 100
+    print_str "v"
+    return 32
+"#;
+        use Token::*;
+        assert_eq!(
+            TokenStream::from_source(SRC).map(|(a, _)| a).collect_vec(),
+            #[rustfmt::skip]
+            [
+            NewLine,
+            Let, Ident("main".to_owned()), Ident("_".to_owned()), Colon, Ident("int32".to_owned()), Arrow, Ident("int32".to_owned()), Op("=".to_owned()), NewLine,
+            BeginBlock,
+                Ident("put_int32".to_owned()), Integer(false,"100".to_owned()), NewLine,
+                Ident("print_str".to_owned()), StringLiteral("v".to_owned()), NewLine,
+                Return, Integer(false, "32".to_owned()), NewLine,
+            EoF
             ]
         )
     }

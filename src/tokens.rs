@@ -13,6 +13,7 @@ pub enum Token {
 
     Op(String),
     //meta tokens
+    NewLine,    //needed due to how fn args are parsed.  largerly ignored
     Arrow,      // ->
     GroupOpen,  // (
     GroupClose, // )
