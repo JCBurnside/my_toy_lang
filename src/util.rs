@@ -1,7 +1,6 @@
 use std::{rc::Rc, sync::Arc};
 
-
-pub trait ExtraUtilFunctions : Sized {
+pub trait ExtraUtilFunctions: Sized {
     fn boxed(self) -> Box<Self> {
         Box::new(self)
     }
@@ -13,6 +12,4 @@ pub trait ExtraUtilFunctions : Sized {
         Arc::new(self)
     }
 }
-impl <T> ExtraUtilFunctions for T {
-    
-}
+impl<T> ExtraUtilFunctions for T {}

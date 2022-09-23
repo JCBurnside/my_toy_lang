@@ -1,2 +1,4 @@
-let main _ : int -> int = 
-    print "foo"
+let main _ : int32 -> int32 = 
+    put_int32 100
+    print_str "boo\nboo"
+    return 32
