@@ -1,15 +1,11 @@
 use std::{collections::HashMap, iter::once, rc::Rc};
 
 use inkwell::{
-    context::Context,
-    types::{
-        AnyType, AnyTypeEnum, BasicType, BasicTypeEnum, FunctionType,
-    },
-    AddressSpace,
+    types::{AnyType, AnyTypeEnum, BasicType, BasicTypeEnum, FunctionType},
 };
 use itertools::Itertools;
 
-use crate::util::ExtraUtilFunctions;
+use crate::{util::ExtraUtilFunctions, types::{self, ResolvedType, TypeResolver, resolve_from_name}};
 
 #[derive(PartialEq, Debug)]
 #[allow(unused)]
@@ -24,8 +20,8 @@ pub enum Expr {
         operand: Box<Expr>,
     },
     FnCall {
-        ident: String,
-        args: Vec<Expr>,
+        value: Box<Expr>,//ideally this should be of FnCall | Value.  checking needed
+        arg: Option<Box<Expr>>,
     },
     Return {
         expr: Box<Expr>,
@@ -36,6 +32,9 @@ pub enum Expr {
     Literal {
         value: String,
         ty: TypeName,
+    },
+    ValueRead {
+        ident : String,
     },
     Declaration {
         is_op: bool,
@@ -52,49 +51,45 @@ pub enum TypeName {
     ValueType(String),
 }
 
-// impl TypeName {
-//     fn collapse_function(&self) -> (Vec<TypeName>,TypeName) { // (args, rt)
-//         match self {
-
-//         }
-//     }
-// }
-
-pub enum TypedExpr<'ctx> {
+pub enum TypedExpr {
     BinaryOpCall {
         ident: String,
-        rt: Rc<dyn BasicType<'ctx> + 'ctx>,
-        lhs: Box<TypedExpr<'ctx>>,
-        rhs: Box<TypedExpr<'ctx>>,
+        rt: ResolvedType,
+        lhs: Box<TypedExpr>,
+        rhs: Box<TypedExpr>,
     },
     UnaryOpCall {
         ident: String,
-        rt: Rc<dyn BasicType<'ctx> + 'ctx>,
-        operand: Box<TypedExpr<'ctx>>,
+        rt: ResolvedType,
+        operand: Box<TypedExpr>,
     },
     FnCall {
-        ident: String,
-        rt: Rc<dyn BasicType<'ctx> + 'ctx>,
-        args: Vec<TypedExpr<'ctx>>,
+        value : Box<TypedExpr>,
+        rt: ResolvedType,
+        arg: Option<Box<TypedExpr>>,
     },
     Return {
-        rt: Rc<dyn BasicType<'ctx> + 'ctx>,
-        expr: Box<TypedExpr<'ctx>>,
+        rt: ResolvedType,
+        expr: Box<TypedExpr>,
     },
     Literal {
-        rt: Rc<dyn BasicType<'ctx> + 'ctx>,
+        rt: ResolvedType,
         value: String,
     },
+    ValueRead {
+        rt: ResolvedType,
+        ident : String
+    },
     Block {
-        rt: Rc<dyn BasicType<'ctx> + 'ctx>,
-        sub: Vec<TypedExpr<'ctx>>,
+        rt: ResolvedType,
+        sub: Vec<TypedExpr>,
     },
     Declaration {
         is_op: bool,
         ident: String,
-        ty: ResolvedType<'ctx>,
+        ty: ResolvedType,
         args: Vec<String>,
-        value: Box<TypedExpr<'ctx>>,
+        value: Box<TypedExpr>,
     },
 }
 
@@ -109,23 +104,23 @@ pub enum TypingError {
     ArgCountMismatch,
 }
 
-impl<'ctx> TypedExpr<'ctx> {
+impl<'ctx> TypedExpr {
     pub fn try_from(
         ctx: &'ctx inkwell::context::Context,
-        types: &HashMap<String, BasicTypeEnum<'ctx>>,
-        functions: &HashMap<String, FunctionType<'ctx>>,
+        type_resolver: &TypeResolver<'ctx>,
+        values : HashMap<String,ResolvedType>,
         expr: Expr,
     ) -> Result<Self, TypingError> {
         match expr {
             Expr::BinaryOpCall { ident, lhs, rhs } => match &ident[..] {
                 "+" | "-" | "/" | "*" => {
-                    let lhs = Self::try_from(ctx, types, functions, *lhs)?;
-                    let rhs = Self::try_from(ctx, types, functions, *rhs)?;
-                    if rhs.get_rt(types).as_any_type_enum() == lhs.get_rt(types).as_any_type_enum()
+                    let lhs = Self::try_from(ctx, type_resolver, values.clone(), *lhs)?;
+                    let rhs = Self::try_from(ctx, type_resolver, values, *rhs)?;
+                    if rhs.get_rt() == lhs.get_rt()
                     {
                         Ok(Self::BinaryOpCall {
                             ident: ident,
-                            rt: rhs.get_rt(types),
+                            rt: rhs.get_rt(),
                             lhs: lhs.boxed(),
                             rhs: rhs.boxed(),
                         })
@@ -134,11 +129,12 @@ impl<'ctx> TypedExpr<'ctx> {
                     }
                 }
                 "**" => {
-                    let lhs = Self::try_from(ctx, types, functions, *lhs)?;
-                    let rhs = Self::try_from(ctx, types, functions, *rhs)?;
-                    let lhs_ty = lhs.get_rt(types);
-                    if lhs_ty.as_basic_type_enum().is_int_type()
-                        && lhs_ty.as_basic_type_enum() == rhs.get_rt(types).as_basic_type_enum()
+                    let lhs = Self::try_from(ctx, type_resolver,  values.clone(), *lhs)?;
+                    let rhs = Self::try_from(ctx, type_resolver,  values, *rhs)?;
+                    let lhs_ty = lhs.get_rt();
+                    if 
+                        lhs_ty.is_float()
+                        && lhs_ty == rhs.get_rt()
                     {
                         Ok(Self::BinaryOpCall {
                             ident,
@@ -153,50 +149,57 @@ impl<'ctx> TypedExpr<'ctx> {
                 _ => Err(TypingError::OpNotSupported),
             },
             Expr::UnaryOpCall { ident, operand } => {
-                if let Some(type_name) = functions.get(&ident) {
-                    match type_name.as_any_type_enum() {
-                        AnyTypeEnum::FunctionType(ty) => Ok(Self::UnaryOpCall {
-                            ident,
-                            rt: Rc::new(ty.get_return_type().unwrap()),
-                            operand: Box::new(Self::try_from(ctx, types, functions, *operand)?),
-                        }),
-                        _ => unreachable!(),
+                if let Some(type_name) = values.get(&ident) {
+                    if let ResolvedType::Function { returns,.. } = type_name {
+                        Ok(Self::UnaryOpCall { ident, rt: returns.as_ref().clone(), operand: Self::try_from(ctx, type_resolver, values, *operand)?.boxed() })
+                    } else {
+                        Err(TypingError::UnknownType)
                     }
-                } else {
+                 } else {
                     Err(TypingError::FnNotDelcared)
                 }
             }
-            Expr::FnCall { ident, args } => {
-                if let Some(type_name) = functions.get(&ident) {
-                    match type_name.as_any_type_enum() {
-                        AnyTypeEnum::FunctionType(ty) => Ok(Self::FnCall {
-                            ident,
-                            rt: Rc::new(ty.get_return_type().unwrap()),
-                            args: args
-                                .into_iter()
-                                .map(|arg| Self::try_from(ctx, types, functions, arg))
-                                .collect::<Result<Vec<_>, _>>()?,
-                        }),
-                        _ => unreachable!(),
-                    }
-                } else {
-                    Err(TypingError::FnNotDelcared)
-                }
+            Expr::FnCall { value: fun, arg } => {
+                todo!()
+                // if let Some(type_name) = functions.get(&ident) {
+                //     if let ResolvedType::Function { returns, .. } = type_name {
+                //         Ok(Self::FnCall { 
+                //             fun : Self::try_from(ctx, type_resolver, functions, fun)?.boxed(),
+                //             rt: returns.as_ref().clone(), 
+                //             arg : arg.map(|arg| Self::try_from(ctx, type_resolver, functions, *arg).unwrap().boxed())
+                //         })
+                //     } else {
+                //         unreachable!()
+                //     }
+                // } else {
+                //     Err(TypingError::FnNotDelcared)
+                // }
             }
             Expr::Return { expr } => {
-                let expr = Self::try_from(ctx, types, functions, *expr)?;
+                let expr = Self::try_from(ctx, type_resolver, values, *expr)?;
                 Ok(Self::Return {
-                    rt: expr.get_rt(types),
+                    rt: expr.get_rt(),
                     expr: Box::new(expr),
                 })
             }
             Expr::Block { sub } => {
+                let mut functions = values.clone();
                 let sub: Vec<TypedExpr> = sub
                     .into_iter()
-                    .map(|expr| Self::try_from(ctx, types, functions, expr))
+                    .map(|expr| {
+                        let fns = functions.clone();
+                        let r = Self::try_from(ctx, type_resolver, fns, expr);
+                        match &r {
+                            Ok(TypedExpr::Declaration {is_op:false,ident, ty,..}) => {
+                                functions.insert(ident.clone(), ty.clone());
+                                r
+                            }
+                            _ => r 
+                        }
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
 
-                let last = sub.last().unwrap().get_rt(types);
+                let last = sub.last().unwrap().get_rt();
                 let valid = sub
                     .iter()
                     .filter_map(|expr| match expr {
@@ -204,7 +207,6 @@ impl<'ctx> TypedExpr<'ctx> {
                         _ => None,
                     })
                     .chain(once(last.clone()))
-                    .map(|ty| ty.as_any_type_enum())
                     .all_equal();
                 if valid {
                     Ok(Self::Block { rt: last, sub })
@@ -213,15 +215,11 @@ impl<'ctx> TypedExpr<'ctx> {
                 }
             }
             Expr::Literal { value, ty } => match ty {
-                TypeName::ValueType(ty) => {
-                    if let Some(ty) = types.get(&ty) {
-                        Ok(Self::Literal {
-                            rt: Rc::new(ty.clone()),
-                            value,
-                        })
-                    } else {
-                        Err(TypingError::UnknownType)
-                    }
+                TypeName::ValueType(_) => {
+                    Ok(Self::Literal {
+                        rt: resolve_from_name(ty),
+                        value,
+                    })
                 }
                 _ => unreachable!(),
             },
@@ -245,9 +243,9 @@ impl<'ctx> TypedExpr<'ctx> {
                         Ok(TypedExpr::Declaration {
                             is_op,
                             ident,
-                            ty: resolve_type(ty.unwrap(), types, ctx).unwrap(),
+                            ty: types::resolve_from_name(ty.unwrap()),
                             args,
-                            value: Self::try_from(ctx, types, functions, *value)?.boxed(),
+                            value: Self::try_from(ctx, type_resolver, values, *value)?.boxed(),
                         })
                     }
                     (Some(TypeName::ValueType(ty)), None) => {
@@ -259,141 +257,22 @@ impl<'ctx> TypedExpr<'ctx> {
                     _ => todo!(),
                 }
             }
+            Expr::ValueRead { ident } => todo!(),
         }
     }
 
     fn get_rt(
         &self,
-        known_types: &HashMap<String, BasicTypeEnum<'ctx>>,
-    ) -> Rc<dyn BasicType<'ctx> + 'ctx> {
+    ) -> ResolvedType {
         match self {
             TypedExpr::BinaryOpCall { rt, .. }
             | TypedExpr::UnaryOpCall { rt, .. }
             | TypedExpr::FnCall { rt, .. }
             | TypedExpr::Return { rt, .. }
             | TypedExpr::Literal { rt, .. }
+            | TypedExpr::ValueRead { rt, .. }
             | TypedExpr::Block { rt, .. } => rt.clone(),
-            TypedExpr::Declaration { .. } => known_types["unit"].clone().into_rc(),
+            TypedExpr::Declaration { .. } => ResolvedType::Unit,
         }
-    }
-}
-
-#[derive(Debug)]
-pub enum ResolvedType<'ctx> {
-    Basic(Rc<dyn BasicType<'ctx> + 'ctx>),
-    Fn(FunctionType<'ctx>),
-}
-impl<'ctx> PartialEq for ResolvedType<'ctx> {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Basic(l0), Self::Basic(r0)) => {
-                l0.as_ref().as_basic_type_enum() == r0.as_ref().as_basic_type_enum()
-            }
-            (Self::Fn(l0), Self::Fn(r0)) => l0 == r0,
-            _ => false,
-        }
-    }
-}
-pub fn resolve_type<'ctx>(
-    ty: TypeName,
-    known_types: &HashMap<String, BasicTypeEnum<'ctx>>,
-    ctx: &'ctx Context,
-) -> Option<ResolvedType<'ctx>> {
-    match ty {
-        TypeName::ValueType(name) => known_types
-            .get(&name)
-            .map(|ty| match ty {
-                BasicTypeEnum::ArrayType(ty) => Rc::new(*ty) as Rc<dyn BasicType<'ctx> + 'ctx>,
-                BasicTypeEnum::FloatType(ty) => Rc::new(*ty) as Rc<dyn BasicType<'ctx> + 'ctx>,
-                BasicTypeEnum::IntType(ty) => Rc::new(*ty) as Rc<dyn BasicType<'ctx> + 'ctx>,
-                BasicTypeEnum::PointerType(ty) => Rc::new(*ty) as Rc<dyn BasicType<'ctx> + 'ctx>,
-                BasicTypeEnum::StructType(ty) => Rc::new(*ty) as Rc<dyn BasicType<'ctx> + 'ctx>,
-                BasicTypeEnum::VectorType(ty) => Rc::new(*ty) as Rc<dyn BasicType<'ctx> + 'ctx>,
-            })
-            .map(ResolvedType::Basic),
-        TypeName::FnType(arg, rt) => {
-            if let TypeName::FnType(_, _) = *rt {
-                let arg = match resolve_type(arg.as_ref().clone(), known_types, ctx)? {
-                    ResolvedType::Basic(b) => b,
-                    ResolvedType::Fn(f) => f.ptr_type(AddressSpace::Generic).into_rc()
-                        as Rc<dyn BasicType<'ctx> + 'ctx>,
-                };
-                resolve_type(rt.as_ref().clone(), known_types, ctx)
-                    .map(|rt| match rt {
-                        ResolvedType::Basic(b) => b,
-                        ResolvedType::Fn(f) => f.ptr_type(AddressSpace::Generic).into_rc()
-                            as Rc<dyn BasicType<'ctx> + 'ctx>,
-                    })
-                    .and_then(|rt| {
-                        Some(
-                            rt.fn_type(&[arg.as_basic_type_enum().into()], false)
-                                .ptr_type(AddressSpace::Generic),
-                        )
-                    })
-                    .map(|f| f.into_rc() as Rc<dyn BasicType<'ctx> + 'ctx>)
-                    .map(ResolvedType::Basic)
-            } else {
-                let arg = match resolve_type(arg.as_ref().clone(), known_types, ctx)? {
-                    ResolvedType::Basic(b) => b,
-                    ResolvedType::Fn(f) => f.ptr_type(AddressSpace::Generic).into_rc()
-                        as Rc<dyn BasicType<'ctx> + 'ctx>,
-                };
-                resolve_type(rt.as_ref().clone(), known_types, ctx)
-                    .map(|rt| match rt {
-                        ResolvedType::Basic(b) => b,
-                        ResolvedType::Fn(f) => f.ptr_type(AddressSpace::Generic).into_rc()
-                            as Rc<dyn BasicType<'ctx> + 'ctx>,
-                    })
-                    .map(|rt| rt.fn_type(&[arg.as_basic_type_enum().into()], false))
-                    .map(ResolvedType::Fn)
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use inkwell::targets::{InitializationConfig, Target};
-
-    use super::*;
-    #[test]
-    fn resolve_type() {
-        Target::initialize_native(&InitializationConfig::default()).unwrap();
-        let ctx = Context::create();
-        let mut known_types: HashMap<String, BasicTypeEnum> = HashMap::new();
-        known_types.insert("int8".to_string(), ctx.i8_type().as_basic_type_enum());
-        known_types.insert("int16".to_string(), ctx.i16_type().as_basic_type_enum());
-        known_types.insert("int32".to_string(), ctx.i32_type().as_basic_type_enum());
-        known_types.insert("int64".to_string(), ctx.i64_type().as_basic_type_enum());
-        known_types.insert("float32".to_string(), ctx.f32_type().as_basic_type_enum());
-        known_types.insert("float64".to_string(), ctx.f64_type().as_basic_type_enum());
-        let ty = TypeName::FnType(
-            TypeName::ValueType("int8".to_string()).into_rc(),
-            TypeName::ValueType("int8".to_string()).into_rc(),
-        );
-        assert_eq!(
-            super::resolve_type(ty, &known_types, &ctx),
-            Some(ResolvedType::Fn(
-                known_types[&"int8".to_string()].fn_type(&[known_types["int8"].into()], false)
-            )),
-            "int8 -> int8"
-        );
-        let ty = TypeName::FnType(
-            TypeName::FnType(
-                TypeName::ValueType("int8".to_string()).into_rc(),
-                TypeName::ValueType("int8".to_string()).into_rc(),
-            )
-            .into_rc(),
-            TypeName::ValueType("int8".to_string()).into_rc(),
-        );
-        let int8 = known_types[&"int8".to_owned()];
-        let fun_arg_t = int8
-            .fn_type(&[int8.into()], false)
-            .ptr_type(AddressSpace::Generic);
-        assert_eq!(
-            super::resolve_type(ty, &known_types, &ctx),
-            Some(ResolvedType::Fn(int8.fn_type(&[fun_arg_t.into()], false))),
-            "( int8 -> int8 ) -> int8"
-        );
     }
 }

@@ -1,4 +1,7 @@
 let main _ : int32 -> int32 = 
     put_int32 100
-    print_str "boo\nboo"
+    print_str "\n"
+    print_str "boo\nboo\n"
+    put_int32 100 + 100
+    print_str "\n"
     return 32

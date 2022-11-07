@@ -1,7 +1,11 @@
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Clone)]
 pub enum Token {
     Let,
     Return,
+    Arrow,      // ->
+    GroupOpen,  // (
+    GroupClose, // )
+    Colon,
     Ident(String),
     // Fn, //to be added latter to distinquish between value and function with 0 args
 
@@ -14,10 +18,6 @@ pub enum Token {
     Op(String),
     //meta tokens
     NewLine,    //needed due to how fn args are parsed.  largerly ignored
-    Arrow,      // ->
-    GroupOpen,  // (
-    GroupClose, // )
-    Colon,
     BeginBlock,
     EndBlock,
     EoF,

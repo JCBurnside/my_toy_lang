@@ -5,44 +5,65 @@ use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
 use inkwell::types::BasicTypeEnum;
-use inkwell::values::{AnyValue, AnyValueEnum, BasicValue, BasicValueEnum, FunctionValue};
+use inkwell::values::{AnyValue, AnyValueEnum, BasicValue, BasicValueEnum, FunctionValue, PointerValue};
+
 use itertools::Itertools;
 
+use multimap::MultiMap;
 
 use crate::ast::TypedExpr;
+use crate::types::{TypeResolver, ResolvedType};
 
 pub struct CodeGen<'ctx> {
     ctx: &'ctx Context,
     module: Module<'ctx>,
     builder: Builder<'ctx>,
+    type_resolver : TypeResolver<'ctx>,
     known_functions: HashMap<String, FunctionValue<'ctx>>,
-    known_types: HashMap<String, BasicTypeEnum<'ctx>>,
+    known_ops: MultiMap<String, FunctionValue<'ctx>>,
     known_values: HashMap<String, BasicValueEnum<'ctx>>,
-    top_level: bool,
+    locals : HashMap<String, PointerValue<'ctx>>
 }
 
 impl<'ctx> CodeGen<'ctx> {
-
     pub fn with_module(
         ctx: &'ctx Context,
-        known_functions: HashMap<String, FunctionValue<'ctx>>,
-        known_types: HashMap<String, BasicTypeEnum<'ctx>>,
-        known_values: HashMap<String, BasicValueEnum<'ctx>>,
         module: Module<'ctx>,
+        mut type_resolver : TypeResolver<'ctx>,
+        seed_functions : HashMap<String,ResolvedType>,
+        known_values : HashMap<String, BasicValueEnum<'ctx>>,
+        seed_ops : MultiMap<String,FunctionValue<'ctx>>
     ) -> Self {
         let builder = ctx.create_builder();
+        let known_functions = seed_functions
+            .into_iter()
+            .map(|(name,ty)| {
+                let ty= module
+                    .get_function(&name)
+                    .unwrap_or_else(|| 
+                        module.add_function(
+                            &name, 
+                            type_resolver.resolve_type_as_any(ty).into_function_type(),
+                            None
+                        )
+                    );
+                (name,ty)
+            })
+            .collect();
+        
         Self {
             ctx,
             module,
             builder,
+            type_resolver,
             known_functions,
-            known_types,
             known_values,
-            top_level: true,
+            known_ops : seed_ops,
+            locals : HashMap::new()
         }
     }
 
-    pub fn compile_expr(&mut self, expr: &TypedExpr<'ctx>) -> AnyValueEnum<'ctx> {
+    pub fn compile_expr(&mut self, expr: &TypedExpr) -> AnyValueEnum<'ctx> {
         match expr {
             TypedExpr::BinaryOpCall {
                 ident,
@@ -50,96 +71,16 @@ impl<'ctx> CodeGen<'ctx> {
                 lhs,
                 rhs,
             } => {
-                let lhs = self.compile_expr(lhs.as_ref());
-                let rhs = self.compile_expr(rhs.as_ref());
+                let lhs: BasicValueEnum = self.compile_expr(lhs.as_ref()).try_into().unwrap();
+                let rhs: BasicValueEnum = self.compile_expr(rhs.as_ref()).try_into().unwrap();
                 match ident.as_str() {
-                    "+" => {
-                        let rt = rt.as_basic_type_enum();
-                        if rt.is_int_type() {
-                            let lhs = lhs.into_int_value();
-                            let rhs = rhs.into_int_value();
-                            self.builder
-                                .build_int_add(lhs, rhs, "tmp_add")
-                                .as_any_value_enum()
-                        } else if rt.is_float_type() {
-                            let lhs = lhs.into_float_value();
-                            let rhs = rhs.into_float_value();
-                            self.builder
-                                .build_float_add(lhs, rhs, "temp_add")
-                                .as_any_value_enum()
-                        } else {
-                            panic!("how did we get here again?");
-                        }
-                    }
-                    "-" => {
-                        let rt = rt.as_basic_type_enum();
-                        if rt.is_int_type() {
-                            let lhs = lhs.into_int_value();
-                            let rhs = rhs.into_int_value();
-                            self.builder
-                                .build_int_sub(lhs, rhs, "tmp_sub")
-                                .as_any_value_enum()
-                        } else if rt.is_float_type() {
-                            let lhs = lhs.into_float_value();
-                            let rhs = rhs.into_float_value();
-                            self.builder
-                                .build_float_sub(lhs, rhs, "tmp_sub")
-                                .as_any_value_enum()
-                        } else {
-                            panic!("how did we get here again?");
-                        }
-                    }
-                    "*" => {
-                        let rt = rt.as_basic_type_enum();
-                        if rt.is_int_type() {
-                            let lhs = lhs.into_int_value();
-                            let rhs = rhs.into_int_value();
-                            self.builder
-                                .build_int_mul(lhs, rhs, "tmp_mul")
-                                .as_any_value_enum()
-                        } else if rt.is_float_type() {
-                            let lhs = lhs.into_float_value();
-                            let rhs = rhs.into_float_value();
-                            self.builder
-                                .build_float_mul(lhs, rhs, "tmp_mul")
-                                .as_any_value_enum()
-                        } else {
-                            panic!("how did we get here again?");
-                        }
-                    }
-                    "/" => {
-                        let rt = rt.as_basic_type_enum();
-                        if rt.is_int_type() {
-                            let lhs = lhs.into_int_value();
-                            let rhs = rhs.into_int_value();
-                            self.builder
-                                .build_int_signed_div(lhs, rhs, "tmp_div")
-                                .as_any_value_enum()
-                        } else if rt.is_float_type() {
-                            let lhs = lhs.into_float_value();
-                            let rhs = rhs.into_float_value();
-                            self.builder
-                                .build_float_div(lhs, rhs, "tmp_div")
-                                .as_any_value_enum()
-                        } else {
-                            panic!("how did we get here again?");
-                        }
-                    }
+                    
                     _ => unreachable!(),
                 }
             }
             TypedExpr::UnaryOpCall { ident, rt, operand } => todo!(),
-            TypedExpr::FnCall { ident, rt, args } => {
-                let fun = self.module.get_function(ident).unwrap();
-                let args = args
-                    .iter()
-                    .map(|expr| convert_to_basic_value(self.compile_expr(expr)).into())
-                    .collect_vec();
-                self.builder
-                    .build_call(dbg!(fun), &args, "tmp")
-                    .try_as_basic_value()
-                    .expect_left("")
-                    .as_any_value_enum()
+            TypedExpr::FnCall { value, rt, arg } => {
+                todo!()
             }
             TypedExpr::Return { rt, expr } => {
                 let sub = self.compile_expr(expr.as_ref());
@@ -149,7 +90,7 @@ impl<'ctx> CodeGen<'ctx> {
                     .try_into()
                     .unwrap()
             }
-            TypedExpr::Literal { rt, value } => match rt.as_ref().as_basic_type_enum() {
+            TypedExpr::Literal { rt, value } => match self.type_resolver.resolve_type_as_basic(rt.clone()) {
                 BasicTypeEnum::StructType(ty) => {
                     let cs = self.ctx.const_string(value.as_bytes(), false);
                     let gs = self.module.add_global(cs.get_type(), None, "");
@@ -196,26 +137,33 @@ impl<'ctx> CodeGen<'ctx> {
                 value,
             } => {
                 match ty {
-                    crate::ast::ResolvedType::Basic(ty) => {
-                        // match ty.as_basic_type_enum() {
-
-                        // }
-                        todo!()
-                    }
-                    crate::ast::ResolvedType::Fn(ty) => {
-                        println!("adding function {} of type {:?}", ident, ty);
-                        let v = self.module.add_function(&ident, ty.clone(), None);
+                    crate::types::ResolvedType::Function { arg, returns } => {
+                        // todo!();
+                        // println!("adding function {} of type {:?}", ident, ty);
+                        let v = self.module.add_function(&ident, self.type_resolver.resolve_type_as_any(ty.clone()).into_function_type(), None);
+                        for (idx,name) in args.iter().enumerate() {
+                            let param = v.get_nth_param(idx as u32).unwrap();
+                            param.set_name(&name);
+                            self.known_values.insert(name.clone(), param);
+                        }
                         let bb = self.ctx.append_basic_block(v, &ident);
                         self.builder.position_at_end(bb);
                         let _ = self.compile_expr(value.as_ref());
                         v.as_any_value_enum()
                     }
+                    _ => {
+                        //type is a basic
+                        todo!()
+                    }
                 }
             }
+            TypedExpr::ValueRead { rt, ident } => {
+                self.known_values.get(ident).map(|fun| fun.as_any_value_enum()).or(self.known_functions.get(ident).map(|fun| fun.as_any_value_enum())).unwrap()
+            },
         }
     }
 
-    pub fn compile_program(mut self, ast: &[TypedExpr<'ctx>]) -> Module<'ctx> {
+    pub fn compile_program(mut self, ast: &[TypedExpr]) -> Module<'ctx> {
         for expr in ast {
             self.compile_expr(expr);
         }

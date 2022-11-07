@@ -1,5 +1,6 @@
 use std::{iter::Peekable, str::Chars};
-struct Lexer<I> {
+#[derive(Clone)]
+struct Lexer<I: Clone> {
     source_stream: I,
     curr_pos: usize,
     whitespaces: Vec<usize>,
@@ -17,7 +18,6 @@ use itertools::Itertools;
 
 use crate::tokens::Token;
 impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
-    #[allow(dead_code)]
     pub fn new<II: IntoIterator<IntoIter = I>>(source: II) -> Self {
         Self {
             source_stream: source.into_iter().peekable(),
@@ -210,7 +210,8 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
     }
 }
 
-pub struct TokenStream<I> {
+#[derive(Clone)]
+pub struct TokenStream<I: Clone> {
     lexer: Lexer<I>,
     ended: bool,
 }
