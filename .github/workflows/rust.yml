@@ -22,16 +22,18 @@ jobs:
       uses: KyleMayes/install-llvm-action@v1.5.3
       with:
         version: "13"
-    - name: set-env
-      uses: allenevans/set-env@v2.0.0
-      with:
-        llvm sys 130 prefix: '${{ env.LLVM_PATH }}'
+    # - name: set-env
+    #   uses: allenevans/set-env@v2.0.0
+    #   with:
+    #     llvm sys 130 prefix: '${{ env.LLVM_PATH }}'
     - name: rust-toolchain
       uses: actions-rs/toolchain@v1.0.6
       with:
         toolchain: nightly
         override: true
         components: rustfmt, clippy, 
+      env:
+        LLVM_SYS_130_PREFIX: ${env.LLVM_PATH}
     - name: Build
       run: cargo build --verbose
     - name: Run tests
