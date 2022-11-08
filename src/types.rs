@@ -10,7 +10,7 @@ use multimap::MultiMap;
 
 use crate::{ast::TypeName, util::ExtraUtilFunctions};
 
-#[derive(Hash,PartialEq, Eq,Clone, Copy)]
+#[derive(Hash,PartialEq, Eq,Clone, Copy, Debug)]
 pub enum IntWidth {
     Eight,
     Sixteen,
@@ -31,7 +31,7 @@ impl IntWidth {
 }
 
 
-#[derive(Hash,PartialEq, Eq,Clone, Copy)]
+#[derive(Hash,PartialEq, Eq,Clone, Copy, Debug)]
 pub enum FloatWidth {
     ThrityTwo,
     SixtyFour,
@@ -46,7 +46,7 @@ impl FloatWidth {
     }
 }
 
-#[derive(Hash,PartialEq, Eq, Clone)]
+#[derive(Hash,PartialEq, Eq, Clone, Debug)]
 pub enum ResolvedType {
     Int{signed:bool,width:IntWidth},
     Float{width:FloatWidth},

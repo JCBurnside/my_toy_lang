@@ -3,6 +3,7 @@
 #![feature(drain_filter)]
 #![feature(let_chains)]
 #![feature(generic_arg_infer)]
+#![feature(if_let_guard)]
 use std::collections::HashMap;
 
 mod ast;
@@ -48,13 +49,15 @@ fn main() {
     // known_functions.insert("put_char".to_string(), put_char_fn);
     // let mut file = String::new();
     // std::io::stdin().read_line(&mut file).unwrap();
-    let contents = include_str!("../samples/simple_print_test.foo");
+    let contents = include_str!("../samples/multi_arg_fun.foo");
     let tokens = TokenStream::from_source(&contents);
     let mut parser = Parser::from_stream(tokens);
 
     let mut ast: Vec<Expr> = Vec::new();
     #[allow(unused_mut)]
     let mut top_level_fns = HashMap::<String,ResolvedType>::new();
+    top_level_fns.insert("print_str".to_string(), ResolvedType::Function { arg:types::STR.boxed(), returns: types::UNIT.boxed() });
+    top_level_fns.insert("put_int32".to_string(), ResolvedType::Function { arg: types::INT32.boxed(), returns: types::UNIT.boxed() });
     while parser.has_next() {
         let expr = parser.next_expr().expect("Parser error");
         match &expr {
@@ -75,9 +78,9 @@ fn main() {
                         panic!("some type in the function is not known")
                     }
                     (Some(TypeName::FnType(_, _)), Some(_)) => {
-                        if top_level_fns.insert(ident.clone(), resolve_from_name(ty.as_ref().cloned().unwrap())).is_some() {
-                            panic!("two functions with same name!");
-                        }
+                        // if top_level_fns.insert(ident.clone(), resolve_from_name(ty.as_ref().cloned().unwrap())).is_some() {
+                        //     panic!("two functions with same name!");
+                        // }
                     }
                     (None, Some(args)) => {
                         // let args = args.iter()
@@ -139,12 +142,12 @@ fn main() {
     let jit = module
         .create_jit_execution_engine(inkwell::OptimizationLevel::None)
         .expect("could not create jit engine");
-    jit.add_global_mapping(&print_fn, langstd::print as usize);
-    jit.add_global_mapping(&put_int32_fn, langstd::put_int32 as usize);
-    let r = unsafe {
-        jit.get_function::<unsafe extern "C" fn(i32) -> i32>("main")
-            .unwrap()
-            .call(0)
-    };
-    println!("result {:?}", r);
+    // jit.add_global_mapping(&print_fn, langstd::print as usize);
+    // jit.add_global_mapping(&put_int32_fn, langstd::put_int32 as usize);
+    // let r = unsafe {
+    //     jit.get_function::<unsafe extern "C" fn(i32) -> i32>("main")
+    //         .unwrap()
+    //         .call(0)
+    // };
+    // println!("result {:?}", r);
 }

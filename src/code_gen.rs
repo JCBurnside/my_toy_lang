@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 use std::convert::TryInto;
+use std::result;
 
+use inkwell::AddressSpace;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
-use inkwell::types::BasicTypeEnum;
+use inkwell::types::{BasicTypeEnum, StructType, BasicType, BasicMetadataTypeEnum};
 use inkwell::values::{AnyValue, AnyValueEnum, BasicValue, BasicValueEnum, FunctionValue, PointerValue};
 
 use itertools::Itertools;
@@ -74,13 +76,64 @@ impl<'ctx> CodeGen<'ctx> {
                 let lhs: BasicValueEnum = self.compile_expr(lhs.as_ref()).try_into().unwrap();
                 let rhs: BasicValueEnum = self.compile_expr(rhs.as_ref()).try_into().unwrap();
                 match ident.as_str() {
-                    
+                    "+"  => match (lhs,rhs) {
+                        (BasicValueEnum::FloatValue(lhs),BasicValueEnum::FloatValue(rhs)) => self.builder.build_float_add(lhs, rhs, "").as_any_value_enum(),
+                        (BasicValueEnum::FloatValue(lhs),BasicValueEnum::IntValue(rhs)) => { 
+                            let rhs = self.builder.build_signed_int_to_float(rhs, lhs.get_type(), "");
+                            self.builder.build_float_add(lhs, rhs, "").as_any_value_enum()
+                        }
+                        (BasicValueEnum::IntValue(lhs),BasicValueEnum::FloatValue(rhs)) => {
+                            let lhs = self.builder.build_signed_int_to_float(lhs, rhs.get_type(), "");
+                            self.builder.build_float_add(lhs, rhs, "").as_any_value_enum()
+                        }
+                        (BasicValueEnum::IntValue(lhs),BasicValueEnum::IntValue(rhs)) => self.builder.build_int_add(lhs, rhs, "").as_any_value_enum(),
+                        _=> unimplemented!("Operation is not currently supported.")
+                    },
+                    "-"  => match (lhs,rhs) {
+                        (BasicValueEnum::FloatValue(lhs),BasicValueEnum::FloatValue(rhs)) => self.builder.build_float_sub(lhs, rhs, "").as_any_value_enum(),
+                        (BasicValueEnum::FloatValue(lhs),BasicValueEnum::IntValue(rhs)) => { 
+                            let rhs = self.builder.build_signed_int_to_float(rhs, lhs.get_type(), "");
+                            self.builder.build_float_sub(lhs, rhs, "").as_any_value_enum()
+                        }
+                        (BasicValueEnum::IntValue(lhs),BasicValueEnum::FloatValue(rhs)) => {
+                            let lhs = self.builder.build_signed_int_to_float(lhs, rhs.get_type(), "");
+                            self.builder.build_float_sub(lhs, rhs, "").as_any_value_enum()
+                        }
+                        (BasicValueEnum::IntValue(lhs),BasicValueEnum::IntValue(rhs)) => self.builder.build_int_sub(lhs, rhs, "").as_any_value_enum(),
+                        _=> unimplemented!("Operation is not currently supported.")
+                    },
+                    "*"  => match (lhs,rhs) {
+                        (BasicValueEnum::FloatValue(lhs),BasicValueEnum::FloatValue(rhs)) => self.builder.build_float_mul(lhs, rhs, "").as_any_value_enum(),
+                        (BasicValueEnum::FloatValue(lhs),BasicValueEnum::IntValue(rhs)) => { 
+                            let rhs = self.builder.build_signed_int_to_float(rhs, lhs.get_type(), "");
+                            self.builder.build_float_mul(lhs, rhs, "").as_any_value_enum()
+                        }
+                        (BasicValueEnum::IntValue(lhs),BasicValueEnum::FloatValue(rhs)) => {
+                            let lhs = self.builder.build_signed_int_to_float(lhs, rhs.get_type(), "");
+                            self.builder.build_float_mul(lhs, rhs, "").as_any_value_enum()
+                        }
+                        (BasicValueEnum::IntValue(lhs),BasicValueEnum::IntValue(rhs)) => self.builder.build_int_mul(lhs, rhs, "").as_any_value_enum(),
+                        _=> unimplemented!("Operation is not currently supported.")
+                    },
+                    "/"  => match (lhs,rhs) {
+                        (BasicValueEnum::FloatValue(lhs),BasicValueEnum::FloatValue(rhs)) => self.builder.build_float_div(lhs, rhs, "").as_any_value_enum(),
+                        (BasicValueEnum::FloatValue(lhs),BasicValueEnum::IntValue(rhs)) => { 
+                            let rhs = self.builder.build_signed_int_to_float(rhs, lhs.get_type(), "");
+                            self.builder.build_float_div(lhs, rhs, "").as_any_value_enum()
+                        }
+                        (BasicValueEnum::IntValue(lhs),BasicValueEnum::FloatValue(rhs)) => {
+                            let lhs = self.builder.build_signed_int_to_float(lhs, rhs.get_type(), "");
+                            self.builder.build_float_div(lhs, rhs, "").as_any_value_enum()
+                        }
+                        (BasicValueEnum::IntValue(lhs),BasicValueEnum::IntValue(rhs)) => self.builder.build_int_signed_div(lhs, rhs, "").as_any_value_enum(),
+                        _=> unimplemented!("Operation is not currently supported.")
+                    }
                     _ => unreachable!(),
                 }
             }
             TypedExpr::UnaryOpCall { ident, rt, operand } => todo!(),
             TypedExpr::FnCall { value, rt, arg } => {
-                todo!()
+                todo!();
             }
             TypedExpr::Return { rt, expr } => {
                 let sub = self.compile_expr(expr.as_ref());
@@ -138,17 +191,60 @@ impl<'ctx> CodeGen<'ctx> {
             } => {
                 match ty {
                     crate::types::ResolvedType::Function { arg, returns } => {
-                        // todo!();
-                        // println!("adding function {} of type {:?}", ident, ty);
-                        let v = self.module.add_function(&ident, self.type_resolver.resolve_type_as_any(ty.clone()).into_function_type(), None);
-                        for (idx,name) in args.iter().enumerate() {
-                            let param = v.get_nth_param(idx as u32).unwrap();
-                            param.set_name(&name);
-                            self.known_values.insert(name.clone(), param);
-                        }
-                        let bb = self.ctx.append_basic_block(v, &ident);
+                        
+                        println!("adding function {} of type {:?}", ident, ty);
+                        let mut result_ty = ty.clone();
+                        let mut curried_args = Vec::with_capacity(args.len() - 1);
+                        let mut name = ident.clone();
+                        let args_curry_functions = args.iter().take(args.len()-1).map(|arg| {
+                            let ResolvedType::Function { arg:arg_t, returns } = result_ty.clone() else { unreachable!() };
+                            let arg_t = self.type_resolver.resolve_type_as_basic(*arg_t);
+                            let mut rt_types = vec![self.ctx.i8_type().ptr_type(AddressSpace::Generic).into()];
+                            rt_types.extend(curried_args.iter());
+                            let arg0_types = rt_types.clone(); 
+                            rt_types.push(arg_t);
+                            let fun_t = if curried_args.len() == 0 {
+                                self.ctx.struct_type(&rt_types, false).fn_type(&[arg_t.into()], false)
+                            } else {
+                                let arg0_t = self.ctx.struct_type(&arg0_types, false).ptr_type(AddressSpace::Generic);
+                                self.ctx.struct_type(&rt_types, false).ptr_type(AddressSpace::Generic).fn_type(&[arg0_t.into(),arg_t.into()], false)
+                            };
+                            curried_args.push(arg_t);
+                            result_ty = match *returns{
+                                ResolvedType::Pointer { underlining } if let ResolvedType::Function { .. } = underlining.as_ref() => *underlining,
+                                _ => *returns
+                            };
+                            self.module.add_function(&name, fun_t, None)
+                        }).collect_vec();
+                        
+                        let ResolvedType::Function { arg:arg_t, returns:rt } = result_ty else { unreachable!() };
+                        let rt = self.type_resolver.resolve_type_as_basic(*rt);
+                        let ident2 = ident.clone() + "_impl";
+                        let arg_t = self.type_resolver.resolve_type_as_basic(*arg_t);
+                        let fun_t = if curried_args.len() == 0 {
+                            rt.fn_type(&[arg_t.into()], false)
+                        } else {
+                            let mut arg0_types = vec![self.ctx.i8_type().ptr_type(AddressSpace::Generic).into()];
+                            arg0_types.extend(curried_args.iter());
+                            let arg0_t = self.ctx.struct_type(&arg0_types, false).ptr_type(AddressSpace::Generic);
+                            rt.fn_type(&[arg0_t.into(),arg_t.into()], false)
+                        };
+                        let v = self.module.add_function(&ident2, fun_t, None);
+                        self.known_functions.insert(ident.clone(), v);
+                        let bb = self.ctx.append_basic_block(v, "");
                         self.builder.position_at_end(bb);
-                        let _ = self.compile_expr(value.as_ref());
+                        for (idx,arg_name) in args.iter().enumerate().take(args.len()-1) {
+                            let arg = self.builder.build_alloca(curried_args[idx], arg_name.as_str());
+                            let gep = unsafe { self.builder.build_in_bounds_gep(v.get_first_param().unwrap().into_pointer_value(), &[self.ctx.i32_type().const_zero(),self.ctx.i32_type().const_int((idx+1) as u64, false)], "") };
+                            let value = self.builder.build_load(gep,"");
+                            self.builder.build_store(arg,value);
+                            self.locals.insert(arg_name.clone(), arg.into());
+                        }
+                        let last_param = v.get_last_param().unwrap();
+                        let arg = self.builder.build_alloca(last_param.get_type(), args.last().unwrap());
+                        self.builder.build_store(arg,last_param);
+                        self.locals.insert(args.last().cloned().unwrap(), arg.into());
+                        self.compile_expr(value.as_ref());
                         v.as_any_value_enum()
                     }
                     _ => {
@@ -158,7 +254,12 @@ impl<'ctx> CodeGen<'ctx> {
                 }
             }
             TypedExpr::ValueRead { rt, ident } => {
-                self.known_values.get(ident).map(|fun| fun.as_any_value_enum()).or(self.known_functions.get(ident).map(|fun| fun.as_any_value_enum())).unwrap()
+                self.locals.get(ident)
+                .map(|val| {
+                    self.builder.build_load(*val,"").as_any_value_enum()
+                })
+                .or(self.known_values.get(ident).map(|val| val.as_any_value_enum()))
+                .or(self.known_functions.get(ident).map(|fun| fun.as_any_value_enum())).unwrap()
             },
         }
     }

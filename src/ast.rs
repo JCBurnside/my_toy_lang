@@ -1,7 +1,7 @@
 use std::{collections::HashMap, iter::once, rc::Rc};
 
 use inkwell::{
-    types::{AnyType, AnyTypeEnum, BasicType, BasicTypeEnum, FunctionType},
+    types::{AnyType, AnyTypeEnum, BasicType, BasicTypeEnum, FunctionType}, context::Context,
 };
 use itertools::Itertools;
 
@@ -101,14 +101,14 @@ pub enum TypingError {
     OpNotSupported, //temp.
     UnknownType,
     DoubleTyped,
-    ArgCountMismatch,
+    ArgTypeMismatch,
 }
 
 impl<'ctx> TypedExpr {
     pub fn try_from(
-        ctx: &'ctx inkwell::context::Context,
+        ctx: &'ctx Context,
         type_resolver: &TypeResolver<'ctx>,
-        values : HashMap<String,ResolvedType>,
+        mut values : HashMap<String,ResolvedType>,
         expr: Expr,
     ) -> Result<Self, TypingError> {
         match expr {
@@ -119,7 +119,7 @@ impl<'ctx> TypedExpr {
                     if rhs.get_rt() == lhs.get_rt()
                     {
                         Ok(Self::BinaryOpCall {
-                            ident: ident,
+                            ident,
                             rt: rhs.get_rt(),
                             lhs: lhs.boxed(),
                             rhs: rhs.boxed(),
@@ -159,21 +159,23 @@ impl<'ctx> TypedExpr {
                     Err(TypingError::FnNotDelcared)
                 }
             }
-            Expr::FnCall { value: fun, arg } => {
-                todo!()
-                // if let Some(type_name) = functions.get(&ident) {
-                //     if let ResolvedType::Function { returns, .. } = type_name {
-                //         Ok(Self::FnCall { 
-                //             fun : Self::try_from(ctx, type_resolver, functions, fun)?.boxed(),
-                //             rt: returns.as_ref().clone(), 
-                //             arg : arg.map(|arg| Self::try_from(ctx, type_resolver, functions, *arg).unwrap().boxed())
-                //         })
-                //     } else {
-                //         unreachable!()
-                //     }
-                // } else {
-                //     Err(TypingError::FnNotDelcared)
-                // }
+            Expr::FnCall { value, arg } => {
+                let value = TypedExpr::try_from(ctx, type_resolver, values.clone(), *value)?;
+                let ResolvedType::Function { arg : arg_t_expected, returns } = value.get_rt() else { return Err(TypingError::ArgTypeMismatch) };
+                let arg = arg.map(|arg| TypedExpr::try_from(ctx, type_resolver, values.clone(), *arg));
+                if arg.is_some() {
+                    if arg.as_ref().map_or(false, Result::is_err) {
+                        return arg.unwrap();
+                    }
+                }
+                let arg = arg.map(|arg| arg.unwrap());
+                let arg_t = arg.as_ref().map(|arg| arg.get_rt());
+                if (arg_t_expected.as_ref() == &ResolvedType::Unit && arg_t.is_none())
+                    || arg_t_expected.as_ref() == arg_t.as_ref().unwrap() {
+                        Ok(TypedExpr::FnCall { value : value.boxed(), rt: *returns, arg : arg.map(|arg| arg.boxed()) })
+                } else {
+                    Err(TypingError::ArgTypeMismatch)
+                }
             }
             Expr::Return { expr } => {
                 let expr = Self::try_from(ctx, type_resolver, values, *expr)?;
@@ -234,12 +236,18 @@ impl<'ctx> TypedExpr {
                     (Some(_), Some(args)) if args.iter().any(|(_, it)| it.is_some()) => {
                         Err(TypingError::DoubleTyped)
                     }
-                    (Some(TypeName::ValueType(_)), Some(_)) => Err(TypingError::ArgCountMismatch), //should be no args.  will need to change when fn keyword is introduced.
+                    (Some(TypeName::ValueType(_)), Some(_)) => Err(TypingError::ArgTypeMismatch), //should be no args.  will need to change when fn keyword is introduced.
                     (None, Some(args)) if args.iter().any(|(_, it)| it.is_none()) => {
                         Err(TypingError::UnknownType)
                     }
                     (Some(TypeName::FnType(_, _)), Some(args)) => {
                         let args = args.into_iter().map(|(it, _)| it).collect_vec();
+                        let mut curr = ty.clone().unwrap();
+                        for arg in args.iter() {
+                            let TypeName::FnType(arg_t,next) = curr else { unreachable!() };
+                            values.insert(arg.clone(), types::resolve_from_name(arg_t.as_ref().clone()));
+                            curr = next.as_ref().clone();
+                        }
                         Ok(TypedExpr::Declaration {
                             is_op,
                             ident,
@@ -257,7 +265,10 @@ impl<'ctx> TypedExpr {
                     _ => todo!(),
                 }
             }
-            Expr::ValueRead { ident } => todo!(),
+            Expr::ValueRead { ident } => Ok(Self::ValueRead { 
+                rt: values.get(&ident).unwrap().clone(),
+                ident
+            }),
         }
     }
 

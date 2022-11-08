@@ -144,6 +144,8 @@ where
                             values.push(self.value()?)
                         } else if let Some((Token::Op(_),_)) = test {
                             values.push(self.binary_op()?)
+                        } else if let Some((Token::NewLine,_)) = test {
+                            values.push(self.value()?)
                         } else {
                             unimplemented!()
                         }
@@ -154,7 +156,24 @@ where
                         | Token::FloatingPoint(_, _)
                         | Token::CharLiteral(_)
                         | Token::StringLiteral(_)
-                    ) => values.push(self.literal()?),
+                    ) => {
+                        let test = self.stream.clone().nth(1);
+                        if let Some((
+                            | Token::Ident(_)
+                            | Token::Integer(_,_)
+                            | Token::FloatingPoint(_, _)
+                            | Token::CharLiteral(_)
+                            | Token::StringLiteral(_)
+                        ,_)) = test {
+                            values.push(self.literal()?)
+                        } else if let Some((Token::Op(_),_)) = test {
+                            values.push(self.binary_op()?)
+                        } else if let Some((Token::NewLine,_)) = test {
+                            values.push(self.literal()?)
+                        } else {
+                            unimplemented!()
+                        }
+                    },
                     _ => unreachable!()
                     // TODO! add in operator case special handling
                 }
@@ -356,6 +375,7 @@ where
                                 let value = if let Some((Token::BeginBlock,_)) = self.stream.peek() {
                                     self.collect_block()?
                                 } else {
+                                    // TODO check for math expresions 
                                     self.literal()?
                                 };
                                 Ok(ast::Expr::Declaration {
@@ -570,21 +590,30 @@ mod tests {
     #[test]
     #[ignore = "This is for singled out tests"]
     fn for_debugging_only() {
-        let mut parser = Parser::from_source("1 + a * ( 5 - b )");
+        let mut parser = Parser::from_source(include_str!("../samples/multi_arg_fun.foo"));
         assert_eq!(
-            ast::Expr::BinaryOpCall { 
-                ident: "+".to_owned(), 
-                lhs: ast::Expr::Literal { value: "1".to_owned(), ty: ast::TypeName::ValueType("int32".to_string()) }.boxed(),
-                rhs: ast::Expr::BinaryOpCall {
-                    ident : "*".to_owned(),
-                    lhs : ast::Expr::ValueRead { ident: "a".to_owned() }.boxed(),
-                    rhs : ast::Expr::BinaryOpCall { 
-                        ident: "-".to_owned(), 
-                        lhs: ast::Expr::Literal { value: "5".to_owned(), ty: ast::TypeName::ValueType("int32".to_owned()) }.boxed(), 
-                        rhs: ast::Expr::ValueRead { ident: "b".to_owned() }.boxed() 
-                    }.boxed()
-                }.boxed(), 
-            },
+            ast::Expr::Declaration { 
+                is_op: false, 
+                ident: "foo".to_string(), 
+                ty: Some(TypeName::FnType(
+                    TypeName::ValueType("int32".to_string()).into_rc(),
+                    //->
+                    TypeName::FnType(
+                        TypeName::ValueType("int32".to_string()).into_rc(),
+                        //->
+                        TypeName::FnType(
+                            TypeName::ValueType("int32".to_string()).into_rc(), 
+                            //->
+                            TypeName::ValueType("int32".to_string()).into_rc()
+                        ).into_rc()
+                    ).into_rc()
+                )), 
+                args: Some(vec![("a".to_string(),None),("b".to_string(),None),("c".to_string(),None),]), 
+                value: ast::Expr::Block { sub: vec![
+                    ast::Expr::Return { expr: ast::Expr::Literal { value: "0".to_string(), ty: TypeName::ValueType("int32".to_string()) }.boxed() }
+                ] }.boxed()
+            }          
+            ,
             parser.next_expr().unwrap()
         )
     }
@@ -793,7 +822,7 @@ let foo _ : int32 -> ( int32 -> int32 ) =
     }
 
     #[test]
-    fn fn_cain() {
+    fn fn_chain() {
         const SRC: &'static str = r#"
 let main _ : int32 -> int32 = 
     put_int32 100
@@ -886,7 +915,8 @@ let main _ : int32 -> int32 =
                             lhs: ast::Expr::Literal { value: "100".to_owned(), ty: ast::TypeName::ValueType("int32".to_owned()) }.boxed(), 
                             rhs: ast::Expr::Literal { value: "100".to_owned(), ty: ast::TypeName::ValueType("int32".to_owned()) }.boxed() 
                         }.boxed())
-                    }
+                    },
+                    ast::Expr::Return { expr: ast::Expr::Literal{value:"0".to_owned(), ty:ast::TypeName::ValueType("int32".to_owned())}.boxed() }
                 ] }.boxed()
             },
             parser.next_expr().unwrap()
