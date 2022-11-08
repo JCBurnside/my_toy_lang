@@ -2,10 +2,11 @@ name: Rust
 
 on:
   push:
-    branches: [ "*" ]
+    branches: [ "dev", "main" ]
   pull_request:
     branches:
     - main
+    - dev
 
 env:
   CARGO_TERM_COLOR: always
@@ -21,6 +22,10 @@ jobs:
       uses: KyleMayes/install-llvm-action@v1.5.3
       with:
         version: "13"
+    - name: set-env
+      uses: allenevans/set-env@v2.0.0
+      with:
+        llvm_sys_130_prefix: '${{ env.LLVM_PATH }}'
     - name: rust-toolchain
       uses: actions-rs/toolchain@v1.0.6
       with:
