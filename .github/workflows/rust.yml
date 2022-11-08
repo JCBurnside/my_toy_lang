@@ -33,7 +33,7 @@ jobs:
         override: true
         components: rustfmt, clippy, 
       env:
-        LLVM_SYS_130_PREFIX: ${env.LLVM_PATH}
+        LLVM_SYS_130_PREFIX: ${{ env.LLVM_PATH }}
     - name: Build
       run: cargo build --verbose
     - name: Run tests
