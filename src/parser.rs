@@ -170,7 +170,10 @@ where
                             values.push(self.binary_op()?)
                         } else if let Some((Token::NewLine,_)) = test {
                             values.push(self.literal()?)
-                        } else {
+                        } else if let None = test {
+                            values.push(self.literal()?)
+                        }
+                        else{ 
                             unimplemented!()
                         }
                     },
@@ -475,9 +478,27 @@ where
                     let _ = token_iter.next();
                 },
                 Token::Ident(_) => {
-                    let Some((Token::Ident(ident),_)) = token_iter.next() else {unreachable!()};
-                    // TODO! add handling of functions in expr or require braces around it.
-                    output.push(ShuntingYardOptions::Expr(ast::Expr::ValueRead { ident }));
+                    if let Some((
+                        Token::Ident(_)
+                        |Token::CharLiteral(_)
+                        |Token::StringLiteral(_)
+                        |Token::FloatingPoint(_, _)
+                        |Token::Integer(_, _)
+                        |Token::GroupOpen,_)) = token_iter.clone().nth(1) {
+                        let sub_tokens = token_iter.clone().take_while(|(t,_)| match t {
+                            Token::GroupClose => {group_opens -= 1; group_opens >= 0},
+                            Token::GroupOpen => {group_opens+= 1; true},
+                            Token::Ident(_) | Token::FloatingPoint(_, _) | Token::Integer(_, _)=> true,
+                            Token::Op(_) => group_opens>=0,
+                            _ => false  
+                        }).collect_vec();
+                        token_iter.advance_by(sub_tokens.len());
+                        let result = Parser::from_stream(sub_tokens.into_iter()).next_expr()?;
+                        output.push(ShuntingYardOptions::Expr(result))
+                    } else {
+                        let Some((Token::Ident(ident),_)) = token_iter.next() else {unreachable!()};
+                        output.push(ShuntingYardOptions::Expr(ast::Expr::ValueRead { ident }));
+                    }
                 },
                 Token::Integer(_, _) | Token::FloatingPoint(_, _) | Token::CharLiteral(_) | Token::StringLiteral(_) => output.push(ShuntingYardOptions::Expr({
                     let Some((token,span)) = token_iter.next() else { return Err(ParseError { span: (0,0), reason: ParseErrorReason::UnknownError })};
@@ -590,32 +611,8 @@ mod tests {
     #[test]
     #[ignore = "This is for singled out tests"]
     fn for_debugging_only() {
-        let mut parser = Parser::from_source(include_str!("../samples/multi_arg_fun.foo"));
-        assert_eq!(
-            ast::Expr::Declaration { 
-                is_op: false, 
-                ident: "foo".to_string(), 
-                ty: Some(TypeName::FnType(
-                    TypeName::ValueType("int32".to_string()).into_rc(),
-                    //->
-                    TypeName::FnType(
-                        TypeName::ValueType("int32".to_string()).into_rc(),
-                        //->
-                        TypeName::FnType(
-                            TypeName::ValueType("int32".to_string()).into_rc(), 
-                            //->
-                            TypeName::ValueType("int32".to_string()).into_rc()
-                        ).into_rc()
-                    ).into_rc()
-                )), 
-                args: Some(vec![("a".to_string(),None),("b".to_string(),None),("c".to_string(),None),]), 
-                value: ast::Expr::Block { sub: vec![
-                    ast::Expr::Return { expr: ast::Expr::Literal { value: "0".to_string(), ty: TypeName::ValueType("int32".to_string()) }.boxed() }
-                ] }.boxed()
-            }          
-            ,
-            parser.next_expr().unwrap()
-        )
+        let mut parser = Parser::from_source("foo 1 + bar 2");
+        println!("{:?}",parser.next_expr().unwrap())
     }
     #[test]
     fn individual_simple_expressions() {
