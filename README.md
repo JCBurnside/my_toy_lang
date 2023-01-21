@@ -1,7 +1,7 @@
 *badges here*
 samples could end up in the STD lib. 
 # NAME TBD
-this is a compiler for as functional programming language.  It has the following syntax
+this is a compiler for a functional programming language.  It has the following syntax
 ## basic syntax
 
 Important note: number of spaces and/or tabs do not matter so long as they are consistent for each block.
