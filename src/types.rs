@@ -59,22 +59,52 @@ pub enum ResolvedType {
     Slice{underlining:Box<ResolvedType>},
     Function{arg:Box<ResolvedType>,returns:Box<ResolvedType>},
     User{name:String},
-    ForwardUser{name:String},
+    // ForwardUser{name:String},
     Alias{actual:Box<ResolvedType>},
+    Generic{name:String},
 }
-pub const INT8 : ResolvedType = ResolvedType::Int { signed: true, width: IntWidth::Eight };
-pub const INT16 : ResolvedType = ResolvedType::Int { signed: true, width: IntWidth::Sixteen };
-pub const INT32 : ResolvedType = ResolvedType::Int { signed: true, width: IntWidth::ThrityTwo };
-pub const INT64 : ResolvedType = ResolvedType::Int { signed: true, width: IntWidth::SixtyFour };
-pub const UINT8 : ResolvedType = ResolvedType::Int { signed: false, width: IntWidth::Eight };
-pub const UINT16 : ResolvedType = ResolvedType::Int { signed: false, width: IntWidth::Sixteen };
-pub const UINT32 : ResolvedType = ResolvedType::Int { signed: false, width: IntWidth::ThrityTwo };
-pub const UINT64 : ResolvedType = ResolvedType::Int { signed: false, width: IntWidth::SixtyFour };
-pub const FLOAT32 : ResolvedType = ResolvedType::Float { width: FloatWidth::ThrityTwo };
-pub const FLOAT64 : ResolvedType = ResolvedType::Float { width: FloatWidth::SixtyFour };
-pub const STR : ResolvedType = ResolvedType::Str;
-pub const CHAR : ResolvedType = ResolvedType::Char;
-pub const UNIT : ResolvedType = ResolvedType::Unit;
+
+impl ResolvedType {
+    pub fn replace_generic(self, name:&str, new_ty : Self) -> Self {
+        match self {
+            Self::Generic { name: old_name } if old_name == name => new_ty,
+            Self::Function { arg, returns } => Self::Function { arg: Box::new(arg.replace_generic(name, new_ty.clone())), returns: Box::new(returns.replace_generic(name, new_ty)) },
+            _ => self
+        }
+    }
+
+    pub fn is_generic(&self) -> bool {
+        match self {
+            Self::Function { arg, returns } => arg.is_generic() || returns.is_generic(),
+            Self::Alias { actual } => actual.is_generic(),
+            Self::Slice { underlining } 
+          | Self::Pointer { underlining } 
+          | Self::Ref { underlining } 
+                => underlining.is_generic(),
+            Self::Generic { .. } => true,
+            _ => false,
+        }
+    }
+}
+
+#[allow(unused)]
+mod consts {
+    use super::*;
+    pub const INT8 : ResolvedType = ResolvedType::Int { signed: true, width: IntWidth::Eight };
+    pub const INT16 : ResolvedType = ResolvedType::Int { signed: true, width: IntWidth::Sixteen };
+    pub const INT32 : ResolvedType = ResolvedType::Int { signed: true, width: IntWidth::ThrityTwo };
+    pub const INT64 : ResolvedType = ResolvedType::Int { signed: true, width: IntWidth::SixtyFour };
+    pub const UINT8 : ResolvedType = ResolvedType::Int { signed: false, width: IntWidth::Eight };
+    pub const UINT16 : ResolvedType = ResolvedType::Int { signed: false, width: IntWidth::Sixteen };
+    pub const UINT32 : ResolvedType = ResolvedType::Int { signed: false, width: IntWidth::ThrityTwo };
+    pub const UINT64 : ResolvedType = ResolvedType::Int { signed: false, width: IntWidth::SixtyFour };
+    pub const FLOAT32 : ResolvedType = ResolvedType::Float { width: FloatWidth::ThrityTwo };
+    pub const FLOAT64 : ResolvedType = ResolvedType::Float { width: FloatWidth::SixtyFour };
+    pub const STR : ResolvedType = ResolvedType::Str;
+    pub const CHAR : ResolvedType = ResolvedType::Char;
+    pub const UNIT : ResolvedType = ResolvedType::Unit;
+}
+pub use consts::*;
 pub fn resolve_from_name(name:TypeName) -> ResolvedType {
     match name {
         TypeName::FnType(arg, rt) => {
@@ -111,7 +141,6 @@ pub fn resolve_from_name(name:TypeName) -> ResolvedType {
 pub struct TypeResolver<'ctx> {
     known : HashMap<ResolvedType,AnyTypeEnum<'ctx>>,
     ctx : &'ctx Context,
-    unit : StructValue<'ctx>
 }
 
 impl <'ctx> TypeResolver<'ctx> {
@@ -148,7 +177,6 @@ impl <'ctx> TypeResolver<'ctx> {
         Self {
             known,
             ctx,
-            unit,
         }
     }
 
@@ -198,7 +226,7 @@ impl <'ctx> TypeResolver<'ctx> {
                 self.known.insert(ty, rt.fn_type(&[arg.into()], false).as_any_type_enum());
             },
             ResolvedType::User { name } => todo!(),
-            ResolvedType::ForwardUser { name } => todo!(),
+            // ResolvedType::ForwardUser { name } => todo!(),
             ResolvedType::Alias { actual } => todo!(),
             _=> unimplemented!()
         }

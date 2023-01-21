@@ -41,6 +41,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
             self.start_line = true;
             self.source_stream.advance_by(1).unwrap();
             return (Token::NewLine, self.curr_pos);
+            // return self.lex()
         }
 
         let (ws, count) = self
@@ -74,6 +75,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
             if c == '\n' {
                 self.start_line = true;
                 return (Token::NewLine, self.curr_pos);
+                // return self.lex()
             }
 
             match c {
@@ -250,6 +252,7 @@ impl<T: Iterator<Item = char> + Clone> Iterator for TokenStream<Peekable<T>> {
         }
     }
 }
+
 #[cfg(test)]
 mod tests {
     use crate::tokens::Token;
@@ -420,9 +423,9 @@ let group_test arg : ( int32 -> int32 ) -> int32
                 EndBlock,
                 Let, Ident("bar".to_owned()), Colon, Ident("int32".to_owned()), Op("=".to_owned()), Integer(false,"1".to_owned()),NewLine,
                 NewLine,
-                Let, Ident("baz".to_owned()), Op("=".to_owned()),  StringLiteral("foo bar baz".to_owned()),NewLine,
+                Let, Ident("baz".to_owned()), Op("=".to_owned()),  StringLiteral("foo bar baz".to_owned()),  NewLine,
                 NewLine,
-                Let, Ident("group_test".to_owned()), Ident("arg".to_owned()), Colon, GroupOpen, Ident("int32".to_owned()), Arrow, Ident("int32".to_owned()), GroupClose, Arrow, Ident("int32".to_owned()),NewLine,
+                Let, Ident("group_test".to_owned()), Ident("arg".to_owned()), Colon, GroupOpen, Ident("int32".to_owned()), Arrow, Ident("int32".to_owned()), GroupClose, Arrow, Ident("int32".to_owned()), NewLine,
                 EoF,
             ]
         )
@@ -461,17 +464,18 @@ let main _ : int32 -> int32 =
     print_str "v"
     return 32
 "#;
+
         use Token::*;
         assert_eq!(
             TokenStream::from_source(SRC).map(|(a, _)| a).collect_vec(),
             #[rustfmt::skip]
             [
             NewLine,
-            Let, Ident("main".to_owned()), Ident("_".to_owned()), Colon, Ident("int32".to_owned()), Arrow, Ident("int32".to_owned()), Op("=".to_owned()), NewLine,
+            Let, Ident("main".to_owned()), Ident("_".to_owned()), Colon, Ident("int32".to_owned()), Arrow, Ident("int32".to_owned()), Op("=".to_owned()),NewLine,
             BeginBlock,
-                Ident("put_int32".to_owned()), Integer(false,"100".to_owned()), NewLine,
-                Ident("print_str".to_owned()), StringLiteral("v".to_owned()), NewLine,
-                Return, Integer(false, "32".to_owned()), NewLine,
+                Ident("put_int32".to_owned()), Integer(false,"100".to_owned()),NewLine,
+                Ident("print_str".to_owned()), StringLiteral("v".to_owned()),NewLine,
+                Return, Integer(false, "32".to_owned()),NewLine,
             EoF
             ]
         )

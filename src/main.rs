@@ -17,6 +17,7 @@ mod types;
 
 use ast::{Expr, TypeName, TypedExpr};
 use code_gen::CodeGen;
+use inkwell::debug_info::DWARFEmissionKind;
 use lexer::TokenStream;
 use parser::Parser;
 use types::ResolvedType;
@@ -24,6 +25,7 @@ use types::TypeResolver;
 
 use inkwell::context::Context;
 use inkwell::targets::{InitializationConfig, Target};
+use inkwell::debug_info::DWARFSourceLanguage;
 
 use multimap::MultiMap;
 
@@ -132,16 +134,35 @@ fn main() {
         HashMap::new(),
         MultiMap::new()
     );
-    let module = code_gen.compile_program(&ast);
+    let module = code_gen.compile_program(ast);
     if let Err(err) = module.verify() {
         println!("{}", err);
     }
     #[cfg(debug_assertions)]
     module.print_to_file("./target/out.txt").unwrap();
     module.link_in_module(std_mod).unwrap();
-    let jit = module
-        .create_jit_execution_engine(inkwell::OptimizationLevel::None)
-        .expect("could not create jit engine");
+    let (DIbuider,DIunit) = module.create_debug_info_builder(
+        false,
+        DWARFSourceLanguage::Haskell, 
+        "testing", 
+        std::env::current_dir().unwrap().to_str().unwrap(), 
+        "", 
+        false, 
+        "", 
+        0, 
+        "", 
+        DWARFEmissionKind::Full, 
+        0,
+        false, 
+        false, 
+        "", 
+        ""
+    );
+    DIbuider.finalize();
+    
+    // let jit = module
+    //     .create_jit_execution_engine(inkwell::OptimizationLevel::None)
+    //     .expect("could not create jit engine");
     // jit.add_global_mapping(&print_fn, langstd::print as usize);
     // jit.add_global_mapping(&put_int32_fn, langstd::put_int32 as usize);
     // let r = unsafe {

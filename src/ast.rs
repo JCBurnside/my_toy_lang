@@ -1,7 +1,7 @@
 use std::{collections::HashMap, iter::once, rc::Rc};
 
 use inkwell::{
-    types::{AnyType, AnyTypeEnum, BasicType, BasicTypeEnum, FunctionType}, context::Context,
+    context::Context,
 };
 use itertools::Itertools;
 
@@ -51,6 +51,7 @@ pub enum TypeName {
     ValueType(String),
 }
 
+#[derive(Debug,Clone)]
 pub enum TypedExpr {
     BinaryOpCall {
         ident: String,
@@ -90,13 +91,15 @@ pub enum TypedExpr {
         ty: ResolvedType,
         args: Vec<String>,
         value: Box<TypedExpr>,
-    },
+        curried: bool,
+        generic : bool,
+    }
 }
 
 #[derive(Debug)]
 pub enum TypingError {
     ReturnTypeMismatch,
-    FnNotDelcared,
+    FnNotDeclared,
     BlockTypeMismatch,
     OpNotSupported, //temp.
     UnknownType,
@@ -110,22 +113,23 @@ impl<'ctx> TypedExpr {
         type_resolver: &TypeResolver<'ctx>,
         mut values : HashMap<String,ResolvedType>,
         expr: Expr,
-    ) -> Result<Self, TypingError> {
-        match expr {
+    ) -> Result<(Self,Vec<Self>), TypingError> {
+        let mut completed_generics = Vec::new();
+        Ok((match expr {
             Expr::BinaryOpCall { ident, lhs, rhs } => match &ident[..] {
                 "+" | "-" | "/" | "*" => {
-                    let lhs = Self::try_from(ctx, type_resolver, values.clone(), *lhs)?;
-                    let rhs = Self::try_from(ctx, type_resolver, values, *rhs)?;
+                    let (lhs, new_generics) = Self::try_from(ctx, type_resolver, values.clone(), *lhs)?;
+                    let (rhs, new_generics) = Self::try_from(ctx, type_resolver, values, *rhs)?;
                     if rhs.get_rt() == lhs.get_rt()
                     {
-                        Ok(Self::BinaryOpCall {
+                        Self::BinaryOpCall {
                             ident,
                             rt: rhs.get_rt(),
                             lhs: lhs.boxed(),
                             rhs: rhs.boxed(),
-                        })
+                        }
                     } else {
-                        Err(TypingError::OpNotSupported)
+                        return Err(TypingError::OpNotSupported)
                     }
                 }
                 "**" => {
@@ -156,7 +160,7 @@ impl<'ctx> TypedExpr {
                         Err(TypingError::UnknownType)
                     }
                  } else {
-                    Err(TypingError::FnNotDelcared)
+                    Err(TypingError::FnNotDeclared)
                 }
             }
             Expr::FnCall { value, arg } => {
@@ -238,6 +242,8 @@ impl<'ctx> TypedExpr {
                     }
                     (Some(TypeName::ValueType(_)), Some(_)) => Err(TypingError::ArgTypeMismatch), //should be no args.  will need to change when fn keyword is introduced.
                     (None, Some(args)) if args.iter().any(|(_, it)| it.is_none()) => {
+
+                        // this is could be generic. or mixed infered and not.
                         Err(TypingError::UnknownType)
                     }
                     (Some(TypeName::FnType(_, _)), Some(args)) => {
@@ -254,25 +260,38 @@ impl<'ctx> TypedExpr {
                             ty: types::resolve_from_name(ty.unwrap()),
                             args,
                             value: Self::try_from(ctx, type_resolver, values, *value)?.boxed(),
+                            curried:if let TypeName::FnType(_, _) = curr { true } else { false },
+                            generic:false,
                         })
+                    }
+                    (Some(TypeName::FnType(_,_)),None) => { //this is a curried or composed function
+                        let ty = types::resolve_from_name(ty.unwrap());
+                        let (value,new_generics) = Self::try_from(ctx, type_resolver, values, *value)?;
+                        completed_generics.extend(new_generics.into_iter());
+                        TypedExpr::Declaration {
+                            is_op,
+                            ident,
+                            generic:ty.is_generic(),
+                            ty,
+                            args: vec![],
+                            value,
+                            curried:true,
+                        }
                     }
                     (Some(TypeName::ValueType(ty)), None) => {
                         todo!()
                     }
-                    (None, Some(args)) => {
-                        let arg_types = todo!();
-                    }
-                    _ => todo!(),
+                    _ => todo!("this type inference is not supported yet."),
                 }
             }
             Expr::ValueRead { ident } => Ok(Self::ValueRead { 
                 rt: values.get(&ident).unwrap().clone(),
                 ident
             }),
-        }
+        },completed_generics))
     }
 
-    fn get_rt(
+    pub fn get_rt(
         &self,
     ) -> ResolvedType {
         match self {

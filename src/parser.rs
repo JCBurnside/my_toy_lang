@@ -134,20 +134,10 @@ where
                 match self.stream.peek().map(|(a,_)| a) {
                     Some(Token::Ident(_)) => {
                         let test = self.stream.clone().nth(1);
-                        if let Some((
-                            | Token::Ident(_)
-                            | Token::Integer(_,_)
-                            | Token::FloatingPoint(_, _)
-                            | Token::CharLiteral(_)
-                            | Token::StringLiteral(_)
-                        ,_)) = test {
-                            values.push(self.value()?)
-                        } else if let Some((Token::Op(_),_)) = test {
+                        if let Some((Token::Op(_),_)) = test {
                             values.push(self.binary_op()?)
-                        } else if let Some((Token::NewLine,_)) = test {
-                            values.push(self.value()?)
                         } else {
-                            unimplemented!()
+                            values.push(self.value()?)
                         }
                     } 
                     Some(Token::GroupOpen) => values.push(self.next_expr()?),
@@ -168,13 +158,9 @@ where
                             values.push(self.literal()?)
                         } else if let Some((Token::Op(_),_)) = test {
                             values.push(self.binary_op()?)
-                        } else if let Some((Token::NewLine,_)) = test {
-                            values.push(self.literal()?)
-                        } else if let None = test {
-                            values.push(self.literal()?)
-                        }
+                        } 
                         else{ 
-                            unimplemented!()
+                            values.push(self.literal()?) 
                         }
                     },
                     _ => unreachable!()
@@ -424,7 +410,8 @@ where
                     break;
                 } else if let Some((Token::EoF, _)) = next {
                     break;
-                } else if let Some((Token::NewLine, _)) = next {
+                }
+                 else if let Some((Token::NewLine, _)) = next {
                     self.stream.next();
                     continue;
                 }
@@ -605,14 +592,27 @@ enum ShuntingYardOptions {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
+    use inkwell::context::Context;
+
     use super::Parser;
-    use crate::ast::{self, TypeName};
+    use crate::ast::{self, TypeName, TypedExpr};
+    use crate::types::{TypeResolver, ResolvedType, self};
     use crate::util::ExtraUtilFunctions;
     #[test]
     #[ignore = "This is for singled out tests"]
     fn for_debugging_only() {
-        let mut parser = Parser::from_source("foo 1 + bar 2");
-        println!("{:?}",parser.next_expr().unwrap())
+        const SRC : &'static str = "let a : int32 -> int32 = foo b";
+        let expr = Parser::from_source(SRC).next_expr().unwrap();
+        let ctx = Context::create();
+        let type_resolver = TypeResolver::new(&ctx);
+        let mut values = HashMap::new();
+        let ty = Parser::from_source("int32 -> int32 -> int32").collect_type().unwrap();     
+        values.insert("foo".to_owned(),types::resolve_from_name(ty));
+
+        let expr = TypedExpr::try_from(&ctx, &type_resolver, values, expr).unwrap(); 
+        println!("{:?}",expr);
     }
     #[test]
     fn individual_simple_expressions() {
