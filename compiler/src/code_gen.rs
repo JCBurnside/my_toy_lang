@@ -22,10 +22,10 @@ pub struct CodeGen<'ctx> {
     builder: Builder<'ctx>,
     type_resolver : TypeResolver<'ctx>,
     known_functions: HashMap<String, FunctionValue<'ctx>>,
-    known_ops: MultiMap<String, FunctionValue<'ctx>>,
+    _known_ops: MultiMap<String, FunctionValue<'ctx>>,
     known_values: HashMap<String, BasicValueEnum<'ctx>>,
     locals : HashMap<String, PointerValue<'ctx>>,
-    curried_locals : HashMap<String, (PointerValue<'ctx>,ResolvedType)>,
+    // curried_locals : HashMap<String, (PointerValue<'ctx>,ResolvedType)>,
 }
 
 impl<'ctx> CodeGen<'ctx> {
@@ -61,9 +61,9 @@ impl<'ctx> CodeGen<'ctx> {
             type_resolver,
             known_functions,
             known_values,
-            known_ops : seed_ops,
+            _known_ops : seed_ops,
             locals : HashMap::new(),
-            curried_locals : HashMap::new(),
+            // curried_locals : HashMap::new(),
         }
     }
 
@@ -71,9 +71,9 @@ impl<'ctx> CodeGen<'ctx> {
         match expr {
             TypedExpr::BinaryOpCall {
                 ident,
-                rt,
                 lhs,
                 rhs,
+                ..
             } => {
                 let lhs: BasicValueEnum = self.compile_expr(*lhs).try_into().unwrap();
                 let rhs: BasicValueEnum = self.compile_expr(*rhs).try_into().unwrap();
@@ -133,44 +133,90 @@ impl<'ctx> CodeGen<'ctx> {
                     _ => unreachable!(),
                 }
             }
-            TypedExpr::UnaryOpCall { ident, rt, operand } => todo!(),
-            TypedExpr::FnCall { value, rt, arg } => {
-                match *value {
-                    TypedExpr::FnCall { value, arg : Some(arg), rt } => {
-                        let value = self.compile_expr(*value);
-                        let value = convert_to_basic_value(value);
-                        let fun_t = self.type_resolver.resolve_type_as_basic(rt).fn_type(&[value.get_type().into(),self.type_resolver.resolve_type_as_basic(arg.get_rt()).into()], false);
-                        let value = value.into_pointer_value();
-                        let fun = self.builder.build_struct_gep(value, 0, "fn").unwrap();
-                        let fun = self.builder.build_bitcast(fun, fun_t.ptr_type(AddressSpace::Generic), "").into_pointer_value();
-                        let fun : CallableValue = fun.try_into().unwrap();
-                        let arg = convert_to_basic_value(self.compile_expr(*arg));
-                        let ret = self.builder.build_call(fun,&[value.into(),arg.into()],"");
-                        ret.as_any_value_enum()
+            TypedExpr::UnaryOpCall { .. } => todo!(),
+            TypedExpr::FnCall { value, arg:Some(arg), rt } => {
+                let arg_t = arg.get_rt();
+                let arg_t = self.type_resolver.resolve_type_as_basic(arg_t);
+                let arg : BasicValueEnum = self.compile_expr(*arg).try_into().unwrap();
+                match self.compile_expr(*value) {
+                    AnyValueEnum::PointerValue(target) => match target.get_type().get_element_type() {
+                            AnyTypeEnum::StructType(strct_t) =>{
+                            let target = self.builder.build_struct_gep(target, 0, "").unwrap();
+                            let ty = if let ResolvedType::Function { .. } = rt {
+                                let mut fields = strct_t.get_field_types();
+                                fields.push(arg_t);
+                                self.ctx.struct_type(&fields,false).as_basic_type_enum()
+                            } else {
+                                self.type_resolver.resolve_type_as_basic(rt)
+                            };
+                            let target_fun = self.builder.build_bitcast(target, ty.fn_type(&[target.get_type().into(),arg_t.into()], false).ptr_type(AddressSpace::default()), "").into_pointer_value();
+                            let target_fun : CallableValue = target_fun.try_into().unwrap();
+                            self.builder.build_call(target_fun,&[target.into(),arg.into()],"").as_any_value_enum()
+                        }
+                        AnyTypeEnum::FunctionType(_) => {
+                            let target : CallableValue = target.try_into().unwrap();
+                            self.builder.build_call(target, &[arg.into()], "").as_any_value_enum()
+                        }
+                        _ => unreachable!()
                     },
-                    TypedExpr::ValueRead { ident,.. } => {
-                        let Some(fun) : Option<CallableValue> = self.known_functions.get(&ident)
-                        .map(|fun|(*fun).into())
-                        .or_else(|| self.curried_locals.get(&ident).map(
-                            |(curry,fun_t)| {
-                                let fun = self.builder.build_struct_gep(*curry, 0, "").unwrap();
-                                // let fun = self.builder.build_bitcast(fun, (*fun_t).ptr_type(AddressSpace::Generic), "").into_pointer_value();
-                                fun.try_into().unwrap()
-                            }
-                        ))  else { unreachable!("Function not found??") };
-
-                        todo!()
+                    AnyValueEnum::FunctionValue(target) => {
+                        self.builder.build_call(target,&[arg.into()], "").as_any_value_enum()
                     }
-                    _ => unimplemented!("funciton value not supported")
+                    _=>unreachable!()
                 }
+
+                // match *value {
+                //     TypedExpr::FnCall { value, arg : Some(arg), rt } => {
+                //         let value = self.compile_expr(*value);
+                //         let value = convert_to_basic_value(value);
+                //         let fun_t = self.type_resolver.resolve_type_as_basic(rt).fn_type(&[value.get_type().into(),self.type_resolver.resolve_type_as_basic(arg.get_rt()).into()], false);
+                //         let value = value.into_pointer_value();
+                //         let fun = self.builder.build_struct_gep(value, 0, "fn").unwrap();
+                //         let fun = self.builder.build_bitcast(fun, fun_t.ptr_type(AddressSpace::Generic), "").into_pointer_value();
+                //         let fun : CallableValue = fun.try_into().unwrap();
+                //         let arg = convert_to_basic_value(self.compile_expr(*arg));
+                //         let ret = self.builder.build_call(fun,&[value.into(),arg.into()],"");
+                        
+                //         ret.as_any_value_enum()
+                //     },
+                //     TypedExpr::ValueRead { ident,.. } => {
+                //         let Some(fun) : Option<CallableValue> = self.known_functions.get(&ident)
+                //         .map(|fun|(*fun).into())
+                //         .or_else(|| self.curried_locals.get(&ident).map(
+                //             |(curry,fun_t)| {
+                //                 let fun = self.builder.build_struct_gep(*curry, 0, "").unwrap();
+                //                 // let fun = self.builder.build_bitcast(fun, (*fun_t).ptr_type(AddressSpace::Generic), "").into_pointer_value();
+                //                 fun.try_into().unwrap()
+                //             }
+                //         ))  else { unreachable!("Function not found??") };
+
+                //         todo!()
+                //     }
+                //     _ => unimplemented!("funciton value not supported")
+                // }
             }
-            TypedExpr::Return { rt, expr } => {
-                let sub = self.compile_expr(*expr);
-                self.builder
-                    .build_return(Some(&convert_to_basic_value(sub)))
-                    .as_any_value_enum()
-                    .try_into()
-                    .unwrap()
+            TypedExpr::FnCall { value, .. } => {
+                //this should only ever be a named value?
+                let TypedExpr::ValueRead { ident,.. } = *value else { unreachable!("not a function name?") };
+                let Some(fun)= self.known_functions.get(&ident) else { unreachable!("function not found") }; 
+
+                self.builder.build_call(*fun,&[],"").as_any_value_enum() 
+            }
+            TypedExpr::Return { expr, .. } => {
+                if let TypedExpr::UnitLiteral = expr.as_ref() {
+                    self.builder
+                        .build_return(None)
+                        .as_any_value_enum()
+                        .try_into()
+                        .unwrap()
+                } else {
+                    let sub = self.compile_expr(*expr);
+                    self.builder
+                        .build_return(Some(&convert_to_basic_value(sub)))
+                        .as_any_value_enum()
+                        .try_into()
+                        .unwrap()
+                }
             }
             TypedExpr::Literal { rt, value } => match self.type_resolver.resolve_type_as_basic(rt.clone()) {
                 BasicTypeEnum::StructType(ty) => {
@@ -205,7 +251,7 @@ impl<'ctx> CodeGen<'ctx> {
                 }
                 _ => unreachable!(),
             },
-            TypedExpr::Block { rt, sub } => {
+            TypedExpr::Block { sub, .. } => {
                 // TODO : Maybe insert more basic blocks as you go down in scope?  could be helpful for life time management
                 sub.into_iter().fold(None,|_,expr| {
 
@@ -213,16 +259,14 @@ impl<'ctx> CodeGen<'ctx> {
                 }).unwrap()
             }
             TypedExpr::Declaration {
-                is_op,
                 ident,
                 ty,
                 args,
                 value,
-                curried,
                 ..
             } => {
                 match & ty {
-                    crate::types::ResolvedType::Function { arg, returns } => {
+                    crate::types::ResolvedType::Function { .. } => {
                         
                         let mut result_ty = ty.clone();
                         let mut curried_args = Vec::with_capacity(args.len() - 1);
@@ -231,15 +275,15 @@ impl<'ctx> CodeGen<'ctx> {
                         let args_curry_functions = args.iter().take(args.len()-1).map(|_| {
                             let ResolvedType::Function { arg:arg_t, returns } = result_ty.clone() else { unreachable!() };
                             let arg_t = self.type_resolver.resolve_type_as_basic(*arg_t);
-                            let mut rt_types = vec![self.ctx.i8_type().ptr_type(AddressSpace::Generic).into()];
+                            let mut rt_types = vec![self.ctx.i8_type().ptr_type(AddressSpace::default()).into()];
                             rt_types.extend(curried_args.iter());
                             let arg0_types = rt_types.clone(); 
                             rt_types.push(arg_t);
                             let fun_t = if curried_args.len() == 0 {
-                                self.ctx.struct_type(&rt_types, false).ptr_type(AddressSpace::Generic).fn_type(&[arg_t.into()], false)
+                                self.ctx.struct_type(&rt_types, false).ptr_type(AddressSpace::default()).fn_type(&[arg_t.into()], false)
                             } else {
-                                let arg0_t = self.ctx.struct_type(&arg0_types, false).ptr_type(AddressSpace::Generic);
-                                self.ctx.struct_type(&rt_types, false).ptr_type(AddressSpace::Generic).fn_type(&[arg0_t.into(),arg_t.into()], false)
+                                let arg0_t = self.ctx.struct_type(&arg0_types, false).ptr_type(AddressSpace::default());
+                                self.ctx.struct_type(&rt_types, false).ptr_type(AddressSpace::default()).fn_type(&[arg0_t.into(),arg_t.into()], false)
                             };
                             curried_args.push(arg_t);
                             result_ty = match *returns{
@@ -250,18 +294,30 @@ impl<'ctx> CodeGen<'ctx> {
                         }).collect_vec();
 
                         let ResolvedType::Function { arg:arg_t, returns:rt } = result_ty else { unreachable!() };
-                        let rt = self.type_resolver.resolve_type_as_basic(*rt);
-                        let ident2 = ident.clone() + "_impl";
-                        let arg_t = self.type_resolver.resolve_type_as_basic(*arg_t);
-                        let fun_t = if curried_args.len() == 0 {
-                            rt.fn_type(&[arg_t.into()], false)
+                        let fun_t = if rt.as_ref() == &ResolvedType::Void {
+                            let rt = self.ctx.void_type();
+                            let arg_t = self.type_resolver.resolve_type_as_basic(*arg_t);
+                            if curried_args.len() == 0 {
+                                rt.fn_type(&[arg_t.into()], false)
+                            } else {
+                                let mut arg0_types = vec![self.ctx.i8_type().ptr_type(AddressSpace::default()).into()];
+                                arg0_types.extend(curried_args.iter());
+                                let arg0_t = self.ctx.struct_type(&arg0_types, false).ptr_type(AddressSpace::default());
+                                rt.fn_type(&[arg0_t.into(),arg_t.into()], false)
+                            }
                         } else {
-                            let mut arg0_types = vec![self.ctx.i8_type().ptr_type(AddressSpace::Generic).into()];
-                            arg0_types.extend(curried_args.iter());
-                            let arg0_t = self.ctx.struct_type(&arg0_types, false).ptr_type(AddressSpace::Generic);
-                            rt.fn_type(&[arg0_t.into(),arg_t.into()], false)
+                            let rt = self.type_resolver.resolve_type_as_basic(*rt);
+                            let arg_t = self.type_resolver.resolve_type_as_basic(*arg_t);
+                            if curried_args.len() == 0 {
+                                rt.fn_type(&[arg_t.into()], false)
+                            } else {
+                                let mut arg0_types = vec![self.ctx.i8_type().ptr_type(AddressSpace::default()).into()];
+                                arg0_types.extend(curried_args.iter());
+                                let arg0_t = self.ctx.struct_type(&arg0_types, false).ptr_type(AddressSpace::default());
+                                rt.fn_type(&[arg0_t.into(),arg_t.into()], false)
+                            }
                         };
-                        let v = self.module.add_function(&ident2, fun_t, None);
+                        let v = self.module.add_function(&ident, fun_t, None);
                         self.known_functions.insert(ident.clone(), v);
                         let bb = self.ctx.append_basic_block(v, "");
                         self.builder.position_at_end(bb);
@@ -286,7 +342,7 @@ impl<'ctx> CodeGen<'ctx> {
                             self.builder.position_at_end(bb);
                             let ret_t = curr.get_type().get_return_type().unwrap().into_pointer_type();
                             let ret = self.builder.build_malloc(ret_t.get_element_type().into_struct_type(), "ret_ptr").unwrap();
-                            let next_fn_ptr = self.builder.build_bitcast(next.as_global_value().as_pointer_value(), self.ctx.i8_type().ptr_type(AddressSpace::Generic), "");
+                            let next_fn_ptr = self.builder.build_bitcast(next.as_global_value().as_pointer_value(), self.ctx.i8_type().ptr_type(AddressSpace::default()), "");
                             let next_ptr = self.builder.build_struct_gep(ret, 0, "").unwrap();
                             self.builder.build_store(next_ptr, next_fn_ptr);
                             let last = ret_t.get_element_type().into_struct_type().get_field_types().len() - 1;
@@ -322,6 +378,8 @@ impl<'ctx> CodeGen<'ctx> {
                 .or(self.known_values.get(&ident).map(|val| val.as_any_value_enum()))
                 .or(self.known_functions.get(&ident).map(|fun| fun.as_any_value_enum())).unwrap()
             },
+            TypedExpr::UnitLiteral => todo!(),
+            TypedExpr::GenericExpr { waiting_on, sub } => todo!(),
         }
     }
 

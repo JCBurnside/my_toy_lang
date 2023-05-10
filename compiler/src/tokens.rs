@@ -7,7 +7,8 @@ pub enum Token {
     GroupClose, // )
     Colon,
     Ident(String),
-    // Fn, //to be added latter to distinquish between value and function with 0 args
+    For, // used for generic declaration and maybe composition in a later version
+    // Fn, //to be added latter to distinguish between value and function with 0 args
 
     //literals
     Integer(bool, String),
@@ -17,7 +18,7 @@ pub enum Token {
 
     Op(String),
     //meta tokens
-    NewLine,    //needed due to how fn args are parsed.  largerly ignored
+    NewLine,    //needed due to how fn args are parsed.  largely ignored
     BeginBlock,
     EndBlock,
     EoF,

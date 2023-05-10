@@ -8,11 +8,13 @@
             "name": "(Windows) Launch",
             "type": "cppvsdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/target/debug/my_toy_lang.exe",
-            "args": [],
+            "program": "${workspaceFolder}/target/debug/cli.exe",
+            "args": ["./cli/test.foo"],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
-            "environment": [],
+            "environment": [
+                {"name": "RUST_BACKTRACE", "value": "1"}
+            ],
             "console": "externalTerminal",
             "preLaunchTask": "MyTask"
         }

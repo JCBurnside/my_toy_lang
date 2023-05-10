@@ -1,8 +1,8 @@
-use std::{iter::Peekable, str::Chars};
+use std::{iter::Peekable, str::Chars, collections::BTreeSet};
 
 use itertools::Itertools;
 
-use crate::{ast::{self, TypeName}, lexer::TokenStream, tokens::Token, util::ExtraUtilFunctions};
+use crate::{ast::{self}, lexer::TokenStream, tokens::Token, util::ExtraUtilFunctions};
 
 #[derive(Debug)]
 #[allow(unused)]
@@ -61,12 +61,16 @@ where
     pub fn next_expr(&mut self) -> ParserResult {
         let cloned_stream = self.stream.clone();
         let test = self.stream.peek();
-        match self.stream.peek() {
+        match self.stream.clone().next() {
+            Some((Token::GroupOpen,_)) if matches!(self.stream.clone().nth(1),Some((Token::GroupClose,_)))=> {
+                self.stream.advance_by(2).unwrap();
+                return Ok(ast::Expr::UnitLiteral)
+            } 
             Some((Token::NewLine, _)) => {
                 self.stream.next();
                 self.next_expr()
             }
-            Some((Token::Let, _)) => self.declaration(),
+            Some((Token::Let, _)) | Some((Token::For, _)) => self.declaration(),
             Some((Token::BeginBlock, _)) => self.collect_block(),
             Some((
                 | Token::Integer(_,_)
@@ -222,6 +226,18 @@ where
                 Ok(ast::TypeName::ValueType(ty))
             }
         } else if let Some((Token::GroupOpen, span)) = ty {
+            if let Some((Token::GroupClose,_)) = self.stream.peek() {
+                self.stream.next();
+                return if let Some((Token::Arrow,_)) = self.stream.peek() {
+                    self.stream.next();
+                    Ok(ast::TypeName::FnType(
+                        ast::TypeName::ValueType("()".to_string()).into_rc(), 
+                        self.collect_type()?.into_rc()
+                    ))
+                } else {
+                    Ok(ast::TypeName::ValueType("()".to_string()))
+                }
+            }
             let ty = self.collect_type()?;
             if let Some((Token::GroupClose, _)) = self.stream.next() {
                 if let Some((Token::Arrow, _)) = self.stream.peek() {
@@ -246,7 +262,35 @@ where
     }
 
     fn declaration(&mut self) -> ParserResult {
-        if let Some((Token::Let, start)) = self.stream.next() {
+        let generics = if let Some((Token::For,_)) = self.stream.peek() {
+            let Some((_,span)) = self.stream.next() else { unreachable!() };
+            if let Some((Token::Op(op),_)) = self.stream.next() && op == "<" {
+                let mut out = self.stream.clone().take_while(|(token,_)| &Token::Op(">".to_string())!= token).collect_vec();
+                let first_span = out.first().unwrap().1;
+                let last_span = out.last().unwrap().1;
+                let num = out.len();
+                out.dedup();
+                if out.len() == num {
+                    
+                    out.into_iter().filter_map(|(t,_)| {
+                        let Token::Ident(name) = t else { return None };
+                        Some(name)
+                    }).collect_vec()
+                } else {
+                    return Err(ParseError { span: (first_span,last_span), reason: ParseErrorReason::DeclarationError })
+                }
+            } else {
+                let (_,end) = self.stream.clone().take_while(|(token,span)| token != &Token::Let).last().unwrap();
+                return Err(ParseError { span: (span,end), reason: ParseErrorReason::DeclarationError })
+            }
+        } else {
+            Vec::new()
+        };
+        if generics.len() != 0 {
+            self.stream.advance_by(generics.len() + 1).unwrap();
+        }
+        #[cfg(debug_assertions)] let _peeked = self.stream.peek();
+        if let Some((Token::Let, start)) = dbg!(self.stream.next()) {
             let (token, ident_span) = self.stream.next().unwrap();
             return match token {
                 Token::Ident(ident) => {
@@ -257,7 +301,7 @@ where
                         && eq == "="
                         {
                             let value = self.next_expr()?;
-                            Ok(ast::Expr::Declaration { is_op: false, ident, ty: Some(ty), args: None, value: value.boxed()})
+                            Ok(ast::Expr::Declaration { is_op: false, ident, ty: Some(ty), args: None, value: value.boxed(), generictypes : Vec::new()})
                         } else {
                             Err(ParseError{
                                 span:(start,ident_span+ident.len()),
@@ -284,7 +328,7 @@ where
                             && eq == "="
                             {
                                 let value = self.next_expr()?;
-                                Ok(ast::Expr::Declaration { is_op: false, ident, ty: Some(ty), args: Some(args.into_iter().map(|s| (s,None)).collect()), value: value.boxed()})
+                                Ok(ast::Expr::Declaration { is_op: false, ident, ty: Some(ty), args: Some(args.into_iter().map(|s| (s,None)).collect()), value: value.boxed(), generictypes:generics})
                             } else {
                                 Err(ParseError{
                                     span:(start,ident_span+ident.len()),
@@ -300,7 +344,8 @@ where
                                     ident,
                                     ty: None,
                                     args: Some(args.into_iter().map(|s| (s,None)).collect()),
-                                    value: value.boxed()
+                                    value: value.boxed(),
+                                    generictypes: generics
                                 })
                             } else {
                                 Err(ParseError {
@@ -324,7 +369,7 @@ where
                         && eq == "="
                         {
                             let value = self.next_expr()?;
-                            Ok(ast::Expr::Declaration { is_op: false, ident, ty: Some(ty), args: None, value: value.boxed()})
+                            Ok(ast::Expr::Declaration { is_op: false, ident, ty: Some(ty), args: None, value: value.boxed(), generictypes:generics})
                         } else {
                             Err(ParseError{
                                 span:(start,ident_span+ident.len()),
@@ -351,7 +396,7 @@ where
                             && eq == "="
                             {
                                 let value = self.next_expr()?;
-                                Ok(ast::Expr::Declaration { is_op: true, ident, ty: Some(ty), args: Some(args.into_iter().map(|s| (s,None)).collect()), value: value.boxed()})
+                                Ok(ast::Expr::Declaration { is_op: true, ident, ty: Some(ty), args: Some(args.into_iter().map(|s| (s,None)).collect()), value: value.boxed(), generictypes:generics })
                             } else {
                                 Err(ParseError{
                                     span:(start,ident_span+ident.len()),
@@ -372,7 +417,8 @@ where
                                     ident,
                                     ty: None,
                                     args: Some(args.into_iter().map(|s| (s,None)).collect()),
-                                    value: value.boxed()
+                                    value: value.boxed(),
+                                    generictypes:generics,
                                 })
                             } else {
                                 Err(ParseError {
@@ -592,7 +638,7 @@ enum ShuntingYardOptions {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     use inkwell::context::Context;
 
@@ -609,9 +655,9 @@ mod tests {
         let type_resolver = TypeResolver::new(&ctx);
         let mut values = HashMap::new();
         let ty = Parser::from_source("int32 -> int32 -> int32").collect_type().unwrap();     
-        values.insert("foo".to_owned(),types::resolve_from_name(ty));
+        values.insert("foo".to_owned(),types::resolve_from_name(ty,&HashSet::new()));
 
-        let expr = TypedExpr::try_from(&ctx, &type_resolver, values, expr).unwrap(); 
+        let expr = TypedExpr::try_from(&ctx, type_resolver, values, &HashSet::new(), expr).unwrap(); 
         println!("{:?}",expr);
     }
     #[test]
@@ -628,7 +674,8 @@ mod tests {
                     value: "5".to_owned(),
                     ty: ast::TypeName::ValueType("int32".to_owned())
                 }
-                .boxed()
+                .boxed(),
+                generictypes:Vec::new(),
             },
             parser.next_expr().expect("failed to parse")
         );
@@ -652,7 +699,8 @@ mod tests {
                         .boxed()
                     }]
                 }
-                .boxed()
+                .boxed(),
+                generictypes:Vec::new(),
             },
             parser.next_expr().expect("failed to parse")
         )
@@ -675,7 +723,7 @@ let foo _ : ( int32 -> int32 ) -> int32 =
                         TypeName::ValueType("int32".to_owned()).into_rc()
                     )
                     .into_rc(),
-                    TypeName::ValueType("int32".to_owned()).into_rc()
+                    TypeName::ValueType("int32".to_owned()).into_rc(),
                 )),
                 args: Some(vec![("_".to_owned(), None)]),
                 value: ast::Expr::Block {
@@ -687,7 +735,8 @@ let foo _ : ( int32 -> int32 ) -> int32 =
                         .boxed()
                     }]
                 }
-                .boxed()
+                .boxed(),
+                generictypes:Vec::new(),
             },
             parser.next_expr().expect("failed to parse"),
             "function as arg"
@@ -719,7 +768,8 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                         .boxed()
                     }]
                 }
-                .boxed()
+                .boxed(),
+                generictypes:Vec::new(),
             },
             parser.next_expr().expect("failed to parse"),
             "function as rt"
@@ -728,7 +778,7 @@ let foo _ : int32 -> ( int32 -> int32 ) =
 
     #[test]
     fn multiple_statements() {
-        const SRC: &'static str = include_str!("../samples/test.foo");
+        const SRC: &'static str = include_str!("../../samples/test.foo");
         let mut parser = Parser::from_source(SRC);
         assert_eq!(
             ast::Expr::Declaration {
@@ -741,6 +791,7 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                     ty: ast::TypeName::ValueType("int32".to_owned())
                 }
                 .boxed(),
+                generictypes:Vec::new(),
             },
             parser.next_expr().unwrap(),
             "simple declaration"
@@ -765,7 +816,8 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                                 value: r#"merp " yes"#.to_owned(),
                                 ty: ast::TypeName::ValueType("str".to_owned())
                             }
-                            .boxed()
+                            .boxed(),
+                            generictypes:Vec::new(),
                         },
                         ast::Expr::Return {
                             expr: ast::Expr::Literal {
@@ -776,7 +828,8 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                         }
                     ]
                 }
-                .boxed()
+                .boxed(),
+                generictypes:Vec::new(),
             },
             parser.next_expr().unwrap(),
             "declaration with block"
@@ -812,6 +865,7 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                     ]
                 }
                 .boxed(),
+                generictypes:Vec::new(),
             },
             parser.next_expr().unwrap(),
             "operator declaration w/ function call",
@@ -862,7 +916,8 @@ let main _ : int32 -> int32 =
                         }
                     ]
                 }
-                .boxed()
+                .boxed(),
+                generictypes:Vec::new(),
             }
         )
     }
@@ -914,7 +969,8 @@ let main _ : int32 -> int32 =
                         }.boxed())
                     },
                     ast::Expr::Return { expr: ast::Expr::Literal{value:"0".to_owned(), ty:ast::TypeName::ValueType("int32".to_owned())}.boxed() }
-                ] }.boxed()
+                ] }.boxed(),
+                generictypes:Vec::new(),
             },
             parser.next_expr().unwrap()
         )

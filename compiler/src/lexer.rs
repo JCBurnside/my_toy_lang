@@ -44,6 +44,11 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
             // return self.lex()
         }
 
+        if self.source_stream.peek() == Some(&',') {
+            self.source_stream.advance_by(1).unwrap();
+            return self.lex()
+        }
+
         let (ws, count) = self
             .source_stream
             .peeking_take_while(|c| c != &'\n' && c.is_ascii_whitespace())
@@ -97,7 +102,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                         .collect::<String>();
                     self.curr_pos += inside.len();
                     if prev == '\n' {
-                        (Token::Error("unclosed litteral"), self.curr_pos)
+                        (Token::Error("unclosed literal"), self.curr_pos)
                     } else {
                         self.source_stream.advance_by(1).unwrap();
                         (Token::CharLiteral(inside), self.curr_pos)
@@ -166,11 +171,22 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     let inside = c.to_string() + &inside;
                     (Token::Op(inside), self.curr_pos)
                 }
+                'f' if self
+                    .source_stream
+                    .clone()
+                    .take_while(|c| c.is_alphabetic())
+                    .collect::<String>()
+                    == "or" => 
+                {
+                    self.source_stream.advance_by(2).unwrap();
+                    self.curr_pos+= 2;
+                    (Token::For,self.curr_pos)
+                }
 
                 'l' if self
                     .source_stream
                     .clone()
-                    .take_while(|c| !c.is_whitespace())
+                    .take_while(|c| c.is_alphabetic())
                     .collect::<String>()
                     == "et" =>
                 {
@@ -181,7 +197,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                 'r' if self
                     .source_stream
                     .clone()
-                    .take_while(|c| !c.is_whitespace())
+                    .take_while(|c| c.is_alphabetic())
                     .collect::<String>()
                     == "eturn" =>
                 {
@@ -193,8 +209,10 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                 c => {
                     let inner: String = self
                         .source_stream
-                        .peeking_take_while(|c| !c.is_whitespace())
+                        .clone()
+                        .take_while(|c| (c.is_alphanumeric()) || c == &'_' || c == &'.')
                         .collect();
+                    self.source_stream.advance_by(inner.len()).unwrap();
                     self.curr_pos += inner.len();
                     let inner = c.to_string() + &inner;
                     if inner.chars().all(|c| c.is_numeric()) {
@@ -207,7 +225,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                 }
             }
         } else {
-            (Token::Error("Unkown Lexer Error"), self.curr_pos)
+            (Token::Error("Unknown Lexer Error"), self.curr_pos)
         }
     }
 }
@@ -259,6 +277,28 @@ mod tests {
 
     use super::TokenStream;
     use itertools::Itertools;
+
+    #[test]
+    fn explicit_generics() {
+        use Token::*;
+        assert_eq!(
+            TokenStream::from_source(
+r#"for <T,U> let foo bar baz : T -> U -> int8 =
+    bar + baz
+"#          
+            )
+            .map(|(a,_)| a)
+            .collect_vec(),
+            #[rustfmt::skip]
+            [
+                For, Op("<".to_owned()), Ident("T".to_owned()), Ident("U".to_owned()), Op(">".to_owned()), Let, Ident("foo".to_owned()), Ident("bar".to_owned()), Ident("baz".to_owned()), Colon, Ident("T".to_owned()), Arrow, Ident("U".to_owned()), Arrow, Ident("int8".to_owned()), Op("=".to_owned()), NewLine,
+                BeginBlock,
+                    Ident("bar".to_owned()), Op("+".to_owned()), Ident("baz".to_owned()), NewLine,
+                EoF
+            ]
+        )
+    }
+
     #[test]
     fn single_tokens() {
         assert_eq!(
@@ -356,16 +396,26 @@ mod tests {
                 .collect_vec(),
             [Token::BeginBlock, Token::Let, Token::EoF],
             "Begin block"
-        )
+        );
+
+        assert_eq!(
+            TokenStream::from_source("for")
+            .map(|(a,_)| a)
+            .collect_vec(),
+            [Token::For, Token::EoF],
+            "For generics"
+        );
     }
 
     #[test]
     fn literals_edge_cases() {
+        
+
         assert_eq!(
             TokenStream::from_source("\"foo bar \\\"baz\"")
                 .map(|(a, _)| a)
                 .collect_vec(),
-            vec![
+            [
                 Token::StringLiteral("foo bar \\\"baz".to_owned()),
                 Token::EoF
             ]
@@ -374,22 +424,29 @@ mod tests {
             TokenStream::from_source("\"\"")
                 .map(|(a, _)| a)
                 .collect_vec(),
-            vec![Token::StringLiteral("".to_owned()), Token::EoF]
+            [Token::StringLiteral("".to_owned()), Token::EoF]
         );
         assert_eq!(
             TokenStream::from_source("\" \"")
                 .map(|(a, _)| a)
                 .collect_vec(),
-            vec![Token::StringLiteral(" ".to_owned()), Token::EoF]
+            [Token::StringLiteral(" ".to_owned()), Token::EoF]
         );
 
         assert_eq!(
             TokenStream::from_source("' '")
                 .map(|(a, _)| a)
                 .collect_vec(),
-            vec![Token::CharLiteral(" ".to_owned()), Token::EoF]
+            [Token::CharLiteral(" ".to_owned()), Token::EoF]
         );
     }
+
+
+    #[test]
+    fn generic_test() {
+
+    }
+
 
     #[test]
     fn token_chain() {
@@ -433,7 +490,7 @@ let group_test arg : ( int32 -> int32 ) -> int32
 
     #[test]
     fn from_file() {
-        const SRC: &'static str = include_str!("../samples/test.foo");
+        const SRC: &'static str = include_str!("../../samples/test.foo");
         use Token::*;
         assert_eq!(
             TokenStream::from_source(SRC).map(|(a, _)| a).collect_vec(),

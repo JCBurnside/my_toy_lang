@@ -1,9 +1,8 @@
-use std::{collections::HashMap,vec::Vec};
+use std::{collections::{HashMap, HashSet},vec::Vec};
 
 use inkwell::{
-    types::{AnyType,IntType, StructType, AnyTypeEnum, FloatType, BasicTypeEnum, BasicMetadataTypeEnum, BasicType, FunctionType},
-    context::Context, 
-    values::StructValue, AddressSpace
+    types::{AnyType, AnyTypeEnum, BasicTypeEnum, BasicType},
+    context::Context, AddressSpace
 };
 use itertools::Itertools;
 use multimap::MultiMap;
@@ -56,6 +55,8 @@ pub enum ResolvedType {
     Ref{underlining:Box<ResolvedType>},
     Pointer{underlining:Box<ResolvedType>},
     Unit,
+    //used as rt only
+    Void,
     Slice{underlining:Box<ResolvedType>},
     Function{arg:Box<ResolvedType>,returns:Box<ResolvedType>},
     User{name:String},
@@ -105,16 +106,17 @@ mod consts {
     pub const UNIT : ResolvedType = ResolvedType::Unit;
 }
 pub use consts::*;
-pub fn resolve_from_name(name:TypeName) -> ResolvedType {
+pub fn resolve_from_name(name:TypeName, known_generics:&HashSet<String>) -> ResolvedType {
     match name {
         TypeName::FnType(arg, rt) => {
             let arg = match arg.as_ref() {
-                TypeName::ValueType(_)=>resolve_from_name(arg.as_ref().clone()).boxed(),
-                TypeName::FnType(_, _) => ResolvedType::Pointer { underlining: resolve_from_name(arg.as_ref().clone()).boxed() }.boxed()
+                TypeName::ValueType(_)=>resolve_from_name(arg.as_ref().clone(),known_generics).boxed(),
+                TypeName::FnType(_, _) => ResolvedType::Pointer { underlining: resolve_from_name(arg.as_ref().clone(),known_generics).boxed() }.boxed()
             };
             let returns = match rt.as_ref() {
-                TypeName::ValueType(_) => resolve_from_name(rt.as_ref().clone()).boxed(),
-                TypeName::FnType(_, _) => ResolvedType::Pointer { underlining: resolve_from_name(rt.as_ref().clone()).boxed() }.boxed()
+                TypeName::ValueType(v) if v == "()" => ResolvedType::Void.boxed(),
+                TypeName::ValueType(_) => resolve_from_name(rt.as_ref().clone(), known_generics).boxed(),
+                TypeName::FnType(_, _) => ResolvedType::Pointer { underlining: resolve_from_name(rt.as_ref().clone(),known_generics).boxed() }.boxed()
             };
             ResolvedType::Function { arg, returns }
         },
@@ -131,6 +133,8 @@ pub fn resolve_from_name(name:TypeName) -> ResolvedType {
                 ResolvedType::Str
             } else if ty == "()" {
                 ResolvedType::Unit
+            } else if known_generics.contains(&ty) {
+                ResolvedType::Generic { name: ty }
             } else {
                 ResolvedType::User { name: ty }
             }
@@ -138,6 +142,7 @@ pub fn resolve_from_name(name:TypeName) -> ResolvedType {
     }
 }
 
+#[derive(Clone)]
 pub struct TypeResolver<'ctx> {
     known : HashMap<ResolvedType,AnyTypeEnum<'ctx>>,
     ctx : &'ctx Context,
@@ -149,7 +154,7 @@ impl <'ctx> TypeResolver<'ctx> {
         let unit_t = unit.get_type();
         let char_t = ctx.i8_type(); 
         let str_t = ctx.opaque_struct_type("str");
-        let char_ptr_t = char_t.ptr_type(AddressSpace::Generic);
+        let char_ptr_t = char_t.ptr_type(AddressSpace::default());
         str_t.set_body(&[char_ptr_t.into(),char_ptr_t.into()], false);
         let i8_t = ctx.i8_type();
         let i16_t = ctx.i16_type();
@@ -159,6 +164,7 @@ impl <'ctx> TypeResolver<'ctx> {
         let f64_t = ctx.f64_type();
         let known = {
             let mut out = HashMap::new();
+            out.insert(ResolvedType::Void, ctx.void_type().as_any_type_enum());
             out.insert(ResolvedType::Char, char_t.as_any_type_enum());
             out.insert(ResolvedType::Unit, unit_t.as_any_type_enum());
             out.insert(ResolvedType::Str, str_t.as_any_type_enum());
@@ -209,7 +215,7 @@ impl <'ctx> TypeResolver<'ctx> {
             ResolvedType::Ref { ref underlining } 
             | ResolvedType::Pointer { ref underlining } => {
                 if let ResolvedType::Function { .. } = underlining.as_ref() {
-                    let result = self.resolve_type_as_any(underlining.as_ref().clone()).into_function_type().ptr_type(AddressSpace::Generic).as_any_type_enum();
+                    let result = self.resolve_type_as_any(underlining.as_ref().clone()).into_function_type().ptr_type(AddressSpace::default()).as_any_type_enum();
                     self.known.insert(ty,result);
                 } else {
                     let result = self.resolve_type_as_any(underlining.as_ref().clone());
@@ -217,13 +223,19 @@ impl <'ctx> TypeResolver<'ctx> {
                 }
             },
             ResolvedType::Slice { ref underlining } => {
-                let underlining = self.resolve_type_as_basic(underlining.as_ref().clone()).ptr_type(AddressSpace::Generic);
+                let underlining = self.resolve_type_as_basic(underlining.as_ref().clone()).ptr_type(AddressSpace::default());
                 self.known.insert(ty, self.ctx.struct_type(&[underlining.into(),underlining.into()], false).as_any_type_enum());
             },
             ResolvedType::Function { ref arg, ref returns } => {
-                let rt = self.resolve_type_as_basic(returns.as_ref().clone());
                 let arg = self.resolve_type_as_basic(arg.as_ref().clone());
-                self.known.insert(ty, rt.fn_type(&[arg.into()], false).as_any_type_enum());
+                let arg = if arg.is_struct_type() { arg.into_struct_type().ptr_type(AddressSpace::default()).as_basic_type_enum() } else { arg };
+                if returns.as_ref() == &ResolvedType::Unit || returns.as_ref() == &ResolvedType::Void{
+                    self.known.insert(ty, self.ctx.void_type().fn_type(&[arg.into()], false).as_any_type_enum());
+                }
+                else {
+                    let rt =self.resolve_type_as_basic(returns.as_ref().clone());
+                    self.known.insert(ty, rt.fn_type(&[arg.into()], false).as_any_type_enum());
+                }
             },
             ResolvedType::User { name } => todo!(),
             // ResolvedType::ForwardUser { name } => todo!(),
@@ -237,7 +249,7 @@ impl <'ctx> TypeResolver<'ctx> {
         self.known.get(&ty).map(|ty| match ty {
             AnyTypeEnum::ArrayType(ty) => ty.as_basic_type_enum(),
             AnyTypeEnum::FloatType(ty) => ty.as_basic_type_enum(),
-            AnyTypeEnum::FunctionType(ty) => ty.ptr_type(AddressSpace::Generic).as_basic_type_enum(),
+            AnyTypeEnum::FunctionType(ty) => ty.ptr_type(AddressSpace::default()).as_basic_type_enum(),
             AnyTypeEnum::IntType(ty) => ty.as_basic_type_enum(),
             AnyTypeEnum::PointerType(ty) => ty.as_basic_type_enum(),
             AnyTypeEnum::StructType(ty) => ty.as_basic_type_enum(),

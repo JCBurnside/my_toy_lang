@@ -1,16 +1,3 @@
-[package]
-name = "my_toy_lang"
-version = "0.1.0"
-edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[dependencies]
-# langstd = {path="langstd"}
-inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "master", features = ["llvm13-0"] }
-itertools = "0.10.3"
-utf8-chars = "2.0.1"
-regex = "1.6.0"
-lazy_static = "1.4.0"
-multimap = "0.8.3"
-either = "1.5"
+[workspace]
+default-members = ["cli"]
+members = ["cli","langstd","compiler"]

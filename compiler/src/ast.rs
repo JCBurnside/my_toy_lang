@@ -1,13 +1,16 @@
-use std::{collections::HashMap, iter::once, rc::Rc};
+use std::{collections::{HashMap, HashSet}, iter::once, rc::Rc};
 
 use inkwell::{
     context::Context,
 };
 use itertools::Itertools;
 
-use crate::{util::ExtraUtilFunctions, types::{self, ResolvedType, TypeResolver, resolve_from_name}};
+use crate::{
+    util::ExtraUtilFunctions, 
+    types::{self, ResolvedType, TypeResolver, resolve_from_name}
+};
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone)]
 #[allow(unused)]
 pub enum Expr {
     BinaryOpCall {
@@ -42,7 +45,9 @@ pub enum Expr {
         ty: Option<TypeName>,
         args: Option<Vec<(String, Option<TypeName>)>>,
         value: Box<Expr>,
+        generictypes: Vec<String>
     },
+    UnitLiteral,
 }
 
 #[derive(PartialEq, Debug, Clone)]
@@ -93,10 +98,18 @@ pub enum TypedExpr {
         value: Box<TypedExpr>,
         curried: bool,
         generic : bool,
-    }
+    },
+    /// this is some expr that requires a generic type be realized before it can be realzied
+    /// eg `a + b` in `for<T> let example a b : T -> int32 -> int32 = a + b`
+    GenericExpr {
+        waiting_on : Vec<String>,
+        sub : Expr,
+    },
+    UnitLiteral,
 }
 
 #[derive(Debug)]
+#[allow(unused)]
 pub enum TypingError {
     ReturnTypeMismatch,
     FnNotDeclared,
@@ -110,21 +123,54 @@ pub enum TypingError {
 impl<'ctx> TypedExpr {
     pub fn try_from(
         ctx: &'ctx Context,
-        type_resolver: &TypeResolver<'ctx>,
+        mut type_resolver: TypeResolver<'ctx>,
         mut values : HashMap<String,ResolvedType>,
+        known_generics : &HashSet<String>,
         expr: Expr,
     ) -> Result<(Self,Vec<Self>), TypingError> {
         let mut completed_generics = Vec::new();
         Ok((match expr {
             Expr::BinaryOpCall { ident, lhs, rhs } => match &ident[..] {
                 "+" | "-" | "/" | "*" => {
-                    let (lhs, new_generics) = Self::try_from(ctx, type_resolver, values.clone(), *lhs)?;
-                    let (rhs, new_generics) = Self::try_from(ctx, type_resolver, values, *rhs)?;
-                    if rhs.get_rt() == lhs.get_rt()
+                    let lhs = *lhs;
+                    let (new_lhs, new_generics) = Self::try_from(ctx, type_resolver.clone(), values.clone(), known_generics, lhs.clone())?;
+                    completed_generics.extend(new_generics.into_iter());
+                    let rhs = *rhs;
+                    let (new_rhs, new_generics) = Self::try_from(ctx, type_resolver.clone(), values, known_generics, rhs.clone())?;
+                    completed_generics.extend(new_generics.into_iter());
+                    if new_lhs.get_rt().is_generic() || new_rhs.get_rt().is_generic() {
+                        Self::GenericExpr { waiting_on: [
+                                if let ResolvedType::Generic { name } = new_lhs.get_rt() { Some(name) } else { None },
+                                if let ResolvedType::Generic { name } = new_rhs.get_rt() { Some(name) } else { None },
+                            ].into_iter().filter_map(|it| it).collect_vec(), 
+                            sub : Expr::BinaryOpCall { ident, lhs: lhs.boxed(), rhs : rhs.boxed() }
+                        }
+                    }
+                    else if new_rhs.get_rt() == new_lhs.get_rt()
                     {
                         Self::BinaryOpCall {
                             ident,
-                            rt: rhs.get_rt(),
+                            rt: new_rhs.get_rt(),
+                            lhs: new_lhs.boxed(),
+                            rhs: new_rhs.boxed(),
+                        }
+                    } else {
+                        return Err(TypingError::OpNotSupported)
+                    }
+                }
+                "**" => {
+                    let (lhs, new_generics) = Self::try_from(ctx, type_resolver.clone(), values.clone(), known_generics, *lhs)?;
+                    completed_generics.extend(new_generics.into_iter());
+                    let (rhs, new_generics) = Self::try_from(ctx, type_resolver.clone(), values, known_generics, *rhs)?;
+                    completed_generics.extend(new_generics.into_iter());
+                    let lhs_ty = lhs.get_rt();
+                    if 
+                        lhs_ty.is_float()
+                        && lhs_ty == rhs.get_rt()
+                    {
+                        Self::BinaryOpCall {
+                            ident,
+                            rt: lhs_ty,
                             lhs: lhs.boxed(),
                             rhs: rhs.boxed(),
                         }
@@ -132,61 +178,52 @@ impl<'ctx> TypedExpr {
                         return Err(TypingError::OpNotSupported)
                     }
                 }
-                "**" => {
-                    let lhs = Self::try_from(ctx, type_resolver,  values.clone(), *lhs)?;
-                    let rhs = Self::try_from(ctx, type_resolver,  values, *rhs)?;
-                    let lhs_ty = lhs.get_rt();
-                    if 
-                        lhs_ty.is_float()
-                        && lhs_ty == rhs.get_rt()
-                    {
-                        Ok(Self::BinaryOpCall {
-                            ident,
-                            rt: lhs_ty,
-                            lhs: lhs.boxed(),
-                            rhs: rhs.boxed(),
-                        })
-                    } else {
-                        Err(TypingError::OpNotSupported)
-                    }
-                }
-                _ => Err(TypingError::OpNotSupported),
+                _ => return Err(TypingError::OpNotSupported),
             },
             Expr::UnaryOpCall { ident, operand } => {
                 if let Some(type_name) = values.get(&ident) {
                     if let ResolvedType::Function { returns,.. } = type_name {
-                        Ok(Self::UnaryOpCall { ident, rt: returns.as_ref().clone(), operand: Self::try_from(ctx, type_resolver, values, *operand)?.boxed() })
+                        let (operand,new_generics) = Self::try_from(ctx, type_resolver.clone(), values.clone(), known_generics, *operand)?;
+                        completed_generics.extend(new_generics.into_iter());
+                        Self::UnaryOpCall { ident, rt: returns.as_ref().clone(), operand: operand.boxed()}
                     } else {
-                        Err(TypingError::UnknownType)
+                        return Err(TypingError::UnknownType)
                     }
                  } else {
-                    Err(TypingError::FnNotDeclared)
+                    return Err(TypingError::FnNotDeclared)
                 }
             }
             Expr::FnCall { value, arg } => {
-                let value = TypedExpr::try_from(ctx, type_resolver, values.clone(), *value)?;
+                let (value,new_generics) = TypedExpr::try_from(ctx, type_resolver.clone(), values.clone(), known_generics, *value)?;
+                completed_generics.extend(new_generics.into_iter());
                 let ResolvedType::Function { arg : arg_t_expected, returns } = value.get_rt() else { return Err(TypingError::ArgTypeMismatch) };
-                let arg = arg.map(|arg| TypedExpr::try_from(ctx, type_resolver, values.clone(), *arg));
+                let arg = arg.map(|arg| TypedExpr::try_from(ctx, type_resolver.clone(), values.clone(), known_generics, *arg));
                 if arg.is_some() {
                     if arg.as_ref().map_or(false, Result::is_err) {
                         return arg.unwrap();
                     }
                 }
                 let arg = arg.map(|arg| arg.unwrap());
-                let arg_t = arg.as_ref().map(|arg| arg.get_rt());
+                let arg_t = arg.as_ref().map(|arg| arg.0.get_rt());
                 if (arg_t_expected.as_ref() == &ResolvedType::Unit && arg_t.is_none())
                     || arg_t_expected.as_ref() == arg_t.as_ref().unwrap() {
-                        Ok(TypedExpr::FnCall { value : value.boxed(), rt: *returns, arg : arg.map(|arg| arg.boxed()) })
+                        if let Some((arg,new_generics)) = arg {
+                            completed_generics.extend(new_generics.into_iter());
+                            TypedExpr::FnCall { value : value.boxed(), rt: *returns, arg : Some(arg.boxed()) }
+                        } else {
+                            TypedExpr::FnCall { value : value.boxed(), rt: *returns, arg : None }
+                        }
                 } else {
-                    Err(TypingError::ArgTypeMismatch)
+                    return Err(TypingError::ArgTypeMismatch)
                 }
             }
             Expr::Return { expr } => {
-                let expr = Self::try_from(ctx, type_resolver, values, *expr)?;
-                Ok(Self::Return {
+                let (expr, new_generic) = Self::try_from(ctx, type_resolver.clone(), values, known_generics, *expr)?;
+                completed_generics.extend(new_generic.into_iter());
+                Self::Return {
                     rt: expr.get_rt(),
                     expr: Box::new(expr),
-                })
+                }
             }
             Expr::Block { sub } => {
                 let mut functions = values.clone();
@@ -194,13 +231,19 @@ impl<'ctx> TypedExpr {
                     .into_iter()
                     .map(|expr| {
                         let fns = functions.clone();
-                        let r = Self::try_from(ctx, type_resolver, fns, expr);
-                        match &r {
-                            Ok(TypedExpr::Declaration {is_op:false,ident, ty,..}) => {
-                                functions.insert(ident.clone(), ty.clone());
-                                r
+                        let r = Self::try_from(ctx, type_resolver.clone(), fns, known_generics, expr);
+                        match r {
+                            Ok((r,generics)) => {
+                                completed_generics.extend(generics.into_iter());
+                                Ok(match &r {
+                                    TypedExpr::Declaration {is_op:false,ident, ty,..} => {
+                                        functions.insert(ident.clone(), ty.clone());
+                                        r
+                                    }
+                                    _ => r 
+                                })
                             }
-                            _ => r 
+                            Err(err) => Err(err)
                         }
                     })
                     .collect::<Result<Vec<_>, _>>()?;
@@ -215,17 +258,17 @@ impl<'ctx> TypedExpr {
                     .chain(once(last.clone()))
                     .all_equal();
                 if valid {
-                    Ok(Self::Block { rt: last, sub })
+                    Self::Block { rt: last, sub }
                 } else {
-                    Err(TypingError::ReturnTypeMismatch)
+                    return Err(TypingError::ReturnTypeMismatch)
                 }
             }
             Expr::Literal { value, ty } => match ty {
                 TypeName::ValueType(_) => {
-                    Ok(Self::Literal {
-                        rt: resolve_from_name(ty),
+                    Self::Literal {
+                        rt: resolve_from_name(ty,known_generics),
                         value,
-                    })
+                    }
                 }
                 _ => unreachable!(),
             },
@@ -235,38 +278,46 @@ impl<'ctx> TypedExpr {
                 ty,
                 args,
                 value,
+                generictypes,
             } => {
+                let known_generics = if generictypes.len() != 0 {
+                    let mut out = known_generics.clone();
+                    out.extend(generictypes.into_iter());
+                    out
+                } else { known_generics.clone() };
                 match (&ty, args) {
                     (Some(_), Some(args)) if args.iter().any(|(_, it)| it.is_some()) => {
-                        Err(TypingError::DoubleTyped)
+                        return Err(TypingError::DoubleTyped)
                     }
-                    (Some(TypeName::ValueType(_)), Some(_)) => Err(TypingError::ArgTypeMismatch), //should be no args.  will need to change when fn keyword is introduced.
+                    (Some(TypeName::ValueType(_)), Some(_)) => return Err(TypingError::ArgTypeMismatch), //should be no args.  will need to change when fn keyword is introduced.
                     (None, Some(args)) if args.iter().any(|(_, it)| it.is_none()) => {
 
                         // this is could be generic. or mixed infered and not.
-                        Err(TypingError::UnknownType)
+                        return Err(TypingError::UnknownType)
                     }
                     (Some(TypeName::FnType(_, _)), Some(args)) => {
                         let args = args.into_iter().map(|(it, _)| it).collect_vec();
                         let mut curr = ty.clone().unwrap();
                         for arg in args.iter() {
                             let TypeName::FnType(arg_t,next) = curr else { unreachable!() };
-                            values.insert(arg.clone(), types::resolve_from_name(arg_t.as_ref().clone()));
+                            values.insert(arg.clone(), types::resolve_from_name(arg_t.as_ref().clone(), &known_generics));
                             curr = next.as_ref().clone();
                         }
-                        Ok(TypedExpr::Declaration {
+                        let (value, generics) = Self::try_from(ctx, type_resolver, values, &known_generics, *value)?;
+                        completed_generics.extend(generics.into_iter());
+                        TypedExpr::Declaration {
                             is_op,
                             ident,
-                            ty: types::resolve_from_name(ty.unwrap()),
+                            ty: types::resolve_from_name(ty.unwrap(), &known_generics),
                             args,
-                            value: Self::try_from(ctx, type_resolver, values, *value)?.boxed(),
+                            value: value.boxed(),
                             curried:if let TypeName::FnType(_, _) = curr { true } else { false },
                             generic:false,
-                        })
+                        }
                     }
                     (Some(TypeName::FnType(_,_)),None) => { //this is a curried or composed function
-                        let ty = types::resolve_from_name(ty.unwrap());
-                        let (value,new_generics) = Self::try_from(ctx, type_resolver, values, *value)?;
+                        let ty = types::resolve_from_name(ty.unwrap(),&known_generics);
+                        let (value,new_generics) = Self::try_from(ctx, type_resolver, values, &known_generics, *value)?;
                         completed_generics.extend(new_generics.into_iter());
                         TypedExpr::Declaration {
                             is_op,
@@ -274,20 +325,21 @@ impl<'ctx> TypedExpr {
                             generic:ty.is_generic(),
                             ty,
                             args: vec![],
-                            value,
+                            value:value.boxed(),
                             curried:true,
                         }
                     }
-                    (Some(TypeName::ValueType(ty)), None) => {
+                    (Some(TypeName::ValueType(_ty)), None) => {
                         todo!()
                     }
                     _ => todo!("this type inference is not supported yet."),
                 }
             }
-            Expr::ValueRead { ident } => Ok(Self::ValueRead { 
+            Expr::ValueRead { ident } => Self::ValueRead { 
                 rt: values.get(&ident).unwrap().clone(),
                 ident
-            }),
+            },
+            Expr::UnitLiteral => Self::UnitLiteral,
         },completed_generics))
     }
 
@@ -302,7 +354,9 @@ impl<'ctx> TypedExpr {
             | TypedExpr::Literal { rt, .. }
             | TypedExpr::ValueRead { rt, .. }
             | TypedExpr::Block { rt, .. } => rt.clone(),
-            TypedExpr::Declaration { .. } => ResolvedType::Unit,
+            TypedExpr::GenericExpr { .. } => unimplemented!("idk how to handle this case yet."),
+            TypedExpr::Declaration { .. }
+            | TypedExpr::UnitLiteral => ResolvedType::Unit,
         }
     }
 }
