@@ -1,6 +1,8 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::iter::once;
+use std::rc::Rc;
 
 use inkwell::AddressSpace;
 use inkwell::builder::Builder;
@@ -9,7 +11,7 @@ use inkwell::module::Module;
 use inkwell::types::{BasicTypeEnum, BasicType, AnyTypeEnum};
 use inkwell::values::{AnyValue, AnyValueEnum, BasicValue, BasicValueEnum, FunctionValue, PointerValue, CallableValue};
 
-use itertools::Itertools;
+use itertools::{Itertools, Either};
 
 use multimap::MultiMap;
 
@@ -25,6 +27,7 @@ pub struct CodeGen<'ctx> {
     _known_ops: MultiMap<String, FunctionValue<'ctx>>,
     known_values: HashMap<String, BasicValueEnum<'ctx>>,
     locals : HashMap<String, PointerValue<'ctx>>,
+    incomplete_generics : HashMap<String, Box<dyn FnMut(ResolvedType)->Either<FunctionValue<'ctx>,TypedExpr> + 'ctx>>,
     // curried_locals : HashMap<String, (PointerValue<'ctx>,ResolvedType)>,
 }
 
@@ -63,6 +66,7 @@ impl<'ctx> CodeGen<'ctx> {
             known_values,
             _known_ops : seed_ops,
             locals : HashMap::new(),
+            incomplete_generics : HashMap::new(),
             // curried_locals : HashMap::new(),
         }
     }
@@ -379,15 +383,32 @@ impl<'ctx> CodeGen<'ctx> {
                 .or(self.known_functions.get(&ident).map(|fun| fun.as_any_value_enum())).unwrap()
             },
             TypedExpr::UnitLiteral => todo!(),
-            TypedExpr::GenericExpr { waiting_on, sub } => todo!(),
         }
     }
 
     pub fn compile_program<T : IntoIterator<Item = TypedExpr>>(mut self, ast: T) -> Module<'ctx> {
+        let mut this = Rc::new(RefCell::new(self));
         for expr in ast {
-            self.compile_expr(expr);
+            match expr {
+                TypedExpr::Declaration { is_op, ident, ty, args, value, curried, generic : true } => {
+                    let args = args.clone();
+                    let ident_clone = ident.clone();
+                    let this_clone = this.clone();
+                    let gen_fun = Box::new(move |new_ty:ResolvedType|{
+                        let replaced_ty = ty.clone().replace_first_generic(new_ty.clone());
+                        if replaced_ty.is_generic() {
+                            Either::Right(TypedExpr::Declaration { is_op, ident: ident.clone() + "_" + &new_ty.to_string(), ty: replaced_ty, args : args.clone(), value : value.clone(), curried, generic: true })
+                        } else {
+                            Either::Left(this_clone.borrow_mut().compile_expr(TypedExpr::Declaration { is_op, ident : ident.clone() + "_" + &new_ty.to_string(), ty: replaced_ty, args:args.clone(), value : value.clone(), curried, generic:false }).into_function_value())
+                        }
+                    }) as Box<dyn FnMut(ResolvedType)-> Either<FunctionValue<'ctx>, TypedExpr>>;
+                    this.borrow_mut().incomplete_generics.entry(ident_clone).insert_entry(gen_fun);
+                },
+                _ => { this.borrow_mut().compile_expr(expr); }, 
+            }
         }
-        self.module
+        let module = this.borrow().module.clone(); 
+        module
     }
 }
 
@@ -402,8 +423,8 @@ fn convert_to_basic_value<'ctx>(value: AnyValueEnum<'ctx>) -> BasicValueEnum<'ct
         AnyValueEnum::PointerValue(v) => BasicValueEnum::PointerValue(v),
         AnyValueEnum::StructValue(v) => BasicValueEnum::StructValue(v),
         AnyValueEnum::VectorValue(v) => BasicValueEnum::VectorValue(v),
-        AnyValueEnum::InstructionValue(_) => unimplemented!(),
-        AnyValueEnum::MetadataValue(_) => unimplemented!(),
+        AnyValueEnum::InstructionValue(_) |
+        AnyValueEnum::MetadataValue(_) |
         AnyValueEnum::PhiValue(_) => unimplemented!(),
     }
 }

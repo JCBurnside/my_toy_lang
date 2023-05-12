@@ -1,4 +1,4 @@
-#![feature(stmt_expr_attributes)]
+ #![feature(stmt_expr_attributes)]
 #![feature(iter_advance_by)]
 #![feature(drain_filter)]
 #![feature(let_chains)]
@@ -32,7 +32,7 @@ use multimap::MultiMap;
 
 
 
-pub fn from_file<'ctx>(file : &PathBuf, ctx : &'ctx Context, fwd_declarations : HashMap<String, ResolvedType>) -> Result<Module<'ctx>,Vec<Box<dyn Display>>> {
+pub fn from_file<'ctx>(file : &PathBuf, ctx : &'ctx Context,mut fwd_declarations : HashMap<String, ResolvedType>) -> Result<Module<'ctx>,Vec<Box<dyn Display>>> {
     
     // TODO: I would like to make this work for now I will read the whole file to a string then 
     // let file = File::open(file).map_err(Box::new).map_err(|err| vec![err as Box<dyn Display>])?;
@@ -45,6 +45,14 @@ pub fn from_file<'ctx>(file : &PathBuf, ctx : &'ctx Context, fwd_declarations : 
     let file_name = file.file_name().unwrap();
     module.set_source_file_name(file_name.to_str().unwrap());
     let mut type_resolver = TypeResolver::new(ctx);
+    let code_gen = CodeGen::with_module(
+        &ctx,
+        module,
+        type_resolver.clone(),
+        fwd_declarations.clone(),
+        HashMap::new(),
+        MultiMap::new()
+    );
     let mut ast = Vec::new();
     let mut errors = Vec::new();
     while parser.has_next() {
@@ -69,9 +77,9 @@ pub fn from_file<'ctx>(file : &PathBuf, ctx : &'ctx Context, fwd_declarations : 
                                 panic!("some type in the function is not known")
                             }
                             (Some(TypeName::FnType(_, _)), Some(_)) => {
-                                // if top_level_fns.insert(ident.clone(), resolve_from_name(ty.as_ref().cloned().unwrap())).is_some() {
-                                //     panic!("two functions with same name!");
-                                // }
+                                if !is_op {
+                                    fwd_declarations.entry(ident.clone()).insert_entry(types::resolve_from_name(ty.as_ref().unwrap().clone(), &generictypes.iter().cloned().collect()));
+                                }
                             }
                             (None, Some(args)) => {
                                 // let args = args.iter()
@@ -102,6 +110,7 @@ pub fn from_file<'ctx>(file : &PathBuf, ctx : &'ctx Context, fwd_declarations : 
                             }
                             _ => unimplemented!(),
                         }
+                        
                     }
                     _ => unreachable!(),
                 }
@@ -123,14 +132,7 @@ pub fn from_file<'ctx>(file : &PathBuf, ctx : &'ctx Context, fwd_declarations : 
         .flatten_ok()
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
-    let code_gen = CodeGen::with_module(
-        &ctx,
-        module,
-        type_resolver,
-        fwd_declarations,
-        HashMap::new(),
-        MultiMap::new()
-    );
+    
     let module = code_gen.compile_program(ast);
     Ok(module)
 }

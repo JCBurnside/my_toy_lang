@@ -99,12 +99,6 @@ pub enum TypedExpr {
         curried: bool,
         generic : bool,
     },
-    /// this is some expr that requires a generic type be realized before it can be realzied
-    /// eg `a + b` in `for<T> let example a b : T -> int32 -> int32 = a + b`
-    GenericExpr {
-        waiting_on : Vec<String>,
-        sub : Expr,
-    },
     UnitLiteral,
 }
 
@@ -138,15 +132,8 @@ impl<'ctx> TypedExpr {
                     let rhs = *rhs;
                     let (new_rhs, new_generics) = Self::try_from(ctx, type_resolver.clone(), values, known_generics, rhs.clone())?;
                     completed_generics.extend(new_generics.into_iter());
-                    if new_lhs.get_rt().is_generic() || new_rhs.get_rt().is_generic() {
-                        Self::GenericExpr { waiting_on: [
-                                if let ResolvedType::Generic { name } = new_lhs.get_rt() { Some(name) } else { None },
-                                if let ResolvedType::Generic { name } = new_rhs.get_rt() { Some(name) } else { None },
-                            ].into_iter().filter_map(|it| it).collect_vec(), 
-                            sub : Expr::BinaryOpCall { ident, lhs: lhs.boxed(), rhs : rhs.boxed() }
-                        }
-                    }
-                    else if new_rhs.get_rt() == new_lhs.get_rt()
+
+                    if new_rhs.get_rt() == new_lhs.get_rt()
                     {
                         Self::BinaryOpCall {
                             ident,
@@ -206,7 +193,8 @@ impl<'ctx> TypedExpr {
                 let arg = arg.map(|arg| arg.unwrap());
                 let arg_t = arg.as_ref().map(|arg| arg.0.get_rt());
                 if (arg_t_expected.as_ref() == &ResolvedType::Unit && arg_t.is_none())
-                    || arg_t_expected.as_ref() == arg_t.as_ref().unwrap() {
+                    || arg_t_expected.as_ref() == arg_t.as_ref().unwrap()
+                    || arg_t_expected.as_ref().is_generic() {
                         if let Some((arg,new_generics)) = arg {
                             completed_generics.extend(new_generics.into_iter());
                             TypedExpr::FnCall { value : value.boxed(), rt: *returns, arg : Some(arg.boxed()) }
@@ -312,7 +300,7 @@ impl<'ctx> TypedExpr {
                             args,
                             value: value.boxed(),
                             curried:if let TypeName::FnType(_, _) = curr { true } else { false },
-                            generic:false,
+                            generic:known_generics.len() > 0,
                         }
                     }
                     (Some(TypeName::FnType(_,_)),None) => { //this is a curried or composed function
@@ -335,10 +323,13 @@ impl<'ctx> TypedExpr {
                     _ => todo!("this type inference is not supported yet."),
                 }
             }
-            Expr::ValueRead { ident } => Self::ValueRead { 
-                rt: values.get(&ident).unwrap().clone(),
-                ident
-            },
+            Expr::ValueRead { ident } => {
+                Self::ValueRead { 
+                    //need to handle checking for generic functions and maybe resolving them
+                    rt: values.get(&ident).unwrap().clone(),
+                    ident
+                }
+            } 
             Expr::UnitLiteral => Self::UnitLiteral,
         },completed_generics))
     }
@@ -354,7 +345,6 @@ impl<'ctx> TypedExpr {
             | TypedExpr::Literal { rt, .. }
             | TypedExpr::ValueRead { rt, .. }
             | TypedExpr::Block { rt, .. } => rt.clone(),
-            TypedExpr::GenericExpr { .. } => unimplemented!("idk how to handle this case yet."),
             TypedExpr::Declaration { .. }
             | TypedExpr::UnitLiteral => ResolvedType::Unit,
         }

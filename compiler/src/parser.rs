@@ -65,7 +65,15 @@ where
             Some((Token::GroupOpen,_)) if matches!(self.stream.clone().nth(1),Some((Token::GroupClose,_)))=> {
                 self.stream.advance_by(2).unwrap();
                 return Ok(ast::Expr::UnitLiteral)
-            } 
+            }
+            Some((Token::GroupOpen,_)) => {
+                self.stream.advance_by(1).unwrap();
+                let out = self.next_expr()?;
+                if let Some((Token::GroupClose,_)) = self.stream.peek() {
+                    self.stream.advance_by(1).unwrap()
+                }
+                return Ok(out)
+            }
             Some((Token::NewLine, _)) => {
                 self.stream.next();
                 self.next_expr()

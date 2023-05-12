@@ -1,7 +1,7 @@
-for<T> let test a b : T -> int32 -> int32 = 
-    return a + b
+for<T> let test a : T -> int32 = 
+    return 3
 
 let main _ : () -> () = 
-    test 3 3
+    test (3 + 3)
     print_str "hello from jit!"
     return ()
