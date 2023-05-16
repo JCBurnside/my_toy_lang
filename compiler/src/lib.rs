@@ -18,8 +18,10 @@ mod tokens;
 mod util;
 pub mod types;
 mod code_gen;
+pub mod typed_ast;
 
-use ast::{Expr, TypeName, TypedExpr};
+use ast::{Expr, TypeName};
+use typed_ast::TypedExpr;
 use code_gen::CodeGen;
 use inkwell::module::Module;
 use itertools::Itertools;
@@ -44,7 +46,7 @@ pub fn from_file<'ctx>(file : &PathBuf, ctx : &'ctx Context,mut fwd_declarations
     let module = ctx.create_module(file.file_stem().unwrap().to_str().unwrap());
     let file_name = file.file_name().unwrap();
     module.set_source_file_name(file_name.to_str().unwrap());
-    let mut type_resolver = TypeResolver::new(ctx);
+    let type_resolver = TypeResolver::new(ctx);
     let code_gen = CodeGen::with_module(
         &ctx,
         module,
@@ -119,19 +121,34 @@ pub fn from_file<'ctx>(file : &PathBuf, ctx : &'ctx Context,mut fwd_declarations
             Err(err) => errors.push(err),
         }
     }
-    let ast = dbg!(ast)
+    // .map(|expr| {
+    //     let functions = fwd_declarations.clone();
+    //     TypedExpr::try_from(&ctx, type_resolver.clone(), functions, &HashSet::new(), expr)
+    // })
+    // .map_ok(|(ast,mut generics)| {
+    //     generics.extend_one(ast);
+    //     generics
+    // })
+    // .flatten_ok()
+    // .collect::<Result<Vec<_>, _>>()
+    // .unwrap();
+    let (ast,generics,type_errors) = ast
         .into_iter()
-        .map(|expr| {
+        .map(|expr|{
             let functions = fwd_declarations.clone();
-            TypedExpr::try_from(&ctx, type_resolver.clone(), functions, &HashSet::new(), expr)
+            TypedExpr::try_from(ctx, type_resolver.clone(), functions, &HashSet::new(), expr)
         })
-        .map_ok(|(ast,mut generics)| {
-            generics.extend_one(ast);
-            generics
-        })
-        .flatten_ok()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
+        .fold((Vec::new(),Vec::new(),Vec::new()), |(mut concrete, mut generic, mut errors),expr| {
+            match expr {
+                Ok((expr,_)) => match expr {
+                    TypedExpr::Declaration { generic : true, .. } => generic.push(expr),
+                    TypedExpr::Declaration { .. } => concrete.push(expr),
+                    _ => unreachable!()
+                }
+                Err(e) => errors.push(e),
+            }
+            (concrete,generic,errors)
+        });
     
     let module = code_gen.compile_program(ast);
     Ok(module)

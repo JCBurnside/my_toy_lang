@@ -143,3 +143,16 @@ A discriminated union type (referred to as a enum in this language) can be defin
     ...
 ```
 any variation can be mixed and matched. 
+
+## Comments
+
+comments come in two forms
+
+```
+//single line comments
+
+/* 
+    multi line.
+    or inserted comments
+*/
+```

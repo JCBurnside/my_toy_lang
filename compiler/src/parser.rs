@@ -1,4 +1,4 @@
-use std::{iter::Peekable, str::Chars, collections::BTreeSet};
+use std::{iter::Peekable, str::Chars};
 
 use itertools::Itertools;
 
@@ -651,7 +651,8 @@ mod tests {
     use inkwell::context::Context;
 
     use super::Parser;
-    use crate::ast::{self, TypeName, TypedExpr};
+    use crate::ast::{self, TypeName};
+    use crate::typed_ast::TypedExpr;
     use crate::types::{TypeResolver, ResolvedType, self};
     use crate::util::ExtraUtilFunctions;
     #[test]

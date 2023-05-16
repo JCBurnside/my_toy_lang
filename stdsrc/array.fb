@@ -1,0 +1,3 @@
+mod array
+
+for<T,N:usize> 

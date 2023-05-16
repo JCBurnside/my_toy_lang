@@ -15,7 +15,7 @@ use itertools::{Itertools, Either};
 
 use multimap::MultiMap;
 
-use crate::ast::TypedExpr;
+use crate::typed_ast::TypedExpr;
 use crate::types::{TypeResolver, ResolvedType};
 
 pub struct CodeGen<'ctx> {
@@ -138,7 +138,7 @@ impl<'ctx> CodeGen<'ctx> {
                 }
             }
             TypedExpr::UnaryOpCall { .. } => todo!(),
-            TypedExpr::FnCall { value, arg:Some(arg), rt } => {
+            TypedExpr::FnCall { value, arg:Some(arg), rt, .. } => {
                 let arg_t = arg.get_rt();
                 let arg_t = self.type_resolver.resolve_type_as_basic(arg_t);
                 let arg : BasicValueEnum = self.compile_expr(*arg).try_into().unwrap();
@@ -386,26 +386,27 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
 
-    pub fn compile_program<T : IntoIterator<Item = TypedExpr>>(mut self, ast: T) -> Module<'ctx> {
-        let mut this = Rc::new(RefCell::new(self));
+    pub fn compile_program<T : IntoIterator<Item = TypedExpr>>(self, ast: T) -> Module<'ctx> {
+        let this = Rc::new(RefCell::new(self));
         for expr in ast {
-            match expr {
-                TypedExpr::Declaration { is_op, ident, ty, args, value, curried, generic : true } => {
-                    let args = args.clone();
-                    let ident_clone = ident.clone();
-                    let this_clone = this.clone();
-                    let gen_fun = Box::new(move |new_ty:ResolvedType|{
-                        let replaced_ty = ty.clone().replace_first_generic(new_ty.clone());
-                        if replaced_ty.is_generic() {
-                            Either::Right(TypedExpr::Declaration { is_op, ident: ident.clone() + "_" + &new_ty.to_string(), ty: replaced_ty, args : args.clone(), value : value.clone(), curried, generic: true })
-                        } else {
-                            Either::Left(this_clone.borrow_mut().compile_expr(TypedExpr::Declaration { is_op, ident : ident.clone() + "_" + &new_ty.to_string(), ty: replaced_ty, args:args.clone(), value : value.clone(), curried, generic:false }).into_function_value())
-                        }
-                    }) as Box<dyn FnMut(ResolvedType)-> Either<FunctionValue<'ctx>, TypedExpr>>;
-                    this.borrow_mut().incomplete_generics.entry(ident_clone).insert_entry(gen_fun);
-                },
-                _ => { this.borrow_mut().compile_expr(expr); }, 
-            }
+            // match expr {
+            //     TypedExpr::Declaration { is_op, ident, ty, args, value, curried, generic : true } => {
+            //         let args = args.clone();
+            //         let ident_clone = ident.clone();
+            //         let this_clone = this.clone();
+            //         let gen_fun = Box::new(move |new_ty:ResolvedType|{
+            //             let replaced_ty = ty.clone().replace_first_generic(new_ty.clone());
+            //             if replaced_ty.is_generic() {
+            //                 Either::Right(TypedExpr::Declaration { is_op, ident: ident.clone() + "_" + &new_ty.to_string(), ty: replaced_ty, args : args.clone(), value : value.clone(), curried, generic: true })
+            //             } else {
+            //                 Either::Left(this_clone.borrow_mut().compile_expr(TypedExpr::Declaration { is_op, ident : ident.clone() + "_" + &new_ty.to_string(), ty: replaced_ty, args:args.clone(), value : value.clone(), curried, generic:false }).into_function_value())
+            //             }
+            //         }) as Box<dyn FnMut(ResolvedType)-> Either<FunctionValue<'ctx>, TypedExpr>>;
+            //         this.borrow_mut().incomplete_generics.entry(ident_clone).insert_entry(gen_fun);
+            //     },
+            //     _ => { this.borrow_mut().compile_expr(expr); }, 
+            // }
+            this.borrow_mut().compile_expr(expr);
         }
         let module = this.borrow().module.clone(); 
         module

@@ -1,0 +1,10 @@
+mod option
+
+for<T> enum Option =
+    | Some T
+    | None
+
+for<T,U> let map func o : (T -> U) -> Option<T> -> Option<U> =
+    match o ->
+    | Option::Some t -> func t |> Option::Some
+    | Option::None -> Option::None

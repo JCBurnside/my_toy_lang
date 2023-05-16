@@ -1,6 +1,9 @@
 for<T> let test a : T -> int32 = 
     return 3
 
+for<T> let test2 a b : T -> int32 -> int32 =
+    return b
+
 let main _ : () -> () = 
     test (3 + 3)
     print_str "hello from jit!"

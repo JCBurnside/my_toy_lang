@@ -1,4 +1,4 @@
-use inkwell::{context::Context, module::Module, types::{PointerType, BasicTypeEnum, BasicType}, IntPredicate, AddressSpace};
+use inkwell::{context::Context, module::Module, types::{BasicTypeEnum, BasicType}, IntPredicate, AddressSpace};
 
 pub fn add_printstr<'ctx>(ctx:&'ctx Context, module : &Module<'ctx>, str_t : BasicTypeEnum<'ctx>) {
 

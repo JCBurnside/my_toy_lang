@@ -1,0 +1,5 @@
+mod seq
+
+//TODO may have to wait until I can get traits working
+// or even generate from the compiler as I don't see how I can make this lazy yet.
+// for<T,U> let map func s : (T -> U) -> Seq<T> -> Seq<U> =

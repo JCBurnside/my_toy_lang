@@ -1,12 +1,9 @@
-use std::{collections::{HashMap, HashSet},vec::Vec};
+use std::collections::{HashMap, HashSet};
 
 use inkwell::{
     types::{AnyType, AnyTypeEnum, BasicTypeEnum, BasicType},
     context::Context, AddressSpace
 };
-use itertools::Itertools;
-use multimap::MultiMap;
-
 use crate::{ast::TypeName, util::ExtraUtilFunctions};
 
 #[derive(Hash,PartialEq, Eq,Clone, Copy, Debug)]
