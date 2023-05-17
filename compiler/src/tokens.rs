@@ -16,9 +16,10 @@ pub enum Token {
     StringLiteral(String),
     CharLiteral(String),
 
+    Compose,
     Op(String),
     //meta tokens
-    NewLine,    //needed due to how fn args are parsed.  largely ignored
+    NewLine, //needed due to how fn args are parsed.  largely ignored
     BeginBlock,
     EndBlock,
     EoF,

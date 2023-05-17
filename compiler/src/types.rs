@@ -1,12 +1,13 @@
 use std::collections::{HashMap, HashSet};
 
-use inkwell::{
-    types::{AnyType, AnyTypeEnum, BasicTypeEnum, BasicType},
-    context::Context, AddressSpace
-};
 use crate::{ast::TypeName, util::ExtraUtilFunctions};
+use inkwell::{
+    context::Context,
+    types::{AnyType, AnyTypeEnum, BasicType, BasicTypeEnum},
+    AddressSpace,
+};
 
-#[derive(Hash,PartialEq, Eq,Clone, Copy, Debug)]
+#[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
 pub enum IntWidth {
     Eight,
     Sixteen,
@@ -15,13 +16,13 @@ pub enum IntWidth {
 }
 
 impl IntWidth {
-    pub fn from_str(s:&str) -> Self {
+    pub fn from_str(s: &str) -> Self {
         match s.as_ref() {
             "8" => Self::Eight,
             "16" => Self::Sixteen,
             "32" => Self::ThirtyTwo,
             "64" => Self::SixtyFour,
-            _ => unimplemented!("custom width ints not supported currently")
+            _ => unimplemented!("custom width ints not supported currently"),
         }
     }
 
@@ -35,18 +36,17 @@ impl IntWidth {
     }
 }
 
-
-#[derive(Hash,PartialEq, Eq,Clone, Copy, Debug)]
+#[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
 pub enum FloatWidth {
     ThirtyTwo,
     SixtyFour,
 }
 impl FloatWidth {
-    pub fn from_str(s:&str) -> Self {
+    pub fn from_str(s: &str) -> Self {
         match s.as_ref() {
             "32" => Self::ThirtyTwo,
             "64" => Self::SixtyFour,
-            _ => unimplemented!("custom width floats not supported")
+            _ => unimplemented!("custom width floats not supported"),
         }
     }
 
@@ -58,32 +58,62 @@ impl FloatWidth {
     }
 }
 
-#[derive(Hash,PartialEq, Eq, Clone, Debug)]
+#[derive(Hash, PartialEq, Eq, Clone, Debug)]
 pub enum ResolvedType {
-    Int{signed:bool,width:IntWidth},
-    Float{width:FloatWidth},
+    Int {
+        signed: bool,
+        width: IntWidth,
+    },
+    Float {
+        width: FloatWidth,
+    },
     Char,
     Str,
     //probably going to be implimented as a null checked pointer (at time of creation).
-    Ref{underlining:Box<ResolvedType>},
-    Pointer{underlining:Box<ResolvedType>},
+    Ref {
+        underlining: Box<ResolvedType>,
+    },
+    Pointer {
+        underlining: Box<ResolvedType>,
+    },
     Unit,
     //used as rt only
     Void,
-    Slice{underlining:Box<ResolvedType>},
-    Function{arg:Box<ResolvedType>,returns:Box<ResolvedType>},
-    User{name:String},
+    Slice {
+        underlining: Box<ResolvedType>,
+    },
+    Function {
+        arg: Box<ResolvedType>,
+        returns: Box<ResolvedType>,
+    },
+    User {
+        name: String,
+    },
+
+    Array {
+        underlying : Box<ResolvedType>,
+        size : usize,
+    },
     // ForwardUser{name:String},
-    Alias{actual:Box<ResolvedType>},
-    Generic{name:String},
+    Alias {
+        actual: Box<ResolvedType>,
+    },
+    Generic {
+        name: String,
+    },
+
+    Error,
 }
 
 impl ResolvedType {
-    pub fn replace_generic(self, name:&str, new_ty : Self) -> Self {
+    pub fn replace_generic(self, name: &str, new_ty: Self) -> Self {
         match self {
             Self::Generic { name: old_name } if old_name == name => new_ty,
-            Self::Function { arg, returns } => Self::Function { arg: Box::new(arg.replace_generic(name, new_ty.clone())), returns: Box::new(returns.replace_generic(name, new_ty)) },
-            _ => self
+            Self::Function { arg, returns } => Self::Function {
+                arg: Box::new(arg.replace_generic(name, new_ty.clone())),
+                returns: Box::new(returns.replace_generic(name, new_ty)),
+            },
+            _ => self,
         }
     }
 
@@ -95,13 +125,13 @@ impl ResolvedType {
                 } else {
                     returns.find_first_generic_arg()
                 }
-            },
+            }
             Self::Generic { name } => name.clone(),
-            _ => unreachable!()
+            _ => unreachable!(),
         }
     }
 
-    pub fn replace_first_generic(self, new_ty : Self) -> Self {
+    pub fn replace_first_generic(self, new_ty: Self) -> Self {
         let name = self.find_first_generic_arg();
         self.replace_generic(&name, new_ty)
     }
@@ -110,11 +140,19 @@ impl ResolvedType {
         match self {
             Self::Function { arg, returns } => arg.is_generic() || returns.is_generic(),
             Self::Alias { actual } => actual.is_generic(),
-            Self::Slice { underlining } 
-          | Self::Pointer { underlining } 
-          | Self::Ref { underlining } 
-                => underlining.is_generic(),
+            Self::Slice { underlining }
+            | Self::Pointer { underlining }
+            | Self::Ref { underlining } => underlining.is_generic(),
             Self::Generic { .. } => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_function(&self) -> bool {
+        match self {
+            Self::Function { .. } => true,
+            Self::Alias { actual } => actual.is_function(),
+            Self::Pointer { underlining } | Self::Ref { underlining } => underlining.is_function(),
             _ => false,
         }
     }
@@ -125,59 +163,117 @@ impl ResolvedType {
             ResolvedType::Char => "char".to_string(),
             ResolvedType::Float { width } => "float".to_string() + &width.to_string(),
             ResolvedType::Function { arg, returns } => todo!("how to serialize this"),
-            ResolvedType::Generic { name } => unreachable!("why are you trying to serialize a generic type?"),
-            ResolvedType::Int { signed:false, width } => "uint".to_string() + &width.to_string(),
-            ResolvedType::Int { signed:true, width } => "int".to_string() + &width.to_string(),
+            ResolvedType::Generic { name } => {
+                unreachable!("why are you trying to serialize a generic type?")
+            }
+            ResolvedType::Int {
+                signed: false,
+                width,
+            } => "uint".to_string() + &width.to_string(),
+            ResolvedType::Int {
+                signed: true,
+                width,
+            } => "int".to_string() + &width.to_string(),
             ResolvedType::Pointer { underlining } => "p_".to_string() + &underlining.to_string(),
-            ResolvedType::Ref { underlining } | ResolvedType::Slice { underlining } => todo!("how to serialize this"),
+            ResolvedType::Ref { underlining } | ResolvedType::Slice { underlining } => {
+                todo!("how to serialize this")
+            }
             ResolvedType::Str => "str".to_string(),
             ResolvedType::Unit => "()".to_string(),
             ResolvedType::Void => "".to_string(),
-            ResolvedType::User { name } => name.clone()
+            ResolvedType::User { name } => name.clone(),
+            ResolvedType::Array { underlying, size } => format!("[{};{}]",underlying.to_string(),size),
+            ResolvedType::Error => "<ERROR>".to_string(),
         }
     }
 }
 
-
 #[allow(unused)]
 mod consts {
     use super::*;
-    pub const INT8 : ResolvedType = ResolvedType::Int { signed: true, width: IntWidth::Eight };
-    pub const INT16 : ResolvedType = ResolvedType::Int { signed: true, width: IntWidth::Sixteen };
-    pub const INT32 : ResolvedType = ResolvedType::Int { signed: true, width: IntWidth::ThirtyTwo };
-    pub const INT64 : ResolvedType = ResolvedType::Int { signed: true, width: IntWidth::SixtyFour };
-    pub const UINT8 : ResolvedType = ResolvedType::Int { signed: false, width: IntWidth::Eight };
-    pub const UINT16 : ResolvedType = ResolvedType::Int { signed: false, width: IntWidth::Sixteen };
-    pub const UINT32 : ResolvedType = ResolvedType::Int { signed: false, width: IntWidth::ThirtyTwo };
-    pub const UINT64 : ResolvedType = ResolvedType::Int { signed: false, width: IntWidth::SixtyFour };
-    pub const FLOAT32 : ResolvedType = ResolvedType::Float { width: FloatWidth::ThirtyTwo };
-    pub const FLOAT64 : ResolvedType = ResolvedType::Float { width: FloatWidth::SixtyFour };
-    pub const STR : ResolvedType = ResolvedType::Str;
-    pub const CHAR : ResolvedType = ResolvedType::Char;
-    pub const UNIT : ResolvedType = ResolvedType::Unit;
+    pub const ERROR : ResolvedType = ResolvedType::Error;
+    pub const INT8: ResolvedType = ResolvedType::Int {
+        signed: true,
+        width: IntWidth::Eight,
+    };
+    pub const INT16: ResolvedType = ResolvedType::Int {
+        signed: true,
+        width: IntWidth::Sixteen,
+    };
+    pub const INT32: ResolvedType = ResolvedType::Int {
+        signed: true,
+        width: IntWidth::ThirtyTwo,
+    };
+    pub const INT64: ResolvedType = ResolvedType::Int {
+        signed: true,
+        width: IntWidth::SixtyFour,
+    };
+    pub const UINT8: ResolvedType = ResolvedType::Int {
+        signed: false,
+        width: IntWidth::Eight,
+    };
+    pub const UINT16: ResolvedType = ResolvedType::Int {
+        signed: false,
+        width: IntWidth::Sixteen,
+    };
+    pub const UINT32: ResolvedType = ResolvedType::Int {
+        signed: false,
+        width: IntWidth::ThirtyTwo,
+    };
+    pub const UINT64: ResolvedType = ResolvedType::Int {
+        signed: false,
+        width: IntWidth::SixtyFour,
+    };
+    pub const FLOAT32: ResolvedType = ResolvedType::Float {
+        width: FloatWidth::ThirtyTwo,
+    };
+    pub const FLOAT64: ResolvedType = ResolvedType::Float {
+        width: FloatWidth::SixtyFour,
+    };
+    pub const STR: ResolvedType = ResolvedType::Str;
+    pub const CHAR: ResolvedType = ResolvedType::Char;
+    pub const UNIT: ResolvedType = ResolvedType::Unit;
 }
 pub use consts::*;
-pub fn resolve_from_name(name:TypeName, known_generics:&HashSet<String>) -> ResolvedType {
+pub fn resolve_from_name(name: TypeName, known_generics: &HashSet<String>) -> ResolvedType {
     match name {
         TypeName::FnType(arg, rt) => {
             let arg = match arg.as_ref() {
-                TypeName::ValueType(_)=>resolve_from_name(arg.as_ref().clone(),known_generics).boxed(),
-                TypeName::FnType(_, _) => ResolvedType::Pointer { underlining: resolve_from_name(arg.as_ref().clone(),known_generics).boxed() }.boxed()
+                TypeName::ValueType(_) => {
+                    resolve_from_name(arg.as_ref().clone(), known_generics).boxed()
+                }
+                TypeName::FnType(_, _) => ResolvedType::Pointer {
+                    underlining: resolve_from_name(arg.as_ref().clone(), known_generics).boxed(),
+                }
+                .boxed(),
             };
             let returns = match rt.as_ref() {
                 TypeName::ValueType(v) if v == "()" => ResolvedType::Void.boxed(),
-                TypeName::ValueType(_) => resolve_from_name(rt.as_ref().clone(), known_generics).boxed(),
-                TypeName::FnType(_, _) => ResolvedType::Pointer { underlining: resolve_from_name(rt.as_ref().clone(),known_generics).boxed() }.boxed()
+                TypeName::ValueType(_) => {
+                    resolve_from_name(rt.as_ref().clone(), known_generics).boxed()
+                }
+                TypeName::FnType(_, _) => ResolvedType::Pointer {
+                    underlining: resolve_from_name(rt.as_ref().clone(), known_generics).boxed(),
+                }
+                .boxed(),
             };
             ResolvedType::Function { arg, returns }
-        },
+        }
         TypeName::ValueType(ty) => {
             if ty.starts_with("int") {
-                ResolvedType::Int { signed: true, width: IntWidth::from_str(&ty[3..]) }
+                ResolvedType::Int {
+                    signed: true,
+                    width: IntWidth::from_str(&ty[3..]),
+                }
             } else if ty.starts_with("uint") {
-                ResolvedType::Int { signed: false, width: IntWidth::from_str(&ty[4..]) }
+                ResolvedType::Int {
+                    signed: false,
+                    width: IntWidth::from_str(&ty[4..]),
+                }
             } else if ty.starts_with("float") {
-                ResolvedType::Float { width: FloatWidth::from_str(&ty[5..]) }
+                ResolvedType::Float {
+                    width: FloatWidth::from_str(&ty[5..]),
+                }
             } else if ty == "char" {
                 ResolvedType::Char
             } else if ty == "str" {
@@ -189,25 +285,25 @@ pub fn resolve_from_name(name:TypeName, known_generics:&HashSet<String>) -> Reso
             } else {
                 ResolvedType::User { name: ty }
             }
-        },
+        }
     }
 }
 
 #[derive(Clone)]
 pub struct TypeResolver<'ctx> {
-    known : HashMap<ResolvedType,AnyTypeEnum<'ctx>>,
-    known_generics : HashMap<String,ResolvedType>,
-    ctx : &'ctx Context,
+    known: HashMap<ResolvedType, AnyTypeEnum<'ctx>>,
+    known_generics: HashMap<String, ResolvedType>,
+    ctx: &'ctx Context,
 }
 
-impl <'ctx> TypeResolver<'ctx> {
-    pub fn new(ctx:&'ctx Context) -> Self {
+impl<'ctx> TypeResolver<'ctx> {
+    pub fn new(ctx: &'ctx Context) -> Self {
         let unit = ctx.const_struct(&[], false);
         let unit_t = unit.get_type();
-        let char_t = ctx.i8_type(); 
+        let char_t = ctx.i8_type();
         let str_t = ctx.opaque_struct_type("str");
         let char_ptr_t = char_t.ptr_type(AddressSpace::default());
-        str_t.set_body(&[char_ptr_t.into(),char_ptr_t.into()], false);
+        str_t.set_body(&[char_ptr_t.into(), char_ptr_t.into()], false);
         let i8_t = ctx.i8_type();
         let i16_t = ctx.i16_type();
         let i32_t = ctx.i32_type();
@@ -220,8 +316,18 @@ impl <'ctx> TypeResolver<'ctx> {
             out.insert(ResolvedType::Char, char_t.as_any_type_enum());
             out.insert(ResolvedType::Unit, unit_t.as_any_type_enum());
             out.insert(ResolvedType::Str, str_t.as_any_type_enum());
-            out.insert(ResolvedType::Float { width:FloatWidth::ThirtyTwo }, f32_t.as_any_type_enum());
-            out.insert(ResolvedType::Float { width:FloatWidth::SixtyFour }, f64_t.as_any_type_enum());
+            out.insert(
+                ResolvedType::Float {
+                    width: FloatWidth::ThirtyTwo,
+                },
+                f32_t.as_any_type_enum(),
+            );
+            out.insert(
+                ResolvedType::Float {
+                    width: FloatWidth::SixtyFour,
+                },
+                f64_t.as_any_type_enum(),
+            );
             out.insert(INT8, i8_t.as_any_type_enum());
             out.insert(INT16, i16_t.as_any_type_enum());
             out.insert(INT32, i32_t.as_any_type_enum());
@@ -234,12 +340,12 @@ impl <'ctx> TypeResolver<'ctx> {
         };
         Self {
             known,
-            known_generics : HashMap::new(),
+            known_generics: HashMap::new(),
             ctx,
         }
     }
 
-    pub fn has_type(&self, ty : &ResolvedType)-> bool {
+    pub fn has_type(&self, ty: &ResolvedType) -> bool {
         self.known.contains_key(ty)
     }
 
@@ -258,68 +364,104 @@ impl <'ctx> TypeResolver<'ctx> {
     //         self.resolve_type_basic(ty).ok_or(InsertionError)
     //     }).collect();
     //     let user = self.ctx.opaque_struct_type(&name);
-    //     let body : Vec<_> = body.into_iter().map(Option::unwrap).collect(); 
+    //     let body : Vec<_> = body.into_iter().map(Option::unwrap).collect();
     //     user.set_body(&body, false);
     //     self.known.insert(ResolvedType::User { name },user.as_any_type_enum()).ok_or(InsertionError::UnknownType)
     // }
 
-    fn resolve_type(&mut self,ty : ResolvedType) {
-        if self.has_type(&ty) { return }
+    fn resolve_type(&mut self, ty: ResolvedType) {
+        if self.has_type(&ty) {
+            return;
+        }
         match dbg!(&ty) {
-            ResolvedType::Ref { ref underlining } 
-            | ResolvedType::Pointer { ref underlining } => {
+            ResolvedType::Ref { ref underlining } | ResolvedType::Pointer { ref underlining } => {
                 if let ResolvedType::Function { .. } = underlining.as_ref() {
-                    let result = self.resolve_type_as_any(underlining.as_ref().clone()).into_function_type().ptr_type(AddressSpace::default()).as_any_type_enum();
-                    self.known.insert(ty,result);
+                    let result = self
+                        .resolve_type_as_any(underlining.as_ref().clone())
+                        .into_function_type()
+                        .ptr_type(AddressSpace::default())
+                        .as_any_type_enum();
+                    self.known.insert(ty, result);
                 } else {
                     let result = self.resolve_type_as_any(underlining.as_ref().clone());
                     self.known.insert(ty, result);
                 }
-            },
+            }
             ResolvedType::Slice { ref underlining } => {
-                let underlining = self.resolve_type_as_basic(underlining.as_ref().clone()).ptr_type(AddressSpace::default());
-                self.known.insert(ty, self.ctx.struct_type(&[underlining.into(),underlining.into()], false).as_any_type_enum());
-            },
-            ResolvedType::Function { ref arg, ref returns } => {
+                let underlining = self
+                    .resolve_type_as_basic(underlining.as_ref().clone())
+                    .ptr_type(AddressSpace::default());
+                self.known.insert(
+                    ty,
+                    self.ctx
+                        .struct_type(&[underlining.into(), underlining.into()], false)
+                        .as_any_type_enum(),
+                );
+            }
+            ResolvedType::Function {
+                ref arg,
+                ref returns,
+            } => {
                 let arg = self.resolve_type_as_basic(arg.as_ref().clone());
-                let arg = if arg.is_struct_type() { arg.into_struct_type().ptr_type(AddressSpace::default()).as_basic_type_enum() } else { arg };
-                if returns.as_ref() == &ResolvedType::Unit || returns.as_ref() == &ResolvedType::Void{
-                    self.known.insert(ty, self.ctx.void_type().fn_type(&[arg.into()], false).as_any_type_enum());
+                let arg = if arg.is_struct_type() {
+                    arg.into_struct_type()
+                        .ptr_type(AddressSpace::default())
+                        .as_basic_type_enum()
+                } else {
+                    arg
+                };
+                if returns.as_ref() == &ResolvedType::Unit
+                    || returns.as_ref() == &ResolvedType::Void
+                {
+                    self.known.insert(
+                        ty,
+                        self.ctx
+                            .void_type()
+                            .fn_type(&[arg.into()], false)
+                            .as_any_type_enum(),
+                    );
+                } else {
+                    let rt = self.resolve_type_as_basic(returns.as_ref().clone());
+                    self.known
+                        .insert(ty, rt.fn_type(&[arg.into()], false).as_any_type_enum());
                 }
-                else {
-                    let rt =self.resolve_type_as_basic(returns.as_ref().clone());
-                    self.known.insert(ty, rt.fn_type(&[arg.into()], false).as_any_type_enum());
-                }
-            },
+            }
             ResolvedType::User { name } => todo!(),
             // ResolvedType::ForwardUser { name } => todo!(),
             ResolvedType::Alias { actual } => todo!(),
             ResolvedType::Unit => (),
-            ResolvedType::Generic { .. } => /* not sure what I need to do here yet */ (),
-            _=> unimplemented!()
+            ResolvedType::Generic { .. } =>
+            /* not sure what I need to do here yet */
+            {
+                ()
+            }
+            _ => unimplemented!(),
         }
     }
 
-    pub fn resolve_type_as_basic(&mut self,ty : ResolvedType) -> BasicTypeEnum<'ctx> {
+    pub fn resolve_type_as_basic(&mut self, ty: ResolvedType) -> BasicTypeEnum<'ctx> {
         self.resolve_type(ty.clone());
-        self.known.get(&ty).map(|ty| match ty {
-            AnyTypeEnum::ArrayType(ty) => ty.as_basic_type_enum(),
-            AnyTypeEnum::FloatType(ty) => ty.as_basic_type_enum(),
-            AnyTypeEnum::FunctionType(ty) => ty.ptr_type(AddressSpace::default()).as_basic_type_enum(),
-            AnyTypeEnum::IntType(ty) => ty.as_basic_type_enum(),
-            AnyTypeEnum::PointerType(ty) => ty.as_basic_type_enum(),
-            AnyTypeEnum::StructType(ty) => dbg!(ty).as_basic_type_enum(),
-            AnyTypeEnum::VectorType(ty) => ty.as_basic_type_enum(),
-            AnyTypeEnum::VoidType(_) => unreachable!(),
-        }).unwrap()
+        self.known
+            .get(&ty)
+            .map(|ty| match ty {
+                AnyTypeEnum::ArrayType(ty) => ty.as_basic_type_enum(),
+                AnyTypeEnum::FloatType(ty) => ty.as_basic_type_enum(),
+                AnyTypeEnum::FunctionType(ty) => {
+                    ty.ptr_type(AddressSpace::default()).as_basic_type_enum()
+                }
+                AnyTypeEnum::IntType(ty) => ty.as_basic_type_enum(),
+                AnyTypeEnum::PointerType(ty) => ty.as_basic_type_enum(),
+                AnyTypeEnum::StructType(ty) => dbg!(ty).as_basic_type_enum(),
+                AnyTypeEnum::VectorType(ty) => ty.as_basic_type_enum(),
+                AnyTypeEnum::VoidType(_) => unreachable!(),
+            })
+            .unwrap()
     }
 
-    pub fn resolve_type_as_any(&mut self, ty : ResolvedType) -> AnyTypeEnum<'ctx> {
+    pub fn resolve_type_as_any(&mut self, ty: ResolvedType) -> AnyTypeEnum<'ctx> {
         self.resolve_type(ty.clone());
         *self.known.get(&ty).unwrap()
     }
-
-
 }
 
 enum InsertionError {
@@ -330,10 +472,10 @@ enum InsertionError {
 }
 impl ResolvedType {
     pub fn is_float(&self) -> bool {
-        matches!(self,Self::Float { .. })
+        matches!(self, Self::Float { .. })
     }
 
     pub fn is_int(&self) -> bool {
-        matches!(self,Self::Int{..})
+        matches!(self, Self::Int { .. })
     }
 }

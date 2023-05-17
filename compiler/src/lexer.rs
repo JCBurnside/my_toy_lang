@@ -46,7 +46,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
 
         if self.source_stream.peek() == Some(&',') {
             self.source_stream.advance_by(1).unwrap();
-            return self.lex()
+            return self.lex();
         }
 
         let (ws, count) = self
@@ -176,11 +176,11 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     .clone()
                     .take_while(|c| c.is_alphabetic())
                     .collect::<String>()
-                    == "or" => 
+                    == "or" =>
                 {
                     self.source_stream.advance_by(2).unwrap();
-                    self.curr_pos+= 2;
-                    (Token::For,self.curr_pos)
+                    self.curr_pos += 2;
+                    (Token::For, self.curr_pos)
                 }
 
                 'l' if self
@@ -283,11 +283,11 @@ mod tests {
         use Token::*;
         assert_eq!(
             TokenStream::from_source(
-r#"for <T,U> let foo bar baz : T -> U -> int8 =
+                r#"for <T,U> let foo bar baz : T -> U -> int8 =
     bar + baz
-"#          
+"#
             )
-            .map(|(a,_)| a)
+            .map(|(a, _)| a)
             .collect_vec(),
             #[rustfmt::skip]
             [
@@ -400,8 +400,8 @@ r#"for <T,U> let foo bar baz : T -> U -> int8 =
 
         assert_eq!(
             TokenStream::from_source("for")
-            .map(|(a,_)| a)
-            .collect_vec(),
+                .map(|(a, _)| a)
+                .collect_vec(),
             [Token::For, Token::EoF],
             "For generics"
         );
@@ -409,8 +409,6 @@ r#"for <T,U> let foo bar baz : T -> U -> int8 =
 
     #[test]
     fn literals_edge_cases() {
-        
-
         assert_eq!(
             TokenStream::from_source("\"foo bar \\\"baz\"")
                 .map(|(a, _)| a)
@@ -441,12 +439,16 @@ r#"for <T,U> let foo bar baz : T -> U -> int8 =
         );
     }
 
-
     #[test]
     fn generic_test() {
-
+        dbg!(TokenStream::from_source(
+            r#"let foo : int32 =
+    return 5
+"#
+        )
+        .map(|(a, _)| a)
+        .collect_vec());
     }
-
 
     #[test]
     fn token_chain() {

@@ -1,4 +1,4 @@
- #![feature(stmt_expr_attributes)]
+#![feature(stmt_expr_attributes)]
 #![feature(iter_advance_by)]
 #![feature(drain_filter)]
 #![feature(let_chains)]
@@ -12,17 +12,17 @@ use std::path::PathBuf;
 
 pub mod ast;
 // mod langstd;
+mod code_gen;
 mod lexer;
 mod parser;
 mod tokens;
-mod util;
-pub mod types;
-mod code_gen;
 pub mod typed_ast;
+pub mod types;
+mod util;
 
-use ast::{Expr, TypeName};
+use ast::{Expr, Statement, TypeName, ValueDeclaration};
 use typed_ast::TypedExpr;
-use code_gen::CodeGen;
+// use code_gen::CodeGen;
 use inkwell::module::Module;
 use itertools::Itertools;
 use lexer::TokenStream;
@@ -32,95 +32,98 @@ use types::{ResolvedType, TypeResolver};
 use inkwell::context::Context;
 use multimap::MultiMap;
 
-
-
-pub fn from_file<'ctx>(file : &PathBuf, ctx : &'ctx Context,mut fwd_declarations : HashMap<String, ResolvedType>) -> Result<Module<'ctx>,Vec<Box<dyn Display>>> {
-    
-    // TODO: I would like to make this work for now I will read the whole file to a string then 
+pub fn from_file<'ctx>(
+    file: &PathBuf,
+    ctx: &'ctx Context,
+    mut fwd_declarations: HashMap<String, ResolvedType>,
+) -> Result<Module<'ctx>, Vec<Box<dyn Display>>> {
+    // TODO: I would like to make this work for now I will read the whole file to a string then
     // let file = File::open(file).map_err(Box::new).map_err(|err| vec![err as Box<dyn Display>])?;
     // let file = BufReader::new(file);
     // let lex = TokenStream::from_iter(file.chars().map(|r| r.unwrap()));
-    let contents = std::fs::read_to_string(file).map_err(Box::new).map_err(|err| vec![err as Box<dyn Display>])?;
+    let contents = std::fs::read_to_string(file)
+        .map_err(Box::new)
+        .map_err(|err| vec![err as Box<dyn Display>])?;
     let strm = TokenStream::from_source(&contents);
     let mut parser = Parser::from_stream(strm);
     let module = ctx.create_module(file.file_stem().unwrap().to_str().unwrap());
     let file_name = file.file_name().unwrap();
     module.set_source_file_name(file_name.to_str().unwrap());
     let type_resolver = TypeResolver::new(ctx);
-    let code_gen = CodeGen::with_module(
-        &ctx,
-        module,
-        type_resolver.clone(),
-        fwd_declarations.clone(),
-        HashMap::new(),
-        MultiMap::new()
-    );
-    let mut ast = Vec::new();
-    let mut errors = Vec::new();
-    while parser.has_next() {
-        match parser.next_expr() {
-            Ok(expr) => {
-                match &expr {
-                    #[allow(unused)]
-                    Expr::Declaration {
-                        is_op,
-                        ident,
-                        ty,
-                        args,
-                        value,
-                        generictypes,
-                    } => {
-                        match (ty, args) {
-                            (Some(_), Some(args)) if args.iter().any(|(_, it)| it.is_some()) => {
-                                panic!("doubled typed");
-                            }
-                            (Some(TypeName::ValueType(_)), Some(_)) => panic!("Arg count mismatch"), //should be no args.  will need to change when fn keyword is introduced.
-                            (None, Some(args)) if args.iter().any(|(_, it)| it.is_none()) => {
-                                panic!("some type in the function is not known")
-                            }
-                            (Some(TypeName::FnType(_, _)), Some(_)) => {
-                                if !is_op {
-                                    fwd_declarations.entry(ident.clone()).insert_entry(types::resolve_from_name(ty.as_ref().unwrap().clone(), &generictypes.iter().cloned().collect()));
-                                }
-                            }
-                            (None, Some(args)) => {
-                                // let args = args.iter()
-                                //     .map(|(_,ty)| ty.unwrap())
-                                //     .map(|ty| resolve_type(ty, &known_types, &ctx).unwrap())
-                                //     .collect_vec();
-                                // let rt = if let Expr::Block { sub } = value.as_ref() {
-                                //     let sub: Vec<TypedExpr> = sub
-                                //         .iter()
-                                //         .filter(|expr| matches!(expr,Expr::Return { .. }))
-                                //         .map(|expr| match expr {
-                                //             Expr::BinaryOpCall { ident, .. } |
-                                //             Expr::UnaryOpCall { ident, .. } |
-                                //             Expr::FnCall { ident, .. } => known_function_types[ident],
-        
-                                //         })
-                                //         .collect::<Result<Vec<_>, _>>().unwrap();
-        
-                                //     let last = sub.last().unwrap().get_rt(types);
-        
-                                //     if valid {
-                                //         last
-                                //     } else {
-                                //         panic!("could not determine return type");
-                                //     }
-                                // }
-                                todo!("For now individual arg typing and return type inference is planned but not supported.");
-                            }
-                            _ => unimplemented!(),
-                        }
-                        
-                    }
-                    _ => unreachable!(),
-                }
-                ast.push(expr);
-            },
-            Err(err) => errors.push(err),
-        }
-    }
+    // let code_gen = CodeGen::with_module(
+    //     &ctx,
+    //     module,
+    //     type_resolver.clone(),
+    //     fwd_declarations.clone(),
+    //     HashMap::new(),
+    //     MultiMap::new()
+    // );
+    // let mut ast = Vec::new();
+    // let mut errors = Vec::new();
+    // while parser.has_next() {
+    //     match parser.next_statement() {
+    //         Ok(expr) => {
+    //             match &expr {
+    //                 #[allow(unused)]
+    //                 Statement::Declaration(ValueDeclaration {
+    //                     is_op,
+    //                     ident,
+    //                     ty,
+    //                     args,
+    //                     value,
+    //                     generictypes,
+    //                 }) => {
+    // //                     match (ty, args) {
+    //                         (Some(_), Some(args)) if args.iter().any(|(_, it)| it.is_some()) => {
+    //                             panic!("doubled typed");
+    //                         }
+    //                         (Some(TypeName::ValueType(_)), Some(_)) => panic!("Arg count mismatch"), //should be no args.  will need to change when fn keyword is introduced.
+    //                         (None, Some(args)) if args.iter().any(|(_, it)| it.is_none()) => {
+    //                             panic!("some type in the function is not known")
+    //                         }
+    //                         (Some(TypeName::FnType(_, _)), Some(_)) => {
+    //                             if !is_op {
+    //                                 fwd_declarations.entry(ident.clone()).insert_entry(types::resolve_from_name(ty.as_ref().unwrap().clone(), &generictypes.iter().cloned().collect()));
+    //                             }
+    //                         }
+    //                         (None, Some(args)) => {
+    //                             // let args = args.iter()
+    //                             //     .map(|(_,ty)| ty.unwrap())
+    //                             //     .map(|ty| resolve_type(ty, &known_types, &ctx).unwrap())
+    //                             //     .collect_vec();
+    //                             // let rt = if let Expr::Block { sub } = value.as_ref() {
+    //                             //     let sub: Vec<TypedExpr> = sub
+    //                             //         .iter()
+    //                             //         .filter(|expr| matches!(expr,Expr::Return { .. }))
+    //                             //         .map(|expr| match expr {
+    //                             //             Expr::BinaryOpCall { ident, .. } |
+    //                             //             Expr::UnaryOpCall { ident, .. } |
+    //                             //             Expr::FnCall { ident, .. } => known_function_types[ident],
+
+    //                             //         })
+    //                             //         .collect::<Result<Vec<_>, _>>().unwrap();
+
+    //                             //     let last = sub.last().unwrap().get_rt(types);
+
+    //                             //     if valid {
+    //                             //         last
+    //                             //     } else {
+    //                             //         panic!("could not determine return type");
+    //                             //     }
+    //                             // }
+    //                             todo!("For now individual arg typing and return type inference is planned but not supported.");
+    //                         }
+    //                         _ => unimplemented!(),
+    //                     }
+
+    //                 }
+    //                 _ => unreachable!(),
+    //             }
+    //             ast.push(expr);
+    //         },
+    //         Err(err) => errors.push(err),
+    //     }
+    // }
     // .map(|expr| {
     //     let functions = fwd_declarations.clone();
     //     TypedExpr::try_from(&ctx, type_resolver.clone(), functions, &HashSet::new(), expr)
@@ -132,25 +135,25 @@ pub fn from_file<'ctx>(file : &PathBuf, ctx : &'ctx Context,mut fwd_declarations
     // .flatten_ok()
     // .collect::<Result<Vec<_>, _>>()
     // .unwrap();
-    let (ast,generics,type_errors) = ast
-        .into_iter()
-        .map(|expr|{
-            let functions = fwd_declarations.clone();
-            TypedExpr::try_from(ctx, type_resolver.clone(), functions, &HashSet::new(), expr)
-        })
-        .fold((Vec::new(),Vec::new(),Vec::new()), |(mut concrete, mut generic, mut errors),expr| {
-            match expr {
-                Ok((expr,_)) => match expr {
-                    TypedExpr::Declaration { generic : true, .. } => generic.push(expr),
-                    TypedExpr::Declaration { .. } => concrete.push(expr),
-                    _ => unreachable!()
-                }
-                Err(e) => errors.push(e),
-            }
-            (concrete,generic,errors)
-        });
-    
-    let module = code_gen.compile_program(ast);
+    // let (ast,generics,type_errors) = ast
+    //     .into_iter()
+    //     .map(|expr|{
+    //         let functions = fwd_declarations.clone();
+    //         TypedExpr::try_from(ctx, type_resolver.clone(), functions, &HashSet::new(), expr)
+    //     })
+    //     .fold((Vec::new(),Vec::new(),Vec::new()), |(mut concrete, mut generic, mut errors),expr| {
+    //         match expr {
+    //             Ok((expr,_)) => match expr {
+    //                 TypedExpr::Declaration { generic : true, .. } => generic.push(expr),
+    //                 TypedExpr::Declaration { .. } => concrete.push(expr),
+    //                 _ => unreachable!()
+    //             }
+    //             Err(e) => errors.push(e),
+    //         }
+    //         (concrete,generic,errors)
+    //     });
+
+    // let module = code_gen.compile_program(ast);
     Ok(module)
 }
 
@@ -169,7 +172,7 @@ pub fn from_file<'ctx>(file : &PathBuf, ctx : &'ctx Context,mut fwd_declarations
 //     let put_int32_fn = type_resolver.resolve_type_as_any(ResolvedType::Function { arg: types::INT32.boxed(), returns: types::UNIT.boxed() }).into_function_type();
 //     #[allow(unused)]
 //     let put_int32_fn = std_mod.add_function("put_int32", put_int32_fn, None);
-    
+
 //     let module = ctx.create_module("JIT");
 
 //     // known_functions.insert("put_char".to_string(), put_char_fn);
@@ -273,23 +276,23 @@ pub fn from_file<'ctx>(file : &PathBuf, ctx : &'ctx Context,mut fwd_declarations
 //     #[allow(non_snake_case)]
 //     let (DIbuider,_DIunit) = module.create_debug_info_builder(
 //         false,
-//         DWARFSourceLanguage::Haskell, 
-//         "testing", 
-//         std::env::current_dir().unwrap().to_str().unwrap(), 
-//         "", 
-//         false, 
-//         "", 
-//         0, 
-//         "", 
-//         DWARFEmissionKind::Full, 
+//         DWARFSourceLanguage::Haskell,
+//         "testing",
+//         std::env::current_dir().unwrap().to_str().unwrap(),
+//         "",
+//         false,
+//         "",
 //         0,
-//         false, 
-//         false, 
-//         "", 
+//         "",
+//         DWARFEmissionKind::Full,
+//         0,
+//         false,
+//         false,
+//         "",
 //         ""
 //     );
 //     DIbuider.finalize();
-    
+
 //     // let jit = module
 //     //     .create_jit_execution_engine(inkwell::OptimizationLevel::None)
 //     //     .expect("could not create jit engine");
