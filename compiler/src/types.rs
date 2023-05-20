@@ -4,7 +4,7 @@ use crate::{ast::TypeName, util::ExtraUtilFunctions};
 use inkwell::{
     context::Context,
     types::{AnyType, AnyTypeEnum, BasicType, BasicTypeEnum},
-    AddressSpace,
+    AddressSpace, attributes::Attribute,
 };
 
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
@@ -204,6 +204,7 @@ impl ResolvedType {
             ResolvedType::Error => "<ERROR>".to_string(),
         }
     }
+
 }
 
 #[allow(unused)]
@@ -314,6 +315,40 @@ impl<'ctx> TypeResolver<'ctx> {
 
     pub fn has_type(&self, ty: &ResolvedType) -> bool {
         self.known.contains_key(ty)
+    }
+
+    fn get_attributes_for_arg(&self, ty:&ResolvedType) -> Vec<inkwell::attributes::Attribute> {
+        let non_null = Attribute::get_named_enum_kind_id("nonnull");
+        let noundef = Attribute::get_named_enum_kind_id("noundef");
+        match ty {
+            ResolvedType::Pointer { underlining } => vec![],
+            ResolvedType::Slice { .. } |
+            ResolvedType::Function { .. } |
+            ResolvedType::Ref { .. } |
+            ResolvedType::Array { .. } => {
+                vec![self.ctx.create_enum_attribute(non_null, 1), self.ctx.create_enum_attribute(noundef, 1)]
+            },
+            ResolvedType::Alias { actual } => self.get_attributes_for_arg(&actual),
+            ResolvedType::Generic { name } => unreachable!("there should be no more generics by this point"),
+            _ => vec![],
+        }
+    }
+
+    pub(crate) fn get_attributes_for_args(&self, ty : &ResolvedType) -> Vec<Vec<inkwell::attributes::Attribute>> {
+        match ty {
+            ResolvedType::Slice { .. } |
+            ResolvedType::Ref { .. } => vec![self.get_attributes_for_arg(ty)],
+            ResolvedType::Pointer { underlining } => vec![],
+            ResolvedType::Function { arg, returns } => 
+                std::iter::once(self.get_attributes_for_arg(arg.as_ref()))
+                .chain(self.get_attributes_for_args(returns.as_ref()).into_iter())
+                .collect(),
+            ResolvedType::User { .. } => vec![],
+            ResolvedType::Array { underlying, size } => todo!("convert array return type to sret param"),
+            ResolvedType::Alias { actual } => self.get_attributes_for_args(&actual),
+            ResolvedType::Generic { name } => unreachable!("there should be no more generics by the time this is called"),
+            _ => vec![],
+        }
     }
 
     // pub fn insert_many_user_types(&mut self,types:Vec<(String,Vec<ResolvedType>)>) -> Vec<Result<AnyTypeEnum,Vec<InsertionError>>> {
