@@ -1,0 +1,10 @@
+let use_fn fun a : (int32 -> int32) -> int32 -> int32 =
+    return fun a
+
+let id a : int32 -> int32 = a
+
+let main _ : () -> () = 
+    let merp : int32 -> int32 = use_fn id
+    merp 3
+    print_str "hello from jit!"
+    return ()

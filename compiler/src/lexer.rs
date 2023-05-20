@@ -392,7 +392,7 @@ mod tests {
     fn singled_out() {
         assert_eq!(
             TokenStream::from_source("\n\tlet")
-                .map(|(a, _)| dbg!(a))
+                .map(|(a, _)| a)
                 .collect_vec(),
             [Token::BeginBlock, Token::Let, Token::EoF],
             "Begin block"
@@ -441,13 +441,13 @@ mod tests {
 
     #[test]
     fn generic_test() {
-        dbg!(TokenStream::from_source(
+        TokenStream::from_source(
             r#"let foo : int32 =
     return 5
 "#
         )
         .map(|(a, _)| a)
-        .collect_vec());
+        .collect_vec();
     }
 
     #[test]

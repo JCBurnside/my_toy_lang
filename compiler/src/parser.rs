@@ -6,7 +6,7 @@ use crate::{
     ast::{self, BinaryOpCall, Expr, FnCall, Statement, ValueDeclaration, ValueType},
     lexer::TokenStream,
     tokens::Token,
-    types::{self, resolve_from_name},
+    types::{self,ResolvedType},
     util::ExtraUtilFunctions,
 };
 
@@ -32,7 +32,7 @@ enum ParseErrorReason {
 
 pub type ParserResult = Result<crate::ast::Expr, ParseError>;
 
-pub struct Parser<T: Clone>
+pub(crate) struct Parser<T: Clone>
 where
     T: Iterator<Item = (Token, usize)>,
 {
@@ -41,7 +41,7 @@ where
 
 impl<'str> Parser<TokenStream<Peekable<Chars<'str>>>> {
     #[cfg(test)]
-    fn from_source(source: &'str str) -> Self {
+    pub(crate) fn from_source(source: &'str str) -> Self {
         Self {
             stream: TokenStream::from_source(source).peekable(),
         }
@@ -63,20 +63,31 @@ where
             .peek()
             .map_or(false, |(token, _)| !token.is_eof())
     }
-
+    pub(crate) fn module(mut self, name: String) -> ast::ModuleDeclaration {
+        let mut decls = Vec::new();
+        while self.has_next() {
+            match self.declaration() {
+                Ok(decl) => decls.push(decl),
+                Err(e) => println!("{:?}", e),
+            }
+        }
+        ast::ModuleDeclaration {
+            name: Some(name),
+            declarations: decls,
+        }
+    }
     pub fn next_statement(&mut self) -> Result<Statement, ParseError> {
         let _x = self.stream.peek();
-        ();
         match self.stream.clone().next() {
             Some((Token::NewLine, _)) => {
                 self.stream.advance_by(1).unwrap();
                 self.next_statement()
             }
             Some((Token::Let, _)) | Some((Token::For, _)) => {
-                Ok(Statement::Declaration(self.declaration()?))
+                Ok(Statement::Declaration(self.fn_declaration()?))
             }
             Some((Token::Return, _)) => self.ret(),
-            Some((Token::Ident(_),_)) => Ok(Statement::FnCall(self.function_call()?)),
+            Some((Token::Ident(_), _)) => Ok(Statement::FnCall(self.function_call()?)),
             _ => unreachable!("how?"),
         }
     }
@@ -250,30 +261,32 @@ where
         make_literal(token, span)
     }
 
-    pub(crate) fn collect_type(&mut self) -> Result<ast::TypeName, ParseError> {
+    pub(crate) fn collect_type(&mut self) -> Result<ResolvedType, ParseError> {
         let ty = self.stream.next();
         if let Some((Token::Ident(ty), span)) = ty {
             if let Some((Token::Arrow, _)) = self.stream.peek() {
                 self.stream.advance_by(1).unwrap();
                 let result = self.collect_type()?;
-                Ok(ast::TypeName::FnType(
-                    ast::TypeName::ValueType(ty).into_rc(),
-                    result.into_rc(),
-                ))
+                let ty = type_from_string(&ty);
+                Ok(ResolvedType::Function { 
+                    arg: ty.boxed(),
+                    returns : result.boxed(),
+                })
             } else {
-                Ok(ast::TypeName::ValueType(ty))
+                let ty =type_from_string(&ty);
+                Ok(ty)
             }
         } else if let Some((Token::GroupOpen, span)) = ty {
             if let Some((Token::GroupClose, _)) = self.stream.peek() {
                 self.stream.next();
                 return if let Some((Token::Arrow, _)) = self.stream.peek() {
                     self.stream.next();
-                    Ok(ast::TypeName::FnType(
-                        ast::TypeName::ValueType("()".to_string()).into_rc(),
-                        self.collect_type()?.into_rc(),
-                    ))
+                    Ok(ResolvedType::Function {
+                        arg:types::UNIT.boxed(),
+                        returns: self.collect_type()?.boxed(),
+                    })
                 } else {
-                    Ok(ast::TypeName::ValueType("()".to_string()))
+                    Ok(types::UNIT)
                 };
             }
             let ty = self.collect_type()?;
@@ -281,7 +294,7 @@ where
                 if let Some((Token::Arrow, _)) = self.stream.peek() {
                     self.stream.advance_by(1).unwrap();
                     let result = self.collect_type()?;
-                    Ok(ast::TypeName::FnType(ty.into_rc(), result.into_rc()))
+                    Ok(ResolvedType::Function { arg:ty.boxed(), returns: result.boxed() })
                 } else {
                     Ok(ty)
                 }
@@ -307,7 +320,20 @@ where
         todo!("compose")
     }
 
-    fn declaration(&mut self) -> Result<ValueDeclaration, ParseError> {
+    fn declaration(&mut self) -> Result<ast::Declaration, ParseError> {
+        match self.stream.peek() {
+            Some((Token::For | Token::Let, _)) => {
+                Ok(ast::Declaration::Value(self.fn_declaration()?))
+            },
+            Some((Token::NewLine,_)) => {
+                self.stream.next();
+                self.declaration()
+            }
+            _ => unimplemented!(),
+        }
+    }
+
+    fn fn_declaration(&mut self) -> Result<ValueDeclaration, ParseError> {
         let generics = if let Some((Token::For, _)) = self.stream.peek() {
             let Some((_,span)) = self.stream.next() else { unreachable!() };
             if let Some((Token::Op(op),_)) = self.stream.next() && op == "<" {
@@ -334,9 +360,7 @@ where
         if generics.len() != 0 {
             self.stream.advance_by(generics.len() + 1).unwrap();
         }
-        #[cfg(debug_assertions)]
-        let _peeked = self.stream.peek();
-        if let Some((Token::Let, start)) = dbg!(self.stream.next()) {
+        if let Some((Token::Let, start)) = self.stream.next() {
             let (token, ident_span) = self.stream.next().unwrap();
             return match token {
                 Token::Ident(ident) => {
@@ -356,7 +380,7 @@ where
                             } else {
                                 ValueType::Expr(self.next_expr()?)
                             };
-                            Ok(ValueDeclaration { is_op: false, ident, ty: Some(resolve_from_name(ty, &HashSet::new())), args: HashSet::new(), value, generictypes : HashSet::new()})
+                            Ok(ValueDeclaration { is_op: false, ident, ty: Some(ty), args: Vec::new(), value, generictypes : HashSet::new()})
                         } else {
                             Err(ParseError{
                                 span:(start,ident_span+ident.len()),
@@ -383,10 +407,10 @@ where
                                 reason: ParseErrorReason::IndentError,
                             });
                         }
-                        let args: HashSet<String> = args.into_iter().collect();
                         if let Some((Token::Colon, _next)) = self.stream.peek() {
                             self.stream.next();
                             let ty = self.collect_type()?;
+                            let ty = generics.iter().fold(ty,|ty,name| ty.replace_user_with_generic(&name));
                             let next = self.stream.next();
                             if let Some((Token::Op(eq),eq_span)) = next
                             && eq == "="
@@ -404,7 +428,7 @@ where
                                 Ok(ValueDeclaration {
                                     is_op: false,
                                     ident,
-                                    ty: Some(resolve_from_name(ty,&generics)),
+                                    ty: Some(ty),
                                     args,
                                     value,
                                     generictypes:generics
@@ -470,7 +494,8 @@ where
                             Ok(ValueDeclaration {
                                 is_op: false,
                                 ident,
-                                ty: Some(resolve_from_name(ty,&generics)), args: HashSet::new(),
+                                ty: Some(ty), 
+                                args: Vec::new(),
                                 value: value,
                                 generictypes:generics})
                         } else {
@@ -500,18 +525,19 @@ where
                                 reason: ParseErrorReason::IndentError,
                             });
                         }
-                        let args: HashSet<String> = args.into_iter().collect();
-
                         if let Some((Token::Colon, _next)) = self.stream.peek() {
                             self.stream.next();
                             let ty = self.collect_type()?;
+                            let ty = generics.iter().fold(ty,|ty,name| {
+                                ty.replace_user_with_generic(&name)
+                            });
                             let next = self.stream.next();
                             if let Some((Token::Op(eq),eq_span)) = next
                             && eq == "="
                             {
                                 
                             self.stream.peeking_take_while(|(t,_)| t == &Token::NewLine).collect_vec();
-                                let value = if let Some((Token::BeginBlock,_)) = dbg!(self.stream.peek()) {
+                                let value = if let Some((Token::BeginBlock,_)) = self.stream.peek() {
                                     ValueType::Function(self.collect_block()?)
                                 } else if let Some((Token::Compose,_)) = self.stream.clone().nth(1) {
                                     ValueType::Expr(self.compose()?)
@@ -523,7 +549,7 @@ where
                                 Ok(ValueDeclaration {
                                     is_op: true,
                                     ident,
-                                    ty: Some(resolve_from_name(ty, &generics)),
+                                    ty: Some(ty),
                                     args,
                                     value,
                                     generictypes:generics
@@ -773,7 +799,31 @@ fn make_literal(token: Token, span: usize) -> ParserResult {
         }),
     }
 }
-
+fn type_from_string(name : &str) -> ResolvedType {
+    match name {
+        "str" => types::STR,
+        "char" => types::CHAR,
+        ty if ty.starts_with("int") => {
+            let size = ty.strip_prefix("int");
+            match size {
+                Some("8") => types::INT8,
+                Some("16") => types::INT16,
+                Some("32") => types::INT32,
+                Some("64") => types::INT64,
+                _ => ResolvedType::User { name: ty.to_string(), generics:Vec::new()}
+            }
+        },
+        ty if ty.starts_with("float") => {
+            let size = ty.strip_prefix("float");
+            match size {
+                Some("32") => types::FLOAT32,
+                Some("64") => types::FLOAT64,
+                _ => ResolvedType::User { name: ty.to_string(), generics:Vec::new() }
+            }
+        },
+        _ => ResolvedType::User { name: name.to_string(), generics:Vec::new() }
+    }
+}
 fn is_pipe_op(op: &str) -> bool {
     op.ends_with('>') && op[..op.len() - 2].chars().all(|c| c == '|')
 }
@@ -789,7 +839,7 @@ mod tests {
 
     use inkwell::context::Context;
 
-    use crate::types::{ResolvedType, TypeResolver};
+    use crate::{types::{ResolvedType, TypeResolver}, ast::Declaration};
 
     use super::*;
     #[test]
@@ -799,14 +849,10 @@ mod tests {
         let expr = Parser::from_source(SRC).next_expr().unwrap();
         let ctx = Context::create();
         let type_resolver = TypeResolver::new(&ctx);
-        let mut values = HashMap::new();
         let ty = Parser::from_source("int32 -> int32 -> int32")
             .collect_type()
             .unwrap();
-        values.insert(
-            "foo".to_owned(),
-            types::resolve_from_name(ty, &HashSet::new()),
-        );
+        
 
         // let expr = TypedExpr::try_from(&ctx, type_resolver, values, &HashSet::new(), expr).unwrap();
         // println!("{:?}",expr);
@@ -820,7 +866,7 @@ mod tests {
                 is_op: false,
                 ident: "foo".to_owned(),
                 ty: Some(types::INT32),
-                args: HashSet::new(),
+                args: Vec::new(),
                 value: ValueType::Expr(Expr::NumericLiteral {
                     value: "5".to_string(),
                     ty: types::INT32
@@ -839,7 +885,7 @@ mod tests {
                 is_op: false,
                 ident: "foo".to_owned(),
                 ty: Some(types::INT32),
-                args: HashSet::new(),
+                args: Vec::new(),
                 value: ValueType::Function(vec![Statement::Return(Expr::NumericLiteral {
                     value: "5".to_string(),
                     ty: types::INT32
@@ -862,17 +908,14 @@ let foo _ : ( int32 -> int32 ) -> int32 =
                 is_op: false,
                 ident: "foo".to_owned(),
                 ty: Some(ResolvedType::Function {
-                    arg: ResolvedType::Pointer {
-                        underlining: ResolvedType::Function {
-                            arg: types::INT32.boxed(),
-                            returns: types::INT32.boxed()
-                        }
-                        .boxed(),
+                    arg:  ResolvedType::Function {
+                        arg: types::INT32.boxed(),
+                        returns: types::INT32.boxed()
                     }
                     .boxed(),
                     returns: types::INT32.boxed()
                 }),
-                args: HashSet::from_iter(vec!["_".to_string()].into_iter()),
+                args: vec!["_".to_string()],
                 value: ValueType::Function(vec![Statement::Return(Expr::NumericLiteral {
                     value: "0".to_string(),
                     ty: types::INT32
@@ -893,16 +936,13 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                 ident: "foo".to_owned(),
                 ty: Some(ResolvedType::Function {
                     arg: types::INT32.boxed(),
-                    returns: ResolvedType::Pointer {
-                        underlining: ResolvedType::Function {
-                            arg: types::INT32.boxed(),
-                            returns: types::INT32.boxed()
-                        }
-                        .boxed()
+                    returns: ResolvedType::Function {
+                        arg: types::INT32.boxed(),
+                        returns: types::INT32.boxed()
                     }
                     .boxed()
                 }),
-                args: HashSet::from_iter(vec!["_".to_string()].into_iter()),
+                args: Vec::from_iter(vec!["_".to_string()].into_iter()),
                 value: ValueType::Function(vec![Statement::Return(Expr::NumericLiteral {
                     value: "0".to_owned(),
                     ty: types::INT32,
@@ -923,7 +963,7 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                 is_op: false,
                 ident: "foo".to_owned(),
                 ty: Some(types::INT32),
-                args: HashSet::new(),
+                args: Vec::new(),
                 value: ValueType::Expr(Expr::NumericLiteral {
                     value: "3".to_owned(),
                     ty: types::INT32
@@ -941,13 +981,13 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                     arg: types::INT32.boxed(),
                     returns: types::INT32.boxed()
                 }),
-                args: HashSet::from_iter(vec!["quz".to_string()].into_iter()),
+                args: Vec::from_iter(vec!["quz".to_string()].into_iter()),
                 value: ValueType::Function(vec![
                     Statement::Declaration(ValueDeclaration {
                         is_op: false,
                         ident: "baz".to_owned(),
                         ty: Some(types::STR),
-                        args: HashSet::new(),
+                        args: Vec::new(),
                         value: ValueType::Expr(Expr::StringLiteral(r#"merp " yes"#.to_string())),
                         generictypes: HashSet::new(),
                     }),
@@ -967,14 +1007,13 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                 ident: "^^".to_owned(),
                 ty: Some(ResolvedType::Function {
                     arg: types::INT32.boxed(),
-                    returns: ResolvedType::Pointer { underlining: ResolvedType::Function {
+                    returns:ResolvedType::Function {
                         arg: types::INT32.boxed(),
                         returns: types::INT32.boxed()
                     }
                     .boxed()
-                }.boxed()
                 }),
-                args: HashSet::from_iter(vec!["lhs".to_string(), "rhs".to_string()].into_iter()),
+                args: Vec::from_iter(vec!["lhs".to_string(), "rhs".to_string()].into_iter()),
                 value: ValueType::Function(vec![
                     Statement::FnCall(FnCall {
                         value: Expr::ValueRead("bar".to_string()).boxed(),
@@ -1010,7 +1049,7 @@ let main _ : int32 -> int32 =
                     arg: types::INT32.boxed(),
                     returns: types::INT32.boxed()
                 }),
-                args: HashSet::from_iter(vec!["_".to_string()].into_iter()),
+                args: Vec::from_iter(vec!["_".to_string()].into_iter()),
                 value: ValueType::Function(vec![
                     Statement::FnCall(FnCall {
                         value: Expr::ValueRead("put_int32".to_string()).boxed(),
@@ -1089,7 +1128,7 @@ let main _ : int32 -> int32 =
                 is_op: false,
                 ident: "main".to_owned(),
                 ty: None,
-                args: HashSet::from_iter(vec!["_".to_string()].into_iter()),
+                args: Vec::from_iter(vec!["_".to_string()].into_iter()),
                 value: ValueType::Function(vec![
                     Statement::FnCall(FnCall {
                         value: Expr::ValueRead("print_int32".to_owned()).boxed(),
@@ -1119,5 +1158,46 @@ let main _ : int32 -> int32 =
             }),
             parser.next_statement().unwrap()
         )
+    }
+
+    #[test]
+    fn huh() {
+        const CODE : &'static str = include_str!("../../cli/test.fb");
+        let mut parser = Parser::from_source(CODE);
+        let decl0 = parser.next_statement().unwrap();
+        assert_eq!(
+            decl0,
+            Statement::Declaration(ValueDeclaration { 
+                is_op: false,
+                ident: "test".to_string(), 
+                args: vec!["a".to_string()], 
+                ty: Some(ResolvedType::Function { 
+                    arg: ResolvedType::Generic { name: "T".to_string() }.boxed(), 
+                    returns:types::INT32.boxed(), 
+                }), 
+                value: ValueType::Function(vec![
+                    Statement::Return(Expr::NumericLiteral { value: "3".to_string(), ty: types::INT32 })
+                ]), 
+                generictypes: ["T".to_string()].into_iter().collect() })
+        );
+        let decl1 = parser.next_statement().unwrap();
+        assert_eq!(
+            decl1,
+            Statement::Declaration(ValueDeclaration { 
+                is_op: false,
+                ident: "test2".to_string(), 
+                args: vec!["a".to_string(),"b".to_string()], 
+                ty: Some(ResolvedType::Function { 
+                    arg: ResolvedType::Generic { name: "T".to_string() }.boxed(), 
+                    returns:ResolvedType::Function { 
+                        arg: types::INT32.boxed(), 
+                        returns:types::INT32.boxed(), 
+                    }.boxed(), 
+                }), 
+                value: ValueType::Function(vec![
+                    Statement::Return(Expr::ValueRead("b".to_string()))
+                ]), 
+                generictypes: ["T".to_string()].into_iter().collect() })
+        );
     }
 }

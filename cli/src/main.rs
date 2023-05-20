@@ -58,9 +58,9 @@ fn main() {
                 jitstd.print_to_file("./jitstd.llvm").unwrap();
                 // TODO: Jit redirects.
                 unsafe {
-                    jit.get_function::<unsafe extern "C" fn(()) -> ()>("main")
+                    jit.get_function::<unsafe extern "C" fn() -> ()>("main")
                         .unwrap()
-                        .call(());
+                        .call();
                 }
             } else if args.output_llvm {
                 if let Some(output) = args.out_file {

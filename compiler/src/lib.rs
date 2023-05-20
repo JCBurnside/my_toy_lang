@@ -6,6 +6,8 @@
 #![feature(if_let_guard)]
 #![feature(extend_one)]
 #![feature(entry_insert)]
+#![feature(hash_drain_filter)]
+#![feature(result_option_inspect)]
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::path::PathBuf;
@@ -20,8 +22,8 @@ pub mod typed_ast;
 pub mod types;
 mod util;
 
-use ast::{Expr, Statement, TypeName, ValueDeclaration};
-use typed_ast::TypedExpr;
+use code_gen::CodeGen;
+use typed_ast::{TypedModuleDeclaration, TypedDeclaration};
 // use code_gen::CodeGen;
 use inkwell::module::Module;
 use itertools::Itertools;
@@ -35,7 +37,7 @@ use multimap::MultiMap;
 pub fn from_file<'ctx>(
     file: &PathBuf,
     ctx: &'ctx Context,
-    mut fwd_declarations: HashMap<String, ResolvedType>,
+    fwd_declarations: HashMap<String, ResolvedType>,
 ) -> Result<Module<'ctx>, Vec<Box<dyn Display>>> {
     // TODO: I would like to make this work for now I will read the whole file to a string then
     // let file = File::open(file).map_err(Box::new).map_err(|err| vec![err as Box<dyn Display>])?;
@@ -45,263 +47,62 @@ pub fn from_file<'ctx>(
         .map_err(Box::new)
         .map_err(|err| vec![err as Box<dyn Display>])?;
     let strm = TokenStream::from_source(&contents);
-    let mut parser = Parser::from_stream(strm);
+    let parser = Parser::from_stream(strm);
     let module = ctx.create_module(file.file_stem().unwrap().to_str().unwrap());
-    let file_name = file.file_name().unwrap();
+    let file_name = file.file_stem().unwrap();
     module.set_source_file_name(file_name.to_str().unwrap());
     let type_resolver = TypeResolver::new(ctx);
-    // let code_gen = CodeGen::with_module(
-    //     &ctx,
-    //     module,
-    //     type_resolver.clone(),
-    //     fwd_declarations.clone(),
-    //     HashMap::new(),
-    //     MultiMap::new()
-    // );
-    // let mut ast = Vec::new();
-    // let mut errors = Vec::new();
-    // while parser.has_next() {
-    //     match parser.next_statement() {
-    //         Ok(expr) => {
-    //             match &expr {
-    //                 #[allow(unused)]
-    //                 Statement::Declaration(ValueDeclaration {
-    //                     is_op,
-    //                     ident,
-    //                     ty,
-    //                     args,
-    //                     value,
-    //                     generictypes,
-    //                 }) => {
-    // //                     match (ty, args) {
-    //                         (Some(_), Some(args)) if args.iter().any(|(_, it)| it.is_some()) => {
-    //                             panic!("doubled typed");
-    //                         }
-    //                         (Some(TypeName::ValueType(_)), Some(_)) => panic!("Arg count mismatch"), //should be no args.  will need to change when fn keyword is introduced.
-    //                         (None, Some(args)) if args.iter().any(|(_, it)| it.is_none()) => {
-    //                             panic!("some type in the function is not known")
-    //                         }
-    //                         (Some(TypeName::FnType(_, _)), Some(_)) => {
-    //                             if !is_op {
-    //                                 fwd_declarations.entry(ident.clone()).insert_entry(types::resolve_from_name(ty.as_ref().unwrap().clone(), &generictypes.iter().cloned().collect()));
-    //                             }
-    //                         }
-    //                         (None, Some(args)) => {
-    //                             // let args = args.iter()
-    //                             //     .map(|(_,ty)| ty.unwrap())
-    //                             //     .map(|ty| resolve_type(ty, &known_types, &ctx).unwrap())
-    //                             //     .collect_vec();
-    //                             // let rt = if let Expr::Block { sub } = value.as_ref() {
-    //                             //     let sub: Vec<TypedExpr> = sub
-    //                             //         .iter()
-    //                             //         .filter(|expr| matches!(expr,Expr::Return { .. }))
-    //                             //         .map(|expr| match expr {
-    //                             //             Expr::BinaryOpCall { ident, .. } |
-    //                             //             Expr::UnaryOpCall { ident, .. } |
-    //                             //             Expr::FnCall { ident, .. } => known_function_types[ident],
-
-    //                             //         })
-    //                             //         .collect::<Result<Vec<_>, _>>().unwrap();
-
-    //                             //     let last = sub.last().unwrap().get_rt(types);
-
-    //                             //     if valid {
-    //                             //         last
-    //                             //     } else {
-    //                             //         panic!("could not determine return type");
-    //                             //     }
-    //                             // }
-    //                             todo!("For now individual arg typing and return type inference is planned but not supported.");
-    //                         }
-    //                         _ => unimplemented!(),
-    //                     }
-
-    //                 }
-    //                 _ => unreachable!(),
-    //             }
-    //             ast.push(expr);
-    //         },
-    //         Err(err) => errors.push(err),
-    //     }
-    // }
-    // .map(|expr| {
-    //     let functions = fwd_declarations.clone();
-    //     TypedExpr::try_from(&ctx, type_resolver.clone(), functions, &HashSet::new(), expr)
-    // })
-    // .map_ok(|(ast,mut generics)| {
-    //     generics.extend_one(ast);
-    //     generics
-    // })
-    // .flatten_ok()
-    // .collect::<Result<Vec<_>, _>>()
-    // .unwrap();
-    // let (ast,generics,type_errors) = ast
-    //     .into_iter()
-    //     .map(|expr|{
-    //         let functions = fwd_declarations.clone();
-    //         TypedExpr::try_from(ctx, type_resolver.clone(), functions, &HashSet::new(), expr)
-    //     })
-    //     .fold((Vec::new(),Vec::new(),Vec::new()), |(mut concrete, mut generic, mut errors),expr| {
-    //         match expr {
-    //             Ok((expr,_)) => match expr {
-    //                 TypedExpr::Declaration { generic : true, .. } => generic.push(expr),
-    //                 TypedExpr::Declaration { .. } => concrete.push(expr),
-    //                 _ => unreachable!()
-    //             }
-    //             Err(e) => errors.push(e),
-    //         }
-    //         (concrete,generic,errors)
-    //     });
-
-    // let module = code_gen.compile_program(ast);
+    let mut code_gen = CodeGen::with_module(
+        &ctx,
+        module,
+        type_resolver.clone(),
+        fwd_declarations.clone(),
+        HashMap::new(),
+        MultiMap::new()
+    );
+    let ast = parser.module(file_name.to_str().unwrap().to_string());
+    let mut ast = TypedModuleDeclaration::from(ast,&fwd_declarations);//TODO: foward declare std lib
+    ast.lower_generics(&HashMap::new());
+    ast.declarations.drain_filter(|it| match it {
+        TypedDeclaration::Value(it) => !it.generictypes.is_empty(),
+        _ => false
+    });
+    let module = code_gen.compile_program(vec![ast],false);
     Ok(module)
 }
 
-// fn main() {
-//     Target::initialize_native(&InitializationConfig::default()).unwrap();
-//     // if !inkwell::support::load_library_permanently("./std/target/debug/langstd.lib") {
-//     //     println!("couldn't load lib");
-//     //     return;
-//     // }
-//     let ctx = Context::create();
-//     let std_mod = ctx.create_module("std");
-// let mut type_resolver = TypeResolver::new(&ctx);
-//     let print_fn = type_resolver.resolve_type_as_any(ResolvedType::Function { arg: types::STR.boxed(), returns: types::UNIT.boxed() }).into_function_type();
-//     #[allow(unused)]
-//     let print_fn = std_mod.add_function("print_str", print_fn, None);
-//     let put_int32_fn = type_resolver.resolve_type_as_any(ResolvedType::Function { arg: types::INT32.boxed(), returns: types::UNIT.boxed() }).into_function_type();
-//     #[allow(unused)]
-//     let put_int32_fn = std_mod.add_function("put_int32", put_int32_fn, None);
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
 
-//     let module = ctx.create_module("JIT");
+    use inkwell::{targets::{InitializationConfig, Target}, context::Context};
+    use multimap::MultiMap;
 
-//     // known_functions.insert("put_char".to_string(), put_char_fn);
-//     // let mut file = String::new();
-//     // std::io::stdin().read_line(&mut file).unwrap();
-//     let contents = include_str!("../../samples/multi_arg_fun.foo");
-//     let tokens = TokenStream::from_source(&contents);
-//     let mut parser = Parser::from_stream(tokens);
+    use crate::types::TypeResolver;
 
-//     let mut ast: Vec<Expr> = Vec::new();
-//     #[allow(unused_mut)]
-//     let mut top_level_fns = HashMap::<String,ResolvedType>::new();
-//     top_level_fns.insert("print_str".to_string(), ResolvedType::Function { arg:types::STR.boxed(), returns: types::UNIT.boxed() });
-//     top_level_fns.insert("put_int32".to_string(), ResolvedType::Function { arg: types::INT32.boxed(), returns: types::UNIT.boxed() });
-//     while parser.has_next() {
-//         let expr = parser.next_expr().expect("Parser error");
-//         match &expr {
-//             #[allow(unused)]
-//             Expr::Declaration {
-//                 is_op,
-//                 ident,
-//                 ty,
-//                 args,
-//                 value,
-//             } => {
-//                 match (ty, args) {
-//                     (Some(_), Some(args)) if args.iter().any(|(_, it)| it.is_some()) => {
-//                         panic!("doubled typed");
-//                     }
-//                     (Some(TypeName::ValueType(_)), Some(_)) => panic!("Arg count mismatch"), //should be no args.  will need to change when fn keyword is introduced.
-//                     (None, Some(args)) if args.iter().any(|(_, it)| it.is_none()) => {
-//                         panic!("some type in the function is not known")
-//                     }
-//                     (Some(TypeName::FnType(_, _)), Some(_)) => {
-//                         // if top_level_fns.insert(ident.clone(), resolve_from_name(ty.as_ref().cloned().unwrap())).is_some() {
-//                         //     panic!("two functions with same name!");
-//                         // }
-//                     }
-//                     (None, Some(args)) => {
-//                         // let args = args.iter()
-//                         //     .map(|(_,ty)| ty.unwrap())
-//                         //     .map(|ty| resolve_type(ty, &known_types, &ctx).unwrap())
-//                         //     .collect_vec();
-//                         // let rt = if let Expr::Block { sub } = value.as_ref() {
-//                         //     let sub: Vec<TypedExpr> = sub
-//                         //         .iter()
-//                         //         .filter(|expr| matches!(expr,Expr::Return { .. }))
-//                         //         .map(|expr| match expr {
-//                         //             Expr::BinaryOpCall { ident, .. } |
-//                         //             Expr::UnaryOpCall { ident, .. } |
-//                         //             Expr::FnCall { ident, .. } => known_function_types[ident],
+    #[test]
+    fn integration() {
+        const SRC : &'static str = 
+r#"
+for<T> let id a : T -> T = a
 
-//                         //         })
-//                         //         .collect::<Result<Vec<_>, _>>().unwrap();
+let use_fn fun a : (int32 -> int32) -> int32 -> int32 =
+    return (fun a)
 
-//                         //     let last = sub.last().unwrap().get_rt(types);
+let main _ : () -> () =
+    use_fn id 3
+"#;
+        Target::initialize_native(&InitializationConfig::default()).unwrap();
+        let ctx = Context::create();
+        let type_resolver = TypeResolver::new(&ctx);
 
-//                         //     if valid {
-//                         //         last
-//                         //     } else {
-//                         //         panic!("could not determine return type");
-//                         //     }
-//                         // }
-//                         todo!("For now individual arg typing and return type inference is planned but not supported.");
-//                     }
-//                     _ => unimplemented!(),
-//                 }
-//             }
-//             _ => unreachable!(),
-//         }
-//         ast.push(expr);
-//     }
-//     let ast = ast
-//         .into_iter()
-//         .map(|expr| {
-//             let functions = top_level_fns.clone();
-//             TypedExpr::try_from(&ctx, &type_resolver, functions, expr)
-//         })
-//         .map_ok(|(ast,mut generics)| {
-//             generics.extend_one(ast);
-//             generics
-//         })
-//         .flatten_ok()
-//         .collect::<Result<Vec<_>, _>>()
-//         .unwrap();
-//     let code_gen = CodeGen::with_module(
-//         &ctx,
-//         module,
-//         type_resolver,
-//         top_level_fns,
-//         HashMap::new(),
-//         MultiMap::new()
-//     );
-//     let module = code_gen.compile_program(ast);
-//     if let Err(err) = module.verify() {
-//         println!("{}", err);
-//     }
-//     #[cfg(debug_assertions)]
-//     module.print_to_file("./target/out.txt").unwrap();
-//     module.link_in_module(std_mod).unwrap();
-//     #[allow(non_snake_case)]
-//     let (DIbuider,_DIunit) = module.create_debug_info_builder(
-//         false,
-//         DWARFSourceLanguage::Haskell,
-//         "testing",
-//         std::env::current_dir().unwrap().to_str().unwrap(),
-//         "",
-//         false,
-//         "",
-//         0,
-//         "",
-//         DWARFEmissionKind::Full,
-//         0,
-//         false,
-//         false,
-//         "",
-//         ""
-//     );
-//     DIbuider.finalize();
-
-//     // let jit = module
-//     //     .create_jit_execution_engine(inkwell::OptimizationLevel::None)
-//     //     .expect("could not create jit engine");
-//     // jit.add_global_mapping(&print_fn, langstd::print as usize);
-//     // jit.add_global_mapping(&put_int32_fn, langstd::put_int32 as usize);
-//     // let r = unsafe {
-//     //     jit.get_function::<unsafe extern "C" fn(i32) -> i32>("main")
-//     //         .unwrap()
-//     //         .call(0)
-//     // };
-//     // println!("result {:?}", r);
-// }
+        let parser = crate::parser::Parser::from_source(SRC);
+        let ast = parser.module("test".to_string());
+        let mut ast = crate::typed_ast::TypedModuleDeclaration::from(ast, &HashMap::new());
+        ast.lower_generics(&HashMap::new());
+        let code_gen = crate::code_gen::CodeGen::with_module(&ctx, ctx.create_module(""), type_resolver, HashMap::new(), HashMap::new(), MultiMap::new());
+        let module = code_gen.compile_program(vec![ast],true);
+        let llvm = module.print_to_string();
+        println!("{:?}",llvm.to_string())
+    }
+}

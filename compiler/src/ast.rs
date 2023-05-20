@@ -18,7 +18,7 @@ pub(crate) enum Declaration {
 }
 
 pub(crate) enum TypeDefinition {
-    Alias(String, String),
+    Alias(String, ResolvedType),
     Enum(String, Vec<EnumVariant>),
     Struct(String, StructDefinition),
 }
@@ -43,7 +43,7 @@ pub enum ValueType {
 pub struct ValueDeclaration {
     pub(crate) is_op: bool,
     pub(crate) ident: String,
-    pub(crate) args: HashSet<String>, //todo convert to HashMap<String,Option<ResolvedType>> eventually
+    pub(crate) args: Vec<String>, //todo convert to HashMap<String,Option<ResolvedType>> eventually
     pub(crate) ty: Option<ResolvedType>,
     pub(crate) value: ValueType, //need to figure out this. as value would be expr here but function would be a list of statements
     pub(crate) generictypes: HashSet<String>,
@@ -119,46 +119,6 @@ pub enum Expr {
     /// not recommended above 3 values
     TupleLiteral { contents: Vec<Expr> },
 }
-
-// #[derive(PartialEq, Debug, Clone)]
-// #[allow(unused)]
-// pub enum Expr {
-//     BinaryOpCall {
-//         ident: String,
-//         lhs: Box<Expr>,
-//         rhs: Box<Expr>,
-//     },
-//     UnaryOpCall {
-//         ident: String,
-//         operand: Box<Expr>,
-//     },
-//     FnCall {
-//         value: Box<Expr>,//ideally this should be of FnCall | Value.  checking needed
-//         arg: Option<Box<Expr>>,
-//     },
-//     Return {
-//         expr: Box<Expr>,
-//     },
-//     Block {
-//         sub: Vec<Expr>,
-//     },
-//     Literal {
-//         value: String,
-//         ty: TypeName,
-//     },
-//     ValueRead {
-//         ident : String,
-//     },
-//     Declaration {
-//         is_op: bool,
-//         ident: String,
-//         ty: Option<TypeName>,
-//         args: Option<Vec<(String, Option<TypeName>)>>,
-//         value: Box<Expr>,
-//         generictypes: Vec<String>
-//     },
-//     UnitLiteral,
-// }
 
 #[derive(PartialEq, Debug, Clone)]
 pub enum TypeName {
