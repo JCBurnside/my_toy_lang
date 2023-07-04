@@ -1,3 +1,4 @@
 [workspace]
 default-members = ["cli"]
 members = ["cli","langstd","compiler"]
+resolver = "2"

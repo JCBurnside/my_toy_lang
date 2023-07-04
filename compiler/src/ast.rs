@@ -1,15 +1,18 @@
-use std::{collections::HashSet, num::NonZeroU8, rc::Rc};
+use std::{collections::HashSet, num::NonZeroU8};
 
 use crate::types::ResolvedType;
 
 pub(crate) type File = ModuleDeclaration;
 pub(crate) type Program = Vec<File>;
 
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct ModuleDeclaration {
+    pub(crate) loc: Option<crate::Location>,
     pub(crate) name: Option<String>,
     pub(crate) declarations: Vec<Declaration>,
 }
 
+#[derive(PartialEq, Eq, Debug)]
 pub(crate) enum Declaration {
     Mod(ModuleDeclaration),
     Value(ValueDeclaration),
@@ -17,20 +20,23 @@ pub(crate) enum Declaration {
     TypeDefinition(TypeDefinition),
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum TypeDefinition {
     Alias(String, ResolvedType),
-    Enum(String, Vec<EnumVariant>),
-    Struct(String, StructDefinition),
+    Enum(String, Vec<EnumVariant>, crate::Location),
+    Struct(String, StructDefinition, crate::Location),
 }
 
+#[derive(PartialEq, Eq, Debug)]
 pub(crate) struct StructDefinition {
     pub(crate) values: Vec<(String, ResolvedType)>,
 }
 
+#[derive(PartialEq, Eq, Debug)]
 pub(crate) enum EnumVariant {
-    Unit,
-    Tuple(Vec<ResolvedType>),
-    Struct(StructDefinition),
+    Unit(crate::Location),
+    Tuple(Vec<ResolvedType>, crate::Location),
+    Struct(StructDefinition, crate::Location),
 }
 
 #[derive(PartialEq, Eq, Debug)]
@@ -39,11 +45,19 @@ pub enum ValueType {
     Function(Vec<Statement>),
 }
 
+#[derive(PartialEq, Eq, Debug, Clone)]
+pub(crate) struct ArgDeclation {
+    pub(crate) loc: crate::Location,
+    pub(crate) ident: String,
+    // ty : Option<ResolvedType>,// TODO
+}
+
 #[derive(PartialEq, Eq, Debug)]
 pub struct ValueDeclaration {
+    pub(crate) loc: crate::Location, //should be location of the ident.
     pub(crate) is_op: bool,
     pub(crate) ident: String,
-    pub(crate) args: Vec<String>, //todo convert to HashMap<String,Option<ResolvedType>> eventually
+    pub(crate) args: Vec<ArgDeclation>,
     pub(crate) ty: Option<ResolvedType>,
     pub(crate) value: ValueType, //need to figure out this. as value would be expr here but function would be a list of statements
     pub(crate) generictypes: HashSet<String>,
@@ -52,7 +66,7 @@ pub struct ValueDeclaration {
 #[derive(PartialEq, Eq, Debug)]
 pub enum Statement {
     Declaration(ValueDeclaration),
-    Return(Expr),
+    Return(Expr, crate::Location),
     FnCall(FnCall),
     Pipe(Pipe),
 }
@@ -74,6 +88,7 @@ pub struct UnaryOpCall {
 
 #[derive(PartialEq, Eq, Debug)]
 pub struct BinaryOpCall {
+    pub(crate) loc: crate::Location,
     pub(crate) lhs: Box<Expr>,
     pub(crate) rhs: Box<Expr>,
     pub(crate) operator: String,
@@ -81,6 +96,7 @@ pub struct BinaryOpCall {
 
 #[derive(PartialEq, Eq, Debug)]
 pub struct FnCall {
+    pub(crate) loc: crate::Location,
     pub(crate) value: Box<Expr>,
     pub(crate) arg: Option<Box<Expr>>,
 }
@@ -108,20 +124,23 @@ pub enum Expr {
     /// NOT IMPLEMENTED YET
     /// defined like [ expr, expr, expr, ... ]
     /// type [T;N]
-    ArrayLiteral { contents: Vec<Expr> },
+    ArrayLiteral {
+        contents: Vec<Expr>,
+        loc: crate::Location,
+    },
     /// NOT IMPLEMENTED YET
     /// defined like [| expr, expr, expr, ... |]
     /// type [|T|]
-    ListLiteral { contents: Vec<Expr> },
+    ListLiteral {
+        contents: Vec<Expr>,
+        loc: crate::Location,
+    },
     /// NOT IMPLEMENTED YET
     /// defined like (expr, expr,...)
     /// typed as (T, U, V, ...)
     /// not recommended above 3 values
-    TupleLiteral { contents: Vec<Expr> },
-}
-
-#[derive(PartialEq, Debug, Clone)]
-pub enum TypeName {
-    FnType(Rc<TypeName>, Rc<TypeName>),
-    ValueType(String),
+    TupleLiteral {
+        contents: Vec<Expr>,
+        loc: crate::Location,
+    },
 }

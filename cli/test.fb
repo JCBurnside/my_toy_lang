@@ -3,8 +3,10 @@ let use_fn fun a : (int32 -> int32) -> int32 -> int32 =
 
 let id a : int32 -> int32 = a
 
+let three_arg a b c : int32 -> int32 -> int32 -> int32 =
+    return 0
+
 let main _ : () -> () = 
     let merp : int32 -> int32 = use_fn id
     merp 3
-    print_str "hello from jit!"
     return ()

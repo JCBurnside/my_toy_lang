@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::{
-    ast::{self, Declaration},
+    ast::{self, ArgDeclation, Declaration},
     types::{self, FloatWidth, IntWidth, ResolvedType},
     util::ExtraUtilFunctions,
 };
@@ -14,6 +14,7 @@ pub type FileTyped = TypedModuleDeclaration;
 pub type ProgramTyped = Vec<FileTyped>;
 #[derive(Debug, PartialEq, Clone)]
 pub struct TypedModuleDeclaration {
+    pub(crate) loc: Option<crate::Location>,
     pub(crate) name: Option<String>,
     pub(crate) declarations: Vec<TypedDeclaration>,
 }
@@ -23,15 +24,18 @@ impl TypedModuleDeclaration {
         module: ast::ModuleDeclaration,
         fwd_declares: &HashMap<String, ResolvedType>,
     ) -> Self {
-        let ast::ModuleDeclaration { name, declarations } = module;
+        let ast::ModuleDeclaration {
+            loc,
+            name,
+            declarations,
+        } = module;
         let mut fwd_declares = fwd_declares.clone();
-        fwd_declares.extend(declarations
-            .iter()
-            .filter_map(|it| match it {
-                Declaration::Value(v) => Some((v.ident.clone(),v.ty.clone().unwrap())),
-                _ => None
-            }));
+        fwd_declares.extend(declarations.iter().filter_map(|it| match it {
+            Declaration::Value(v) => Some((v.ident.clone(), v.ty.clone().unwrap())),
+            _ => None,
+        }));
         Self {
+            loc,
             name,
             declarations: declarations
                 .into_iter()
@@ -62,9 +66,14 @@ impl TypedModuleDeclaration {
     //         .collect_vec()
     // }
 
-    pub fn lower_generics(&mut self,fwd_declares: &HashMap<String, TypedDeclaration>,) {
+    pub fn lower_generics(&mut self, fwd_declares: &HashMap<String, TypedDeclaration>) {
         let mut fwd_decl = fwd_declares.clone();
-        fwd_decl.extend(self.declarations.clone().into_iter().map(|it| (it.get_ident(),it)));
+        fwd_decl.extend(
+            self.declarations
+                .clone()
+                .into_iter()
+                .map(|it| (it.get_ident(), it)),
+        );
         let mut context = LoweringContext {
             globals: fwd_decl,
             locals: HashMap::new(),
@@ -72,8 +81,11 @@ impl TypedModuleDeclaration {
             generated_generics: HashMap::new(),
             args: Vec::new(),
         };
-        self.declarations.iter_mut().for_each(|it| it.lower_generics(&mut context));
-        self.declarations.extend(context.generated_generics.into_iter().map(|(_,it)| it));
+        self.declarations
+            .iter_mut()
+            .for_each(|it| it.lower_generics(&mut context));
+        self.declarations
+            .extend(context.generated_generics.into_iter().map(|(_, it)| it));
     }
 }
 
@@ -111,7 +123,7 @@ impl TypedDeclaration {
         }
     }
 
-    fn replace_types(&mut self, types : &[(String,ResolvedType)]) {
+    fn replace_types(&mut self, types: &[(String, ResolvedType)]) {
         match self {
             TypedDeclaration::Mod(_) => unreachable!(),
             TypedDeclaration::Value(value) => value.replace_types(types),
@@ -122,9 +134,7 @@ impl TypedDeclaration {
     fn lower_generics(&mut self, context: &mut LoweringContext) {
         match self {
             TypedDeclaration::Mod(_) => todo!(),
-            TypedDeclaration::Value(value) => {
-                value.lower_generics(context)
-            },
+            TypedDeclaration::Value(value) => value.lower_generics(context),
             TypedDeclaration::TypeDefinition() => todo!(),
         }
     }
@@ -132,28 +142,35 @@ impl TypedDeclaration {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct TypedValueDeclaration {
+    pub(crate) loc: crate::Location,
     pub(crate) is_op: bool,
     pub(crate) ident: String,
-    pub(crate) args: Vec<String>,
+    pub(crate) args: Vec<ArgDeclation>,
     pub(crate) value: TypedValueType,
     pub(crate) ty: ResolvedType,
     pub(crate) generictypes: HashSet<String>,
-    pub(crate) is_curried : bool,
+    pub(crate) is_curried: bool,
 }
-pub(crate) fn collect_args(t : &ResolvedType) -> Vec<ResolvedType> {
+pub(crate) fn collect_args(t: &ResolvedType) -> Vec<ResolvedType> {
     if let ResolvedType::Function { arg, returns } = t {
-        [arg.as_ref().clone()].into_iter().chain(collect_args(&returns).into_iter()).collect()
+        [arg.as_ref().clone()]
+            .into_iter()
+            .chain(collect_args(&returns).into_iter())
+            .collect()
     } else {
         vec![]
     }
 }
 impl TypedValueDeclaration {
-
-    fn replace_types(&mut self, replaced : &[(String,ResolvedType)]) {
-        self.ty = replaced.iter().fold(self.ty.clone(), |ty, (name,new_ty)| ty.replace_generic(name, new_ty.clone()));
+    fn replace_types(&mut self, replaced: &[(String, ResolvedType)]) {
+        self.ty = replaced.iter().fold(self.ty.clone(), |ty, (name, new_ty)| {
+            ty.replace_generic(name, new_ty.clone())
+        });
         match &mut self.value {
-            TypedValueType::Expr(expr) => expr.replace_types(replaced) ,
-            TypedValueType::Function(stmnts) => { stmnts.into_iter().for_each(|expr| expr.replace_types(&replaced)) },
+            TypedValueType::Expr(expr) => expr.replace_types(replaced),
+            TypedValueType::Function(stmnts) => stmnts
+                .into_iter()
+                .for_each(|expr| expr.replace_types(&replaced)),
             TypedValueType::Err => (),
         }
     }
@@ -163,6 +180,7 @@ impl TypedValueDeclaration {
         known_values: &HashMap<String, ResolvedType>,
     ) -> Result<Self, TypingError> {
         let ast::ValueDeclaration {
+            loc,
             is_op,
             ident,
             args,
@@ -172,7 +190,11 @@ impl TypedValueDeclaration {
         } = data;
         let Some(ty) = ty else { todo!("type inference") };
         let mut known_values = known_values.clone();
-        known_values.extend(args.iter().cloned().zip(collect_args(&ty).into_iter()));
+        known_values.extend(
+            args.iter()
+                .map(|it| it.ident.clone())
+                .zip(collect_args(&ty).into_iter()),
+        );
         let value = match TypedValueType::try_from(value, &known_values) {
             Ok(value) => value,
             Err(e) => {
@@ -180,28 +202,31 @@ impl TypedValueDeclaration {
                 TypedValueType::Err
             }
         };
-        let is_curried  = if let ResolvedType::Function { .. } = &ty {
+        let is_curried = if let ResolvedType::Function { .. } = &ty {
             args.len() < collect_args(&ty).len()
         } else {
             false
         };
         Ok(Self {
+            loc,
             is_op,
             ident,
             args,
             is_curried,
+            ty: if is_curried { value.get_ty() } else { ty },
             value,
-            ty,
             generictypes,
         })
     }
-    fn lower_generics(&mut self, context:&mut LoweringContext) {
+    fn lower_generics(&mut self, context: &mut LoweringContext) {
         match &mut self.value {
             TypedValueType::Expr(expr) => expr.lower_generics(context),
-            TypedValueType::Function(stmnts) => for stmnt in stmnts {
-                context.args.clear();
-                stmnt.lower_generics(context);
-            },
+            TypedValueType::Function(stmnts) => {
+                for stmnt in stmnts {
+                    context.args.clear();
+                    stmnt.lower_generics(context);
+                }
+            }
             TypedValueType::Err => todo!(),
         }
     }
@@ -221,7 +246,7 @@ impl TypedValueType {
     ) -> Result<Self, TypingError> {
         match data {
             ast::ValueType::Expr(expr) => {
-                TypedExpr::try_from(expr, known_values).map(|expr| Self::Expr(expr))
+                TypedExpr::try_from(expr, known_values, Vec::new()).map(|expr| Self::Expr(expr))
             }
             ast::ValueType::Function(stmnts) => {
                 let mut output = Vec::with_capacity(stmnts.len());
@@ -230,9 +255,12 @@ impl TypedValueType {
                     match TypedStatement::try_from(stmnt, &known_values) {
                         Ok(stmnt) => {
                             if let TypedStatement::Declaration(data) = &stmnt {
-                                known_values
+                                let mut e = known_values
                                     .entry(data.ident.clone())
-                                    .insert_entry(data.ty.clone());
+                                    .and_modify(|it| {
+                                        *it = data.ty.clone();
+                                    })
+                                    .or_insert(data.ty.clone());
                             }
                             output.push(stmnt);
                         }
@@ -245,7 +273,7 @@ impl TypedValueType {
                 if !output
                     .iter()
                     .filter_map(|stmnt| match stmnt {
-                        TypedStatement::Return(value) => {
+                        TypedStatement::Return(value, _) => {
                             let rt = value.get_ty();
                             if rt != ResolvedType::Error {
                                 Some(rt)
@@ -265,25 +293,58 @@ impl TypedValueType {
             }
         }
     }
+
+    fn get_ty(&self) -> ResolvedType {
+        match self {
+            Self::Expr(expr) => expr.get_ty(),
+            Self::Function(fun) => fun
+                .iter()
+                .filter_map(|stmnt| match stmnt {
+                    TypedStatement::Return(expr, _) => Some(expr.get_ty()),
+                    _ => None,
+                })
+                .fold(
+                    fun.last()
+                        .map(|last| last.get_ty())
+                        .unwrap_or(ResolvedType::Error),
+                    |acc, curr| {
+                        if acc != ResolvedType::Error && curr == acc {
+                            acc
+                        } else {
+                            ResolvedType::Error
+                        }
+                    },
+                ),
+            Self::Err => todo!(),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum TypedStatement {
     Declaration(TypedValueDeclaration),
-    Return(TypedExpr),
+    Return(TypedExpr, crate::Location),
     FnCall(TypedFnCall),
     Pipe(TypedPipe),
     Error,
 }
 
 impl TypedStatement {
-
-    fn replace_types(&mut self, replaced : &[(String,ResolvedType)]) {
+    pub(crate) fn get_loc(&self) -> crate::Location {
+        match self {
+            TypedStatement::Declaration(decl) => decl.loc,
+            TypedStatement::Return(_, loc) => *loc,
+            TypedStatement::FnCall(call) => call.loc,
+            TypedStatement::Pipe(_) => todo!(),
+            TypedStatement::Error => todo!(),
+        }
+    }
+    fn replace_types(&mut self, replaced: &[(String, ResolvedType)]) {
         match self {
             Self::Declaration(data) => data.replace_types(replaced),
             Self::FnCall(data) => data.replace_types(replaced),
-            Self::Return(data) => data.replace_types(replaced),
-            _=> ()
+            Self::Return(data, _) => data.replace_types(replaced),
+            _ => (),
         }
     }
 
@@ -301,31 +362,44 @@ impl TypedStatement {
                     }
                 })
             }
-            ast::Statement::Return(value) => {
-                Ok(Self::Return(TypedExpr::try_from(value, known_values)?))
-            }
-            ast::Statement::FnCall(data) => {
-                Ok(Self::FnCall(TypedFnCall::try_from(data, known_values)?))
-            }
+            ast::Statement::Return(value, loc) => Ok(Self::Return(
+                TypedExpr::try_from(value, known_values, Vec::new())?,
+                loc,
+            )),
+            ast::Statement::FnCall(data) => Ok(Self::FnCall(TypedFnCall::try_from(
+                data,
+                known_values,
+                Vec::new(),
+            )?)),
             ast::Statement::Pipe(_) => todo!(),
         }
     }
 
-    fn lower_generics(&mut self, context : &mut LoweringContext) {
+    fn lower_generics(&mut self, context: &mut LoweringContext) {
         match self {
-            Self::Declaration(decl) => {
-                match &mut decl.value {
-                    TypedValueType::Expr(expr) => expr.lower_generics(context),
-                    TypedValueType::Function(_) =>  {todo!("how to handle this one :/ function inside function");},
-                    TypedValueType::Err => (),
+            Self::Declaration(decl) => match &mut decl.value {
+                TypedValueType::Expr(expr) => expr.lower_generics(context),
+                TypedValueType::Function(_) => {
+                    todo!("how to handle this one :/ function inside function");
                 }
+                TypedValueType::Err => (),
             },
-            Self::Return(expr) => expr.lower_generics(context),
+            Self::Return(expr, _) => expr.lower_generics(context),
             Self::FnCall(call) => call.lower_generics(context),
             Self::Pipe(_) => todo!(),
             Self::Error => todo!(),
         }
-    } 
+    }
+
+    fn get_ty(&self) -> ResolvedType {
+        match self {
+            Self::Declaration(decl) => decl.ty.clone(),
+            Self::Return(expr, _) => expr.get_ty(),
+            Self::FnCall(call) => call.rt.clone(),
+            Self::Pipe(_) => todo!(),
+            Self::Error => todo!(),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -341,6 +415,7 @@ pub struct TypedPipe {
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct TypedFnCall {
+    pub(crate) loc: crate::Location,
     pub(crate) value: Box<TypedExpr>,
     pub(crate) arg: Option<Box<TypedExpr>>,
     pub(crate) rt: ResolvedType,
@@ -351,21 +426,25 @@ impl TypedFnCall {
     pub(crate) fn try_from(
         data: ast::FnCall,
         known_values: &HashMap<String, ResolvedType>,
+        mut already_processed: Vec<ResolvedType>,
     ) -> Result<Self, TypingError> {
-        let ast::FnCall { value, arg } = data;
-        let value = ok_or_err_node(TypedExpr::try_from(*value, known_values));
+        let ast::FnCall { loc, value, arg } = data;
+        let value = ok_or_err_node(TypedExpr::try_from(*value, known_values, Vec::new()));
 
-        let arg = arg.map(|arg| match TypedExpr::try_from(*arg, known_values) {
-            Ok(arg) => arg,
-            Err(e) => {
-                println!("{:?}", e);
-                TypedExpr::ErrorNode
-            }
-        });
+        let arg = arg.map(
+            |arg| match TypedExpr::try_from(*arg, known_values, Vec::new()) {
+                Ok(arg) => arg,
+                Err(e) => {
+                    println!("{:?}", e);
+                    TypedExpr::ErrorNode
+                }
+            },
+        );
 
-        if value != TypedExpr::ErrorNode  {
+        if value != TypedExpr::ErrorNode {
             let arg_t = arg.as_ref().map(|arg| arg.get_ty());
-            let ResolvedType::Function { arg, .. } = strip_pointers(&value.get_ty()) else { return Err(TypingError::FnNotDeclared) };
+            let ty = strip_pointers(&value.get_ty());
+            let ResolvedType::Function { arg, .. } = ty else { return Err(TypingError::FnNotDeclared) };
             if !arg.is_generic() && Some(*arg) != arg_t {
                 return Err(TypingError::ArgTypeMismatch);
             }
@@ -373,10 +452,17 @@ impl TypedFnCall {
         let rt = if value == TypedExpr::ErrorNode {
             ResolvedType::Error
         } else {
-            let ResolvedType::Function { returns, .. } = strip_pointers(&value.get_ty()) else { unreachable!() };
-            returns.as_ref().clone()
+            match value.get_ty() {
+                ResolvedType::Function { returns, .. } => *returns,
+                ResolvedType::Pointer { underlining } if underlining.is_function() => {
+                    let ResolvedType::Function { returns, .. } = *underlining else { unreachable!() };
+                    *returns
+                }
+                _ => ResolvedType::Error,
+            }
         };
         Ok(Self {
+            loc,
             value: value.boxed(),
             arg_t: arg.as_ref().map(|arg| arg.get_ty()).unwrap_or(types::UNIT),
             arg: arg.map(Box::new),
@@ -387,19 +473,31 @@ impl TypedFnCall {
     fn replace_types(&mut self, replaced: &[(String, ResolvedType)]) {
         self.value.replace_types(replaced);
         self.arg.as_mut().map(|arg| arg.replace_types(replaced));
-        self.rt = replaced.iter().fold(self.rt.clone(),|ty,(name,new_ty)| ty.replace_generic(name, new_ty.clone()));
-        self.arg_t = replaced.iter().fold(self.arg_t.clone(),|ty,(name,new_ty)| ty.replace_generic(name, new_ty.clone()));
+        self.rt = replaced.iter().fold(self.rt.clone(), |ty, (name, new_ty)| {
+            ty.replace_generic(name, new_ty.clone())
+        });
+        self.arg_t = replaced
+            .iter()
+            .fold(self.arg_t.clone(), |ty, (name, new_ty)| {
+                ty.replace_generic(name, new_ty.clone())
+            });
     }
 
     fn replace_type(&mut self, name: &str, new_ty: &ResolvedType) {
-            self.value.replace_type(name, new_ty); 
-            self.arg.as_mut().map(|arg|arg.replace_type(name, new_ty));
-            self.rt = self.rt.replace_generic(name, new_ty.clone());
-            self.arg_t = self.arg_t.replace_generic(name, new_ty.clone());
+        self.value.replace_type(name, new_ty);
+        self.arg.as_mut().map(|arg| arg.replace_type(name, new_ty));
+        self.rt = self.rt.replace_generic(name, new_ty.clone());
+        self.arg_t = self.arg_t.replace_generic(name, new_ty.clone());
     }
 
-    fn lower_generics(&mut self, context : &mut LoweringContext) {
-        let Self { value, arg, rt, arg_t } = self;
+    fn lower_generics(&mut self, context: &mut LoweringContext) {
+        let Self {
+            value,
+            arg,
+            rt,
+            arg_t,
+            ..
+        } = self;
         let arg = arg.as_mut().unwrap();
         let mut old_args = Vec::new();
         std::mem::swap(&mut old_args, &mut context.args);
@@ -408,7 +506,10 @@ impl TypedFnCall {
         old_args.push(arg_t.clone());
         std::mem::swap(&mut old_args, &mut context.args);
         value.as_mut().lower_generics(context);
-        let ResolvedType::Function { returns, .. } = dbg!(value.get_ty()) else { unreachable!() };
+        let returns = match value.get_ty() {
+            ResolvedType::Function { returns, .. } => returns,
+            _ => unreachable!(),
+        };
         *rt = *returns;
     }
 }
@@ -468,19 +569,34 @@ impl TypedExpr {
     pub(crate) fn try_from(
         value: ast::Expr,
         known_values: &HashMap<String, ResolvedType>,
+        already_processed_args: Vec<ResolvedType>,
     ) -> Result<Self, TypingError> {
         use ast::Expr;
         match value {
-            Expr::NumericLiteral { value, ty } if let ResolvedType::Int { width, ..} = ty => Ok(Self::IntegerLiteral { value, size: width }),
-            Expr::NumericLiteral { value, ty } if let ResolvedType::Float { width } = ty => Ok(Self::FloatLiteral { value, size: width }),
+            Expr::NumericLiteral { value, ty } if matches!(ty, ResolvedType::Int { .. }) => {
+                let ResolvedType::Int { width, ..} = ty else { unreachable!() };
+                Ok(Self::IntegerLiteral { value, size: width })
+            }
+            Expr::NumericLiteral { value, ty } if matches!(ty, ResolvedType::Float { width }) => {
+                let ResolvedType::Float { width} = ty else { unreachable!() };
+
+                Ok(Self::FloatLiteral { value, size: width })
+            }
             Expr::NumericLiteral { .. } => unreachable!(),
             Expr::StringLiteral(value) => Ok(Self::StringLiteral(value)),
             Expr::CharLiteral(value) => Ok(Self::CharLiteral(value)),
             Expr::UnitLiteral => Ok(Self::UnitLiteral),
             Expr::Compose { lhs, rhs } => todo!(),
-            Expr::BinaryOpCall(data) => Ok(Self::BinaryOpCall(TypedBinaryOpCall::try_from(data, known_values)?)),
+            Expr::BinaryOpCall(data) => Ok(Self::BinaryOpCall(TypedBinaryOpCall::try_from(
+                data,
+                known_values,
+            )?)),
             Expr::UnaryOpCall(_) => todo!(),
-            Expr::FnCall(data) => Ok(Self::FnCall(TypedFnCall::try_from(data,known_values)?)),
+            Expr::FnCall(data) => Ok(Self::FnCall(TypedFnCall::try_from(
+                data,
+                known_values,
+                already_processed_args,
+            )?)),
             Expr::ValueRead(value) => {
                 if !known_values.contains_key(&value) {
                     Err(TypingError::UnknownType)
@@ -488,55 +604,75 @@ impl TypedExpr {
                     let ty = known_values[&value].clone();
                     Ok(Self::ValueRead(value, ty))
                 }
-            },
-            Expr::ArrayLiteral { contents } => {
-                let contents = contents.into_iter().map(|value| TypedExpr::try_from(value, known_values)).map(|value| match value {
-                    Ok(value) => value,
-                    Err(e) => {
-                        println!("{:?}", e);
-                        TypedExpr::ErrorNode
-                    }
-                }).collect_vec();
+            }
+            Expr::ArrayLiteral { contents, loc } => {
+                let contents = contents
+                    .into_iter()
+                    .map(|value| TypedExpr::try_from(value, known_values, Vec::new()))
+                    .map(|value| match value {
+                        Ok(value) => value,
+                        Err(e) => {
+                            println!("{:?}", e);
+                            TypedExpr::ErrorNode
+                        }
+                    })
+                    .collect_vec();
 
-                if !contents.iter().filter_map(|value| if value == &TypedExpr::ErrorNode { None } else { Some(value.get_ty()) }).all_equal() {
+                if !contents
+                    .iter()
+                    .filter_map(|value| {
+                        if value == &TypedExpr::ErrorNode {
+                            None
+                        } else {
+                            Some(value.get_ty())
+                        }
+                    })
+                    .all_equal()
+                {
                     Err(TypingError::ArgTypeMismatch)
                 } else {
                     Ok(Self::ArrayLiteral { contents })
                 }
-            },
-            Expr::ListLiteral { contents } => todo!(),
-            Expr::TupleLiteral { contents } => todo!(),
+            }
+            Expr::ListLiteral { contents, loc } => todo!(),
+            Expr::TupleLiteral { contents, loc } => todo!(),
         }
     }
 
-    fn replace_value_name(&mut self, old_name : &str, new_name : &String, replaced: &Vec<(String,ResolvedType)>) {
+    fn replace_value_name(
+        &mut self,
+        old_name: &str,
+        new_name: &String,
+        replaced: &Vec<(String, ResolvedType)>,
+    ) {
         match self {
             Self::BinaryOpCall(b) => {
-                b.lhs.replace_value_name(old_name, new_name,replaced);
-                b.rhs.replace_value_name(old_name, new_name,replaced);
-            },
-            Self::UnaryOpCall(u) => u.operand.replace_value_name(old_name, new_name,replaced),
+                b.lhs.replace_value_name(old_name, new_name, replaced);
+                b.rhs.replace_value_name(old_name, new_name, replaced);
+            }
+            Self::UnaryOpCall(u) => u.operand.replace_value_name(old_name, new_name, replaced),
             Self::FnCall(call) => {
                 match call.arg.as_mut() {
-                    Some(arg) => arg.replace_value_name(old_name, new_name,replaced),
-                    None => ()
+                    Some(arg) => arg.replace_value_name(old_name, new_name, replaced),
+                    None => (),
                 }
-                call.value.replace_value_name(old_name, new_name,replaced);
-                
-            },
-            Self::ValueRead(ident, ty) if *ident == old_name => { 
-                *ident = new_name.clone(); 
-                replaced.iter().for_each(|(name,new_ty)| {
-                    *ty = ty.replace_generic(&name, new_ty.clone())
-                })
-            },
-            Self::ArrayLiteral { contents } |
-            Self::ListLiteral { contents } |
-            Self::TupleLiteral { contents } => for expr in contents.iter_mut(){
-                expr.replace_value_name(old_name, new_name,replaced);
-            },
+                call.value.replace_value_name(old_name, new_name, replaced);
+            }
+            Self::ValueRead(ident, ty) if *ident == old_name => {
+                *ident = new_name.clone();
+                replaced
+                    .iter()
+                    .for_each(|(name, new_ty)| *ty = ty.replace_generic(&name, new_ty.clone()))
+            }
+            Self::ArrayLiteral { contents }
+            | Self::ListLiteral { contents }
+            | Self::TupleLiteral { contents } => {
+                for expr in contents.iter_mut() {
+                    expr.replace_value_name(old_name, new_name, replaced);
+                }
+            }
             Self::ErrorNode => todo!(),
-            _ => ()
+            _ => (),
         }
     }
 
@@ -577,30 +713,38 @@ impl TypedExpr {
         } else if let Self::ValueRead(ident, _) = self {
             match known_values.get(ident) {
                 Some(decl) => match &decl.value {
-                    TypedValueType::Expr(expr) if let TypedExpr::FnCall(_) = expr => expr.collect_args(known_values),
-                    _=> vec![]
-                }
-                None => vec![]
+                    TypedValueType::Expr(expr) if matches!(expr, TypedExpr::FnCall(_)) => {
+                        expr.collect_args(known_values)
+                    }
+                    _ => vec![],
+                },
+                None => vec![],
             }
         } else {
             vec![]
         }
     }
 
-    fn replace_type(&mut self,name : &str ,new_ty : &ResolvedType) {
+    fn replace_type(&mut self, name: &str, new_ty: &ResolvedType) {
         match self {
             Self::BinaryOpCall(data) => data.replace_type(name, new_ty),
             Self::UnaryOpCall(_) => todo!(),
-            Self::FnCall(data) => data.replace_type(name,new_ty),
+            Self::FnCall(data) => data.replace_type(name, new_ty),
             Self::ValueRead(_, ty) => *ty = ty.replace_generic(name, new_ty.clone()),
-            Self::ArrayLiteral { contents } => contents.iter_mut().for_each(|it|it.replace_type(name, new_ty)),
-            Self::ListLiteral { contents } => contents.iter_mut().for_each(|it| it.replace_type(name, new_ty)),
-            Self::TupleLiteral { contents } =>contents.iter_mut().for_each(|it| it.replace_type(name, new_ty)),
-            _ => ()
+            Self::ArrayLiteral { contents } => contents
+                .iter_mut()
+                .for_each(|it| it.replace_type(name, new_ty)),
+            Self::ListLiteral { contents } => contents
+                .iter_mut()
+                .for_each(|it| it.replace_type(name, new_ty)),
+            Self::TupleLiteral { contents } => contents
+                .iter_mut()
+                .for_each(|it| it.replace_type(name, new_ty)),
+            _ => (),
         }
     }
 
-    fn replace_types(&mut self, replaced: &[(String,ResolvedType)]){
+    fn replace_types(&mut self, replaced: &[(String, ResolvedType)]) {
         for (name, new_ty) in replaced {
             self.replace_type(name, new_ty);
         }
@@ -636,17 +780,18 @@ impl TypedExpr {
     //     }
     // }
 
-    fn lower_generics(&mut self, context : &mut LoweringContext) {
+    fn lower_generics(&mut self, context: &mut LoweringContext) {
         match self {
             Self::FnCall(data) => {
                 data.lower_generics(context);
-            },
+            }
             Self::ValueRead(ident, ty) if ty.is_function() && ty.is_generic() => {
                 let args = context.args.iter().cloned().collect();
-                context.args = Vec::new();//moving the arg count out due to this is the value of the function call 
+                context.args = Vec::new(); //moving the arg count out due to this is the value of the function call
                 let (fun_t, mut replaced) = map_types_to_args(ty.clone(), args);
-                replaced.dedup_by_key(|it| it.0.clone()); // should do nothing but I am being overly cautious 
-                let new_name = ident.clone() + "_" + &replaced.iter().map(|(_,ty)| ty.to_string()).join("_");
+                replaced.dedup_by_key(|it| it.0.clone()); // should do nothing but I am being overly cautious
+                let new_name =
+                    ident.clone() + "_" + &replaced.iter().map(|(_, ty)| ty.to_string()).join("_");
                 if !context.generated_generics.contains_key(&new_name) {
                     match context.globals.get(ident) {
                         Some(original) => {
@@ -654,14 +799,13 @@ impl TypedExpr {
                         }
                         None => todo!("non global generics not supported yet."),
                     }
-
                 }
                 *ident = new_name;
                 *ty = fun_t;
             }
-            Self::ArrayLiteral { contents } |
-            Self::ListLiteral { contents } |
-            Self::TupleLiteral { contents } => {
+            Self::ArrayLiteral { contents }
+            | Self::ListLiteral { contents }
+            | Self::TupleLiteral { contents } => {
                 let mut old_args = Vec::new();
                 std::mem::swap(&mut old_args, &mut context.args);
                 for value in contents {
@@ -669,11 +813,11 @@ impl TypedExpr {
                 }
                 std::mem::swap(&mut old_args, &mut context.args);
             }
-            Self::IntegerLiteral { .. } |
-            Self::FloatLiteral { .. } |
-            Self::StringLiteral(_) |
-            Self::CharLiteral(_) |
-            Self::UnitLiteral => (),
+            Self::IntegerLiteral { .. }
+            | Self::FloatLiteral { .. }
+            | Self::StringLiteral(_)
+            | Self::CharLiteral(_)
+            | Self::UnitLiteral => (),
             Self::BinaryOpCall(data) => data.lower_generics(context),
             Self::UnaryOpCall(data) => todo!("unary op type lowering"),
             Self::ValueRead(_, _) => (),
@@ -683,17 +827,17 @@ impl TypedExpr {
 }
 
 struct LoweringContext {
-    globals : HashMap<String,TypedDeclaration>,
-    locals : HashMap<String, TypedValueDeclaration>,
-    curried_locals : HashMap<String, TypedExpr>,
-    generated_generics : HashMap<String, TypedDeclaration>,
-    args : Vec<ResolvedType>,
+    globals: HashMap<String, TypedDeclaration>,
+    locals: HashMap<String, TypedValueDeclaration>,
+    curried_locals: HashMap<String, TypedExpr>,
+    generated_generics: HashMap<String, TypedDeclaration>,
+    args: Vec<ResolvedType>,
 }
 
 pub fn map_types_to_args(
     fun: ResolvedType,
     mut args: Vec<ResolvedType>,
-) -> (ResolvedType, Vec<(String,ResolvedType)>) {
+) -> (ResolvedType, Vec<(String, ResolvedType)>) {
     if args.is_empty() || !fun.is_generic() {
         return (fun, vec![]);
     }
@@ -702,7 +846,7 @@ pub fn map_types_to_args(
     if let ResolvedType::Generic { name } = arg.as_ref() {
         let fun = returns.replace_generic(name, arg_t.clone());
         let (fun, mut replaced) = map_types_to_args(fun, args);
-        replaced.extend_one((name.clone(), arg_t.clone()));
+        replaced.push((name.clone(), arg_t.clone()));
         (
             ResolvedType::Function {
                 arg: arg_t.boxed(),
@@ -722,33 +866,50 @@ pub fn map_types_to_args(
     }
 }
 
-fn modify_declaration(mut to_lower:TypedDeclaration, replaced:&[(String,ResolvedType)],context : &mut LoweringContext, new_name : &String) {
+fn modify_declaration(
+    mut to_lower: TypedDeclaration,
+    replaced: &[(String, ResolvedType)],
+    context: &mut LoweringContext,
+    new_name: &String,
+) {
     to_lower.replace_types(&replaced);
     if let TypedDeclaration::Value(to_lower) = &mut to_lower {
         match &mut to_lower.value {
             TypedValueType::Expr(expr) => expr.lower_generics(context),
-            TypedValueType::Function(stmnts) => for stmnt in stmnts {
-                context.args.clear();
-                stmnt.lower_generics(context);
-            },
+            TypedValueType::Function(stmnts) => {
+                for stmnt in stmnts {
+                    context.args.clear();
+                    stmnt.lower_generics(context);
+                }
+            }
             TypedValueType::Err => (),
         }
-        to_lower.generictypes.drain_filter(|g| replaced.iter().any(|(r,_)| r == g));
+        let to_remove = to_lower
+            .generictypes
+            .iter()
+            .filter(|g| replaced.iter().any(|(r, _)| &r == g))
+            .cloned()
+            .collect_vec();
+        to_remove.into_iter().for_each(|it| {
+            to_lower.generictypes.remove(&it);
+        });
     }
     match &mut to_lower {
         TypedDeclaration::Mod(_) => unreachable!(),
         TypedDeclaration::Value(data) => data.ident = new_name.clone(),
         TypedDeclaration::TypeDefinition() => todo!(),
     }
-    
-    context.generated_generics.insert(new_name.clone(), to_lower);
+
+    context
+        .generated_generics
+        .insert(new_name.clone(), to_lower);
 }
 
-fn ok_or_err_node(it : Result<TypedExpr,TypingError>) -> TypedExpr {
+fn ok_or_err_node(it: Result<TypedExpr, TypingError>) -> TypedExpr {
     match it {
         Ok(expr) => expr,
         Err(e) => {
-            println!("{:?}",e);
+            println!("{:?}", e);
             TypedExpr::ErrorNode
         }
     }
@@ -756,6 +917,7 @@ fn ok_or_err_node(it : Result<TypedExpr,TypingError>) -> TypedExpr {
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct TypedBinaryOpCall {
+    pub(crate) loc: crate::Location,
     pub(crate) lhs: Box<TypedExpr>,
     pub(crate) rhs: Box<TypedExpr>,
     pub(crate) operator: String,
@@ -763,9 +925,14 @@ pub struct TypedBinaryOpCall {
 }
 
 impl TypedBinaryOpCall {
-
-    fn lower_generics(&mut self, context : &mut LoweringContext) {
-        let Self { lhs, rhs, operator, rt } = self;
+    fn lower_generics(&mut self, context: &mut LoweringContext) {
+        let Self {
+            lhs,
+            rhs,
+            operator,
+            rt,
+            ..
+        } = self;
         let mut old_args = Vec::new();
         std::mem::swap(&mut context.args, &mut old_args);
         lhs.lower_generics(context);
@@ -773,46 +940,60 @@ impl TypedBinaryOpCall {
         self.reeval_rt();
     }
 
-    fn replace_type(&mut self,name : &str, new_ty : &ResolvedType) {
-        let Self { lhs, rhs, operator, rt } = self;
+    fn replace_type(&mut self, name: &str, new_ty: &ResolvedType) {
+        let Self {
+            lhs,
+            rhs,
+            operator,
+            rt,
+            ..
+        } = self;
         lhs.replace_type(name, new_ty);
         rhs.replace_type(name, new_ty);
         self.reeval_rt();
     }
 
     fn reeval_rt(&mut self) {
-        let Self { lhs, rhs, operator, rt } = self;
+        let Self {
+            lhs,
+            rhs,
+            operator,
+            rt,
+            ..
+        } = self;
         match operator.as_str() {
             "*" | "+" | "/" | "-" => {
                 // TODO: need to add support for overloading this.
                 let lhs_t = lhs.get_ty();
                 let rhs_t = rhs.get_ty();
-                if (lhs_t.is_float() || lhs_t.is_int() || lhs_t.is_generic()) && (rhs_t.is_float() || rhs_t.is_int() || rhs_t.is_generic()) {
-                        *rt = match (lhs_t, rhs_t) {
-                            (lhs, rhs) if lhs.is_float() && rhs.is_float() => {
-                                let ResolvedType::Float { width : lhs_w } = lhs else { unreachable!() };
-                                let ResolvedType::Float { width : rhs_w } = rhs else { unreachable!() };
-                                ResolvedType::Float {
+                if (lhs_t.is_float() || lhs_t.is_int() || lhs_t.is_generic())
+                    && (rhs_t.is_float() || rhs_t.is_int() || rhs_t.is_generic())
+                {
+                    *rt = match (lhs_t, rhs_t) {
+                        (lhs, rhs) if lhs.is_float() && rhs.is_float() => {
+                            let ResolvedType::Float { width : lhs_w } = lhs else { unreachable!() };
+                            let ResolvedType::Float { width : rhs_w } = rhs else { unreachable!() };
+                            ResolvedType::Float {
+                                width: lhs_w.max(rhs_w),
+                            }
+                        }
+                        (lhs, rhs) if lhs.is_float() || rhs.is_generic() => lhs,
+                        (lhs, rhs) if rhs.is_float() || lhs.is_generic() => rhs,
+                        (lhs, rhs) => {
+                            let ResolvedType::Int { signed : lhs_signed, width : lhs_w } = lhs else { unreachable!() };
+                            let ResolvedType::Int { signed : rhs_signed, width : rhs_w } = lhs else { unreachable!() };
+                            if lhs_signed && !rhs_signed {
+                                lhs
+                            } else if rhs_signed && !lhs_signed {
+                                rhs
+                            } else {
+                                ResolvedType::Int {
+                                    signed: lhs_signed,
                                     width: lhs_w.max(rhs_w),
                                 }
                             }
-                            (lhs, rhs) if lhs.is_float() || rhs.is_generic() => lhs,
-                            (lhs, rhs) if rhs.is_float() || lhs.is_generic() => rhs,
-                            (lhs, rhs) => {
-                                let ResolvedType::Int { signed : lhs_signed, width : lhs_w } = lhs else { unreachable!() };
-                                let ResolvedType::Int { signed : rhs_signed, width : rhs_w } = lhs else { unreachable!() };
-                                if lhs_signed && !rhs_signed {
-                                    lhs
-                                } else if rhs_signed && !lhs_signed {
-                                    rhs
-                                } else {
-                                    ResolvedType::Int {
-                                        signed: lhs_signed,
-                                        width: lhs_w.max(rhs_w),
-                                    }
-                                }
-                            }
                         }
+                    }
                 } else {
                     println!("operation not supported");
                     self.rt = ResolvedType::Error;
@@ -821,8 +1002,9 @@ impl TypedBinaryOpCall {
             "**" => {
                 let lhs_t = lhs.get_ty();
                 let rhs_t = rhs.get_ty();
-                if (lhs_t.is_float() || lhs_t.is_int() || lhs_t.is_generic()) && (rhs_t.is_float() || rhs_t.is_int() || rhs_t.is_generic()) {
-                
+                if (lhs_t.is_float() || lhs_t.is_int() || lhs_t.is_generic())
+                    && (rhs_t.is_float() || rhs_t.is_int() || rhs_t.is_generic())
+                {
                     *rt = match (lhs_t, rhs_t) {
                         (lhs, rhs) if lhs.is_float() && rhs.is_float() => {
                             let ResolvedType::Float { width : lhs } = lhs else { unreachable!() };
@@ -853,7 +1035,7 @@ impl TypedBinaryOpCall {
             _ => {
                 println!("operation not supported");
                 *rt = ResolvedType::Error;
-            },
+            }
         }
     }
 
@@ -861,15 +1043,20 @@ impl TypedBinaryOpCall {
         value: ast::BinaryOpCall,
         known_values: &HashMap<String, ResolvedType>,
     ) -> Result<Self, TypingError> {
-        let ast::BinaryOpCall { lhs, rhs, operator } = value;
-        let lhs = match TypedExpr::try_from(*lhs, known_values) {
+        let ast::BinaryOpCall {
+            loc,
+            lhs,
+            rhs,
+            operator,
+        } = value;
+        let lhs = match TypedExpr::try_from(*lhs, known_values, Vec::new()) {
             Ok(lhs) => lhs,
             Err(e) => {
                 println!("{:?}", e);
                 TypedExpr::ErrorNode
             }
         };
-        let rhs = match TypedExpr::try_from(*rhs, known_values) {
+        let rhs = match TypedExpr::try_from(*rhs, known_values, Vec::new()) {
             Ok(rhs) => rhs,
             Err(e) => {
                 println!("{:?}", e);
@@ -881,8 +1068,11 @@ impl TypedBinaryOpCall {
                 // TODO: need to add support for overloading this.
                 let lhs_t = lhs.get_ty();
                 let rhs_t = rhs.get_ty();
-                if (lhs_t.is_float() || lhs_t.is_int() || lhs_t.is_generic()) && (rhs_t.is_float() || rhs_t.is_int() || rhs_t.is_generic()) {
+                if (lhs_t.is_float() || lhs_t.is_int() || lhs_t.is_generic())
+                    && (rhs_t.is_float() || rhs_t.is_int() || rhs_t.is_generic())
+                {
                     Ok(Self {
+                        loc,
                         lhs: lhs.boxed(),
                         rhs: rhs.boxed(),
                         operator,
@@ -919,8 +1109,11 @@ impl TypedBinaryOpCall {
             "**" => {
                 let lhs_t = lhs.get_ty();
                 let rhs_t = rhs.get_ty();
-                if (lhs_t.is_float() || lhs_t.is_int() || lhs_t.is_generic()) && (rhs_t.is_float() || rhs_t.is_int() || rhs_t.is_generic()) {
+                if (lhs_t.is_float() || lhs_t.is_int() || lhs_t.is_generic())
+                    && (rhs_t.is_float() || rhs_t.is_int() || rhs_t.is_generic())
+                {
                     Ok(Self {
+                        loc,
                         lhs: lhs.boxed(),
                         rhs: rhs.boxed(),
                         operator,
@@ -965,12 +1158,18 @@ pub struct TypedUnaryOpCall {
 
 fn strip_pointers(ty: &ResolvedType) -> ResolvedType {
     if let ResolvedType::Function { arg, returns } = ty {
-        let arg = if let ResolvedType::Pointer { underlining  } = arg.as_ref() && underlining.is_function() {
-            strip_pointers(underlining.as_ref()).boxed()
-        } else { arg.clone() };
-        let returns = if let ResolvedType::Pointer { underlining } = returns.as_ref() && underlining.is_function() {
-            strip_pointers(underlining.as_ref()).boxed()
-        } else { returns.clone() };
+        let arg = match arg.as_ref() {
+            ResolvedType::Pointer { underlining } if underlining.is_function() => {
+                strip_pointers(underlining.as_ref()).boxed()
+            }
+            _ => arg.clone(),
+        };
+        let returns = match returns.as_ref() {
+            ResolvedType::Pointer { underlining } if underlining.is_function() => {
+                strip_pointers(underlining.as_ref()).boxed()
+            }
+            _ => returns.clone(),
+        };
         ResolvedType::Function { arg, returns }
     } else {
         ty.clone()
@@ -994,8 +1193,10 @@ mod tests {
     use std::collections::{HashMap, HashSet};
 
     use super::TypedExpr;
+    use crate::ast::ArgDeclation;
     use crate::typed_ast::{
-        TypedDeclaration, TypedModuleDeclaration, TypedStatement, TypedValueDeclaration, TypedValueType, TypedFnCall,
+        TypedDeclaration, TypedFnCall, TypedModuleDeclaration, TypedStatement,
+        TypedValueDeclaration, TypedValueType,
     };
     use crate::types::{self, ResolvedType};
     use crate::util::ExtraUtilFunctions;
@@ -1016,7 +1217,8 @@ mod tests {
                     value: "1".to_string(),
                     ty: types::INT32,
                 },
-                &HashMap::new()
+                &HashMap::new(),
+                Vec::new()
             )
             .expect(""),
             TypedExpr::IntegerLiteral {
@@ -1032,7 +1234,8 @@ mod tests {
                     value: "1.0".to_string(),
                     ty: types::FLOAT32
                 },
-                &HashMap::new()
+                &HashMap::new(),
+                Vec::new()
             )
             .expect(""),
             TypedExpr::FloatLiteral {
@@ -1043,20 +1246,29 @@ mod tests {
         );
 
         assert_eq!(
-            TypedExpr::try_from(Expr::StringLiteral("merp".to_string()), &HashMap::new())
-                .expect(""),
+            TypedExpr::try_from(
+                Expr::StringLiteral("merp".to_string()),
+                &HashMap::new(),
+                Vec::new()
+            )
+            .expect(""),
             TypedExpr::StringLiteral("merp".to_string()),
             "strings"
         );
 
         assert_eq!(
-            TypedExpr::try_from(Expr::CharLiteral("a".to_string()), &HashMap::new()).expect(""),
+            TypedExpr::try_from(
+                Expr::CharLiteral("a".to_string()),
+                &HashMap::new(),
+                Vec::new()
+            )
+            .expect(""),
             TypedExpr::CharLiteral("a".to_string()),
             "chars"
         );
 
         assert_eq!(
-            TypedExpr::try_from(Expr::UnitLiteral, &HashMap::new()).expect(""),
+            TypedExpr::try_from(Expr::UnitLiteral, &HashMap::new(), Vec::new()).expect(""),
             TypedExpr::UnitLiteral,
             "()"
         );
@@ -1064,6 +1276,7 @@ mod tests {
         assert_eq!(
             TypedExpr::try_from(
                 Expr::BinaryOpCall(ast::BinaryOpCall {
+                    loc: (0, 0),
                     lhs: Expr::NumericLiteral {
                         value: "1".to_string(),
                         ty: types::INT32
@@ -1076,10 +1289,12 @@ mod tests {
                     .boxed(),
                     operator: "+".to_string()
                 }),
-                &HashMap::new()
+                &HashMap::new(),
+                Vec::new()
             )
             .expect(""),
             TypedExpr::BinaryOpCall(super::TypedBinaryOpCall {
+                loc: (0, 0),
                 lhs: TypedExpr::IntegerLiteral {
                     value: "1".to_string(),
                     size: types::IntWidth::ThirtyTwo
@@ -1099,7 +1314,12 @@ mod tests {
         // TODO : Unary ops.  not yet implemented at parse level.
 
         assert_eq!(
-            TypedExpr::try_from(Expr::ValueRead("bar".to_string()), &PREDEFINED_VALUES).expect(""),
+            TypedExpr::try_from(
+                Expr::ValueRead("bar".to_string()),
+                &PREDEFINED_VALUES,
+                Vec::new()
+            )
+            .expect(""),
             TypedExpr::ValueRead("bar".to_string(), types::INT32),
             "reading a value"
         );
@@ -1107,13 +1327,16 @@ mod tests {
         assert_eq!(
             TypedExpr::try_from(
                 Expr::FnCall(ast::FnCall {
+                    loc: (0, 0),
                     value: Expr::ValueRead("foo".to_string()).boxed(),
                     arg: Some(Expr::ValueRead("bar".to_string()).boxed()),
                 }),
-                &PREDEFINED_VALUES
+                &PREDEFINED_VALUES,
+                Vec::new()
             )
             .expect(""),
             TypedExpr::FnCall(super::TypedFnCall {
+                loc: (0, 0),
                 value: TypedExpr::ValueRead(
                     "foo".to_string(),
                     ResolvedType::Function {
@@ -1152,10 +1375,13 @@ mod tests {
 
         assert_eq!(
             TypedValueType::try_from(
-                ValueType::Function(vec![ast::Statement::Return(ast::Expr::NumericLiteral {
-                    value: "1".to_string(),
-                    ty: types::INT32
-                })]),
+                ValueType::Function(vec![ast::Statement::Return(
+                    ast::Expr::NumericLiteral {
+                        value: "1".to_string(),
+                        ty: types::INT32
+                    },
+                    (0, 0)
+                )]),
                 &PREDEFINED_VALUES
             )
             .expect(""),
@@ -1163,7 +1389,8 @@ mod tests {
                 super::TypedExpr::IntegerLiteral {
                     value: "1".to_string(),
                     size: types::IntWidth::ThirtyTwo
-                }
+                },
+                (0, 0)
             )]),
             "function body"
         );
@@ -1176,6 +1403,7 @@ mod tests {
         assert_eq!(
             TypedStatement::try_from(
                 Statement::Declaration(ast::ValueDeclaration {
+                    loc: (0, 0),
                     is_op: false,
                     ident: "foo".to_string(),
                     args: Vec::new(),
@@ -1190,6 +1418,7 @@ mod tests {
             )
             .expect(""),
             TypedStatement::Declaration(TypedValueDeclaration {
+                loc: (0, 0),
                 is_op: false,
                 ident: "foo".to_string(),
                 args: Vec::new(),
@@ -1199,24 +1428,28 @@ mod tests {
                 }),
                 ty: types::INT32,
                 generictypes: HashSet::new(),
-                is_curried : false,
+                is_curried: false,
             }),
             "decl statement"
         );
 
         assert_eq!(
             TypedStatement::try_from(
-                Statement::Return(ast::Expr::ValueRead("bar".to_string())),
+                Statement::Return(ast::Expr::ValueRead("bar".to_string()), (0, 0)),
                 &PREDEFINED_VALUES
             )
             .expect(""),
-            TypedStatement::Return(TypedExpr::ValueRead("bar".to_string(), types::INT32)),
+            TypedStatement::Return(
+                TypedExpr::ValueRead("bar".to_string(), types::INT32),
+                (0, 0)
+            ),
             "return"
         );
 
         assert_eq!(
             TypedStatement::try_from(
                 Statement::FnCall(ast::FnCall {
+                    loc: (0, 0),
                     value: ast::Expr::ValueRead("foo".to_string()).boxed(),
                     arg: Some(ast::Expr::ValueRead("bar".to_string()).boxed()),
                 }),
@@ -1224,6 +1457,7 @@ mod tests {
             )
             .expect(""),
             TypedStatement::FnCall(super::TypedFnCall {
+                loc: (0, 0),
                 value: TypedExpr::ValueRead(
                     "foo".to_string(),
                     ResolvedType::Function {
@@ -1250,9 +1484,13 @@ mod tests {
         assert_eq!(
             TypedDeclaration::try_from(
                 ast::Declaration::Value(ast::ValueDeclaration {
+                    loc: (0, 0),
                     is_op: false,
                     ident: "test".to_string(),
-                    args: ["a".to_string()].into_iter().collect(),
+                    args: vec![ArgDeclation {
+                        ident: "a".to_string(),
+                        loc: (0, 0)
+                    }],
                     ty: Some(ResolvedType::Function {
                         arg: types::INT32.boxed(),
                         returns: types::INT32.boxed()
@@ -1261,7 +1499,8 @@ mod tests {
                         ast::Expr::NumericLiteral {
                             value: "1".to_string(),
                             ty: types::INT32
-                        }
+                        },
+                        (0, 0)
                     )]),
                     generictypes: HashSet::new(),
                 }),
@@ -1269,9 +1508,13 @@ mod tests {
             )
             .expect(""),
             TypedDeclaration::Value(super::TypedValueDeclaration {
+                loc: (0, 0),
                 is_op: false,
                 ident: "test".to_string(),
-                args: ["a".to_string()].into_iter().collect(),
+                args: vec![ArgDeclation {
+                    ident: "a".to_string(),
+                    loc: (0, 0)
+                }],
                 ty: ResolvedType::Function {
                     arg: types::INT32.boxed(),
                     returns: types::INT32.boxed()
@@ -1280,12 +1523,13 @@ mod tests {
                     super::TypedExpr::IntegerLiteral {
                         value: "1".to_string(),
                         size: types::IntWidth::ThirtyTwo
-                    }
+                    },
+                    (0, 0)
                 )]),
                 generictypes: HashSet::new(),
-                is_curried : false
+                is_curried: false
             }),
-r#"let test a : int32 -> int32 = 
+            r#"let test a : int32 -> int32 = 
     return 1"#
         );
         // TODO : mod and type definition.
@@ -1309,57 +1553,110 @@ let main _ : int32 -> int32 =
         let mut module = TypedModuleDeclaration::from(module, &HashMap::new());
         module.lower_generics(&HashMap::new());
         let [generic, main, generated] = &module.declarations[..] else { unreachable!("should have three when done")};
-        assert_eq!(generic, &TypedDeclaration::Value(TypedValueDeclaration { 
-            is_op: false, 
-            ident: "test".to_string(), 
-            args: vec!["a".to_string()], 
-            value: TypedValueType::Function(vec![
-                TypedStatement::Return(TypedExpr::ValueRead("a".to_string(), ResolvedType::Generic { name: "T".to_string() }))
-            ]), 
-            ty: ResolvedType::Function { 
-                arg: ResolvedType::Generic { name: "T".to_string() }.boxed(), 
-                returns: ResolvedType::Generic { name: "T".to_string() }.boxed()
-            }, 
-            generictypes: ["T".to_string()].into_iter().collect(),
-            is_curried : false,
-        }),
-        "generic should be untouched");
-        assert_eq!(main,&TypedDeclaration::Value(TypedValueDeclaration { 
-            is_op: false, 
-            ident: "main".to_string(), 
-            args: vec!["_".to_string()], 
-            value: TypedValueType::Function(vec![
-                TypedStatement::FnCall(TypedFnCall { 
-                    value: TypedExpr::ValueRead(
-                        "test_int32".to_string(),
-                        ResolvedType::Function { arg: types::INT32.boxed(), returns: types::INT32.boxed() }
-                    ).boxed(), 
-                    arg: Some(TypedExpr::IntegerLiteral { value: "3".to_string(), size: types::IntWidth::ThirtyTwo }.boxed()),
-                    rt: types::INT32, 
-                    arg_t: types::INT32
-                }),
-                TypedStatement::Return(TypedExpr::IntegerLiteral { value: "0".to_string(), size: types::IntWidth::ThirtyTwo })
-            ]), 
-            ty: ResolvedType::Function { 
-                arg: types::INT32.boxed(), 
-                returns: types::INT32.boxed()
-            },
-            generictypes: HashSet::new(),
-            is_curried : false,
-        }),
-        "main should have the value read changed");
-        assert_eq!(generated,
+        assert_eq!(
+            generic,
             &TypedDeclaration::Value(TypedValueDeclaration {
+                loc: (1, 12),
+                is_op: false,
+                ident: "test".to_string(),
+                args: vec![ArgDeclation {
+                    ident: "a".to_string(),
+                    loc: (1, 17)
+                }],
+                value: TypedValueType::Function(vec![TypedStatement::Return(
+                    TypedExpr::ValueRead(
+                        "a".to_string(),
+                        ResolvedType::Generic {
+                            name: "T".to_string()
+                        }
+                    ),
+                    (2, 5)
+                )]),
+                ty: ResolvedType::Function {
+                    arg: ResolvedType::Generic {
+                        name: "T".to_string()
+                    }
+                    .boxed(),
+                    returns: ResolvedType::Generic {
+                        name: "T".to_string()
+                    }
+                    .boxed()
+                },
+                generictypes: ["T".to_string()].into_iter().collect(),
+                is_curried: false,
+            }),
+            "generic should be untouched"
+        );
+        assert_eq!(
+            main,
+            &TypedDeclaration::Value(TypedValueDeclaration {
+                loc: (4, 5),
+                is_op: false,
+                ident: "main".to_string(),
+                args: vec![ArgDeclation {
+                    ident: "_".to_string(),
+                    loc: (4, 10)
+                }],
+                value: TypedValueType::Function(vec![
+                    TypedStatement::FnCall(TypedFnCall {
+                        loc: (5, 5),
+                        value: TypedExpr::ValueRead(
+                            "test_int32".to_string(),
+                            ResolvedType::Function {
+                                arg: types::INT32.boxed(),
+                                returns: types::INT32.boxed()
+                            }
+                        )
+                        .boxed(),
+                        arg: Some(
+                            TypedExpr::IntegerLiteral {
+                                value: "3".to_string(),
+                                size: types::IntWidth::ThirtyTwo
+                            }
+                            .boxed()
+                        ),
+                        rt: types::INT32,
+                        arg_t: types::INT32
+                    }),
+                    TypedStatement::Return(
+                        TypedExpr::IntegerLiteral {
+                            value: "0".to_string(),
+                            size: types::IntWidth::ThirtyTwo
+                        },
+                        (6, 5)
+                    )
+                ]),
+                ty: ResolvedType::Function {
+                    arg: types::INT32.boxed(),
+                    returns: types::INT32.boxed()
+                },
+                generictypes: HashSet::new(),
+                is_curried: false,
+            }),
+            "main should have the value read changed"
+        );
+        assert_eq!(
+            generated,
+            &TypedDeclaration::Value(TypedValueDeclaration {
+                loc: (1, 12),
                 is_op: false,
                 ident: "test_int32".to_string(),
-                args: ["a".to_string()].into_iter().collect(),
-                value: crate::typed_ast::TypedValueType::Function(vec![
-                    TypedStatement::Return(TypedExpr::ValueRead("a".to_string(), types::INT32))
-                ]),
-                ty: ResolvedType::Function { arg: types::INT32.boxed(), returns: types::INT32.boxed() },
+                args: vec![ArgDeclation {
+                    ident: "a".to_string(),
+                    loc: (1, 17)
+                }],
+                value: crate::typed_ast::TypedValueType::Function(vec![TypedStatement::Return(
+                    TypedExpr::ValueRead("a".to_string(), types::INT32),
+                    (2, 5)
+                )]),
+                ty: ResolvedType::Function {
+                    arg: types::INT32.boxed(),
+                    returns: types::INT32.boxed()
+                },
                 generictypes: HashSet::new(),
-                is_curried : false,
-            }), 
-            "this should be generated")
+                is_curried: false,
+            }),
+            "this should be generated"
+        )
     }
 }

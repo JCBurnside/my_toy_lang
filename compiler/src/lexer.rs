@@ -2,7 +2,8 @@ use std::{iter::Peekable, str::Chars};
 #[derive(Clone)]
 struct Lexer<I: Clone> {
     source_stream: I,
-    curr_pos: usize,
+    curr_col: usize,
+    curr_line: usize,
     whitespaces: Vec<usize>,
     end_blocks_to_gen: usize,
     start_line: bool,
@@ -21,31 +22,35 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
     pub fn new<II: IntoIterator<IntoIter = I>>(source: II) -> Self {
         Self {
             source_stream: source.into_iter().peekable(),
-            curr_pos: 0,
+            curr_col: 0,
+            curr_line: 0,
             whitespaces: vec![],
             end_blocks_to_gen: 0,
             start_line: false,
         }
     }
 
-    pub fn lex(&mut self) -> (Token, usize) {
+    pub fn lex(&mut self) -> (Token, crate::Location) {
         if self.end_blocks_to_gen > 0 {
             self.end_blocks_to_gen -= 1;
-            return (Token::EndBlock, self.curr_pos);
+            return (Token::EndBlock, (self.curr_line, self.curr_col));
         }
         if self.source_stream.peek() == None {
-            return (Token::EoF, self.curr_pos);
+            return (Token::EoF, (self.curr_line, self.curr_col));
         }
 
         if self.source_stream.peek() == Some(&'\n') {
             self.start_line = true;
-            self.source_stream.advance_by(1).unwrap();
-            return (Token::NewLine, self.curr_pos);
+            self.source_stream.next().unwrap();
+            self.curr_col = 0;
+            self.curr_line += 1;
+            return (Token::NewLine, (self.curr_line, self.curr_col));
             // return self.lex()
         }
 
         if self.source_stream.peek() == Some(&',') {
-            self.source_stream.advance_by(1).unwrap();
+            self.source_stream.next();
+            self.curr_col += 1;
             return self.lex();
         }
 
@@ -60,32 +65,36 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
             .fold((0usize, 0usize), |(sum, count), curr| {
                 (sum + curr, count + 1)
             });
-        self.curr_pos += count;
+        self.curr_col += count;
         if self.start_line {
             self.start_line = false;
             if self.whitespaces.last().unwrap_or(&0) == &ws {
                 return self.lex();
             }
-            let ends = self.whitespaces.drain_filter(|x| *x > ws).count();
+            let ends = self.whitespaces.iter().filter(|x| *x > &ws).count();
+            self.whitespaces.retain(|x| *x <= ws);
             return if ends == 0 && ws > 0 {
                 self.whitespaces.push(ws);
-                (Token::BeginBlock, self.curr_pos)
+
+                (Token::BeginBlock, (self.curr_line, self.curr_col))
             } else {
                 self.end_blocks_to_gen = ends;
                 self.lex()
             };
         }
         if let Some(c) = self.source_stream.next() {
-            self.curr_pos += 1;
+            self.curr_col += 1;
             if c == '\n' {
                 self.start_line = true;
-                return (Token::NewLine, self.curr_pos);
+                self.curr_col = 0;
+                self.curr_line += 1;
+                return (Token::NewLine, (self.curr_line, self.curr_col));
                 // return self.lex()
             }
 
             match c {
-                '(' => (Token::GroupOpen, self.curr_pos),
-                ')' => (Token::GroupClose, self.curr_pos),
+                '(' => (Token::GroupOpen, (self.curr_line, self.curr_col)),
+                ')' => (Token::GroupClose, (self.curr_line, self.curr_col)),
                 '\'' => {
                     let mut prev = '\0';
                     let inside = self
@@ -100,12 +109,16 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                             }
                         })
                         .collect::<String>();
-                    self.curr_pos += inside.len();
+                    self.curr_col += inside.len();
                     if prev == '\n' {
-                        (Token::Error("unclosed literal"), self.curr_pos)
+                        (
+                            Token::Error("unclosed literal"),
+                            (self.curr_line, self.curr_col),
+                        )
                     } else {
-                        self.source_stream.advance_by(1).unwrap();
-                        (Token::CharLiteral(inside), self.curr_pos)
+                        self.source_stream.next();
+                        self.curr_col += 1;
+                        (Token::CharLiteral(inside), (self.curr_line, self.curr_col))
                     }
                 }
                 '"' => {
@@ -122,12 +135,17 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                             }
                         })
                         .collect::<String>();
-                    self.curr_pos += inside.len();
+                    let start = self.curr_col;
+                    self.curr_col += inside.len();
                     if prev == '\n' {
-                        (Token::Error("unclosed litteral"), self.curr_pos)
+                        (
+                            Token::Error("unclosed litteral"),
+                            (self.curr_line, self.curr_col),
+                        )
                     } else {
-                        self.source_stream.advance_by(1).unwrap();
-                        (Token::StringLiteral(inside), self.curr_pos)
+                        self.source_stream.next();
+                        self.curr_col += 1;
+                        (Token::StringLiteral(inside), (self.curr_line, start))
                     }
                 }
 
@@ -138,9 +156,9 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                         .nth(2)
                         .map_or(true, |c| !c.is_whitespace()) =>
                 {
-                    self.curr_pos += 1;
+                    self.curr_col += 1;
                     self.source_stream.next();
-                    (Token::Arrow, self.curr_pos)
+                    (Token::Arrow, (self.curr_line, self.curr_col))
                 }
 
                 '-' | '+'
@@ -154,11 +172,15 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                         .source_stream
                         .peeking_take_while(|c| !c.is_whitespace())
                         .collect();
-                    self.curr_pos += inside.len();
+                    let start = self.curr_col;
+                    self.curr_col += inside.len();
                     if inside.contains('.') {
-                        (Token::FloatingPoint(c == '-', inside), self.curr_pos)
+                        (
+                            Token::FloatingPoint(c == '-', inside),
+                            (self.curr_line, start),
+                        )
                     } else {
-                        (Token::Integer(c == '-', inside), self.curr_pos)
+                        (Token::Integer(c == '-', inside), (self.curr_line, start))
                     }
                 }
 
@@ -167,9 +189,10 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                         .source_stream
                         .peeking_take_while(|c| matches!(c, operators!()))
                         .collect();
-                    self.curr_pos += inside.len();
+                    let start = self.curr_col;
+                    self.curr_col += inside.len();
                     let inside = c.to_string() + &inside;
-                    (Token::Op(inside), self.curr_pos)
+                    (Token::Op(inside), (self.curr_line, start))
                 }
                 'f' if self
                     .source_stream
@@ -178,9 +201,11 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     .collect::<String>()
                     == "or" =>
                 {
-                    self.source_stream.advance_by(2).unwrap();
-                    self.curr_pos += 2;
-                    (Token::For, self.curr_pos)
+                    // self.source_stream.advance_by(2).unwrap();
+                    self.source_stream.next();
+                    self.source_stream.next();
+                    self.curr_col += 2;
+                    (Token::For, (self.curr_line, self.curr_col))
                 }
 
                 'l' if self
@@ -190,9 +215,10 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     .collect::<String>()
                     == "et" =>
                 {
-                    self.source_stream.advance_by(2).unwrap();
-                    self.curr_pos += 2;
-                    (Token::Let, self.curr_pos)
+                    self.source_stream.next();
+                    self.source_stream.next();
+                    self.curr_col += 2;
+                    (Token::Let, (self.curr_line, self.curr_col))
                 }
                 'r' if self
                     .source_stream
@@ -201,31 +227,42 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     .collect::<String>()
                     == "eturn" =>
                 {
-                    self.source_stream.advance_by(5).unwrap();
-                    self.curr_pos += 5;
-                    (Token::Return, self.curr_pos)
+                    // self.source_stream.advance_by(5).unwrap();
+                    for _ in 0..5 {
+                        self.source_stream.next();
+                    }
+                    let col = self.curr_col;
+                    self.curr_col += 5;
+                    (Token::Return, (self.curr_line, col))
                 }
-                ':' => (Token::Colon, self.curr_pos),
+                ':' => (Token::Colon, (self.curr_line, self.curr_col)),
                 c => {
                     let inner: String = self
                         .source_stream
                         .clone()
                         .take_while(|c| (c.is_alphanumeric()) || c == &'_' || c == &'.')
                         .collect();
-                    self.source_stream.advance_by(inner.len()).unwrap();
-                    self.curr_pos += inner.len();
+                    // self.source_stream.advance_by(,inner.len()).unwrap();
+                    for _ in 0..inner.len() {
+                        self.source_stream.next();
+                    }
+                    let start = self.curr_col;
+                    self.curr_col += inner.len();
                     let inner = c.to_string() + &inner;
                     if inner.chars().all(|c| c.is_numeric()) {
-                        (Token::Integer(false, inner), self.curr_pos)
+                        (Token::Integer(false, inner), (self.curr_line, start))
                     } else if inner.chars().all(|c| c.is_numeric() || c == '.') {
-                        (Token::FloatingPoint(false, inner), self.curr_pos)
+                        (Token::FloatingPoint(false, inner), (self.curr_line, start))
                     } else {
-                        (Token::Ident(inner), self.curr_pos)
+                        (Token::Ident(inner), (self.curr_line, start))
                     }
                 }
             }
         } else {
-            (Token::Error("Unknown Lexer Error"), self.curr_pos)
+            (
+                Token::Error("Unknown Lexer Error"),
+                (self.curr_line, self.curr_col),
+            )
         }
     }
 }
@@ -256,7 +293,7 @@ impl<I: Iterator<Item = char> + Clone> TokenStream<Peekable<I>> {
 }
 
 impl<T: Iterator<Item = char> + Clone> Iterator for TokenStream<Peekable<T>> {
-    type Item = (Token, usize);
+    type Item = (Token, crate::Location);
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.ended {
@@ -279,6 +316,7 @@ mod tests {
     use itertools::Itertools;
 
     #[test]
+    #[rustfmt::skip]
     fn explicit_generics() {
         use Token::*;
         assert_eq!(
@@ -289,7 +327,6 @@ mod tests {
             )
             .map(|(a, _)| a)
             .collect_vec(),
-            #[rustfmt::skip]
             [
                 For, Op("<".to_owned()), Ident("T".to_owned()), Ident("U".to_owned()), Op(">".to_owned()), Let, Ident("foo".to_owned()), Ident("bar".to_owned()), Ident("baz".to_owned()), Colon, Ident("T".to_owned()), Arrow, Ident("U".to_owned()), Arrow, Ident("int8".to_owned()), Op("=".to_owned()), NewLine,
                 BeginBlock,
@@ -444,13 +481,14 @@ mod tests {
         TokenStream::from_source(
             r#"let foo : int32 =
     return 5
-"#
+"#,
         )
         .map(|(a, _)| a)
         .collect_vec();
     }
 
     #[test]
+    #[rustfmt::skip]
     fn token_chain() {
         use Token::*;
         assert_eq!(
@@ -469,7 +507,6 @@ let group_test arg : ( int32 -> int32 ) -> int32
             )
             .map(|(a, _)| a)
             .collect_vec(),
-            #[rustfmt::skip]
             [
                 Let, Ident("depth1".to_owned()), Op("=".to_owned()), NewLine,
                 BeginBlock,
@@ -491,12 +528,12 @@ let group_test arg : ( int32 -> int32 ) -> int32
     }
 
     #[test]
+    #[rustfmt::skip]
     fn from_file() {
         const SRC: &'static str = include_str!("../../samples/test.foo");
         use Token::*;
         assert_eq!(
             TokenStream::from_source(SRC).map(|(a, _)| a).collect_vec(),
-            #[rustfmt::skip]
             [
                 Let, Ident("foo".to_owned()), Colon, Ident("int32".to_owned()), Op("=".to_owned()), Integer(false, "3".to_owned()),NewLine,
                 NewLine,
@@ -516,6 +553,7 @@ let group_test arg : ( int32 -> int32 ) -> int32
     }
 
     #[test]
+    #[rustfmt::skip]
     fn chain_fn_calls() {
         const SRC: &'static str = r#"
 let main _ : int32 -> int32 = 
@@ -527,7 +565,6 @@ let main _ : int32 -> int32 =
         use Token::*;
         assert_eq!(
             TokenStream::from_source(SRC).map(|(a, _)| a).collect_vec(),
-            #[rustfmt::skip]
             [
             NewLine,
             Let, Ident("main".to_owned()), Ident("_".to_owned()), Colon, Ident("int32".to_owned()), Arrow, Ident("int32".to_owned()), Op("=".to_owned()),NewLine,

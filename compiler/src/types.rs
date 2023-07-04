@@ -1,9 +1,13 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    mem::size_of,
+};
 
-use crate::{ast::TypeName, util::ExtraUtilFunctions};
+use crate::util::ExtraUtilFunctions;
 use inkwell::{
     context::Context,
-    types::{AnyType, AnyTypeEnum, BasicType, BasicTypeEnum},
+    debug_info::{DIFile, DIFlags, DIFlagsConstants, DISubroutineType, DIType, DebugInfoBuilder},
+    types::{AnyType, AnyTypeEnum, BasicType, BasicTypeEnum, FunctionType},
     AddressSpace,
 };
 
@@ -23,6 +27,15 @@ impl IntWidth {
             "32" => Self::ThirtyTwo,
             "64" => Self::SixtyFour,
             _ => unimplemented!("custom width ints not supported currently"),
+        }
+    }
+
+    fn as_bits(&self) -> u64 {
+        match self {
+            Self::Eight => 8,
+            Self::Sixteen => 16,
+            Self::ThirtyTwo => 32,
+            Self::SixtyFour => 64,
         }
     }
 
@@ -47,6 +60,13 @@ impl FloatWidth {
             "32" => Self::ThirtyTwo,
             "64" => Self::SixtyFour,
             _ => unimplemented!("custom width floats not supported"),
+        }
+    }
+
+    fn as_bits(&self) -> u64 {
+        match self {
+            Self::ThirtyTwo => 32,
+            Self::SixtyFour => 64,
         }
     }
 
@@ -88,7 +108,7 @@ pub enum ResolvedType {
     },
     User {
         name: String,
-        generics : Vec<String>,
+        generics: Vec<String>,
     },
 
     Array {
@@ -102,11 +122,22 @@ pub enum ResolvedType {
     Generic {
         name: String,
     },
-
     Error,
 }
 
 impl ResolvedType {
+    pub fn as_c_function(&self) -> (Vec<Self>, Self) {
+        // (args, return type)
+        match self {
+            Self::Function { arg, returns } => {
+                let (mut args, rt) = returns.as_c_function();
+                args.push(arg.as_ref().clone());
+                (args, rt)
+            }
+            _ => (Vec::new(), self.clone()),
+        }
+    }
+
     pub fn replace_generic(&self, name: &str, new_ty: Self) -> Self {
         match self {
             Self::Generic { name: old_name } if old_name == name => new_ty,
@@ -160,16 +191,27 @@ impl ResolvedType {
 
     pub(crate) fn replace_user_with_generic(self, target_name: &str) -> Self {
         match self {
-            ResolvedType::Ref { underlining } => Self::Ref { underlining: underlining.replace_user_with_generic(target_name).boxed() },
-            ResolvedType::Pointer { underlining } => Self::Ref { underlining : underlining.replace_user_with_generic(target_name).boxed() },
-            ResolvedType::Slice { underlining } => Self::Slice { underlining: underlining.replace_user_with_generic(target_name).boxed() },
-            ResolvedType::Function { arg, returns } => Self::Function { 
-                arg: arg.replace_user_with_generic(target_name).boxed(), 
-                returns: returns.replace_user_with_generic(target_name).boxed() 
+            ResolvedType::Ref { underlining } => Self::Ref {
+                underlining: underlining.replace_user_with_generic(target_name).boxed(),
             },
-            ResolvedType::Array { underlying, size } => Self::Array { underlying: underlying.replace_user_with_generic(target_name).boxed(), size },
-            ResolvedType::User { name, .. } if &name == target_name => ResolvedType::Generic { name },
-            _=> self
+            ResolvedType::Pointer { underlining } => Self::Ref {
+                underlining: underlining.replace_user_with_generic(target_name).boxed(),
+            },
+            ResolvedType::Slice { underlining } => Self::Slice {
+                underlining: underlining.replace_user_with_generic(target_name).boxed(),
+            },
+            ResolvedType::Function { arg, returns } => Self::Function {
+                arg: arg.replace_user_with_generic(target_name).boxed(),
+                returns: returns.replace_user_with_generic(target_name).boxed(),
+            },
+            ResolvedType::Array { underlying, size } => Self::Array {
+                underlying: underlying.replace_user_with_generic(target_name).boxed(),
+                size,
+            },
+            ResolvedType::User { name, .. } if &name == target_name => {
+                ResolvedType::Generic { name }
+            }
+            _ => self,
         }
     }
 
@@ -178,7 +220,14 @@ impl ResolvedType {
             ResolvedType::Alias { actual } => actual.to_string(),
             ResolvedType::Char => "char".to_string(),
             ResolvedType::Float { width } => "float".to_string() + &width.to_string(),
-            ResolvedType::Function { arg, returns } => todo!("how to serialize this"),
+            ResolvedType::Function { arg, returns } => {
+                let arg = if arg.is_function() {
+                    format!("({})", arg.to_string())
+                } else {
+                    arg.to_string()
+                };
+                format!("{}->{}", arg, returns.to_string())
+            }
             ResolvedType::Generic { name } => {
                 unreachable!("why are you trying to serialize a generic type?")
             }
@@ -197,7 +246,9 @@ impl ResolvedType {
             ResolvedType::Str => "str".to_string(),
             ResolvedType::Unit => "()".to_string(),
             ResolvedType::Void => "".to_string(),
-            ResolvedType::User { name , generics } => name.clone() + "_" + &generics.iter().cloned().join("_"),
+            ResolvedType::User { name, generics } => {
+                name.clone() + "_" + &generics.iter().cloned().join("_")
+            }
             ResolvedType::Array { underlying, size } => {
                 format!("[{};{}]", underlying.to_string(), size)
             }
@@ -255,12 +306,12 @@ mod consts {
 pub use consts::*;
 use itertools::Itertools;
 
-
 #[derive(Clone)]
 pub struct TypeResolver<'ctx> {
     known: HashMap<ResolvedType, AnyTypeEnum<'ctx>>,
     known_generics: HashMap<String, ResolvedType>,
     ctx: &'ctx Context,
+    ditypes: HashMap<ResolvedType, DIType<'ctx>>,
 }
 
 impl<'ctx> TypeResolver<'ctx> {
@@ -309,11 +360,115 @@ impl<'ctx> TypeResolver<'ctx> {
             known,
             known_generics: HashMap::new(),
             ctx,
+            ditypes: HashMap::new(),
         }
     }
 
     pub fn has_type(&self, ty: &ResolvedType) -> bool {
         self.known.contains_key(ty)
+    }
+
+    pub fn get_di_fn(
+        &mut self,
+        ty: &ResolvedType,
+        dibuilder: &DebugInfoBuilder<'ctx>,
+        file: &DIFile<'ctx>,
+    ) -> DISubroutineType<'ctx> {
+        let (args, rt) = ty.as_c_function();
+        let rt = self.get_di(&rt, dibuilder);
+        let args = args
+            .into_iter()
+            .map(|arg| self.get_di(&arg, dibuilder))
+            .collect_vec();
+        dibuilder.create_subroutine_type(*file, Some(rt), &args, DIFlags::PUBLIC)
+    }
+
+    pub fn get_di(
+        &mut self,
+        ty: &ResolvedType,
+        dibuilder: &DebugInfoBuilder<'ctx>,
+    ) -> DIType<'ctx> {
+        if self.ditypes.contains_key(ty) {
+            self.ditypes[ty]
+        } else {
+            let ditype = match ty {
+                ResolvedType::Int { signed, width } => dibuilder
+                    .create_basic_type(
+                        &ty.to_string(),
+                        width.as_bits(),
+                        0, //TODO figure out wtf this is for
+                        DIFlags::PUBLIC,
+                    )
+                    .unwrap()
+                    .as_type(),
+                ResolvedType::Float { width } => dibuilder
+                    .create_basic_type(
+                        &ty.to_string(),
+                        width.as_bits(),
+                        0, //TODO figure out wtf this is for
+                        DIFlags::PUBLIC,
+                    )
+                    .unwrap()
+                    .as_type(),
+                ResolvedType::Char => dibuilder
+                    .create_basic_type(
+                        &ty.to_string(),
+                        8,
+                        0, //TODO figure out wtf this is for
+                        DIFlags::PUBLIC,
+                    )
+                    .unwrap()
+                    .as_type(),
+                ResolvedType::Str => unimplemented!(
+                    "not sure how to handle this one yet, will probably handle as slice."
+                ),
+                ResolvedType::Ref { underlining } => dibuilder
+                    .create_reference_type(self.get_di(&underlining, dibuilder), 0)
+                    .as_type(),
+                ResolvedType::Pointer { underlining } => dibuilder
+                    .create_pointer_type(
+                        &ty.to_string(),
+                        self.get_di(&underlining, dibuilder),
+                        size_of::<*const ()>() as u64,
+                        0,
+                        AddressSpace::default(),
+                    )
+                    .as_type(),
+                ResolvedType::Unit => dibuilder
+                    .create_basic_type("()", 0, 0, DIFlags::PUBLIC)
+                    .unwrap()
+                    .as_type(),
+                ResolvedType::Void => todo!(),
+                ResolvedType::Slice { underlining } => todo!(),
+                ResolvedType::Function { arg, returns } => dibuilder
+                    .create_pointer_type(
+                        &ty.to_string(),
+                        self.get_di(&INT8, dibuilder),
+                        size_of::<*const ()>() as u64,
+                        0,
+                        AddressSpace::default(),
+                    )
+                    .as_type(),
+                ResolvedType::User { name, generics } => {
+                    todo!("probably should store size of type in here?")
+                }
+                ResolvedType::Array { underlying, size } => dibuilder
+                    .create_array_type(
+                        self.get_di(&underlying, dibuilder),
+                        size_of::<*const ()>() as u64,
+                        0,
+                        &[0..(*size as i64)],
+                    )
+                    .as_type(),
+                ResolvedType::Alias { actual } => todo!(),
+                ResolvedType::Generic { name } => unreachable!("cannont generate generic di info"),
+                ResolvedType::Error => unreachable!(
+                    "if there is an error node then it can't possibly be generating llvm"
+                ),
+            };
+            self.ditypes.insert(ty.clone(), ditype);
+            ditype
+        }
     }
 
     // pub fn insert_many_user_types(&mut self,types:Vec<(String,Vec<ResolvedType>)>) -> Vec<Result<AnyTypeEnum,Vec<InsertionError>>> {
@@ -350,7 +505,10 @@ impl<'ctx> TypeResolver<'ctx> {
                         .as_any_type_enum();
                     self.known.insert(ty, result);
                 } else {
-                    let result = self.resolve_type_as_any(underlining.as_ref().clone());
+                    let result = self
+                        .resolve_type_as_basic(underlining.as_ref().clone())
+                        .ptr_type(AddressSpace::default())
+                        .as_any_type_enum();
                     self.known.insert(ty, result);
                 }
             }
@@ -365,33 +523,17 @@ impl<'ctx> TypeResolver<'ctx> {
                         .as_any_type_enum(),
                 );
             }
-            ResolvedType::Function {
-                ref arg,
-                ref returns,
-            } => {
-                let arg = self.resolve_type_as_basic(arg.as_ref().clone());
-                let arg = if arg.is_struct_type() {
-                    arg.into_struct_type()
-                        .ptr_type(AddressSpace::default())
-                        .as_basic_type_enum()
-                } else {
-                    arg
-                };
-                if returns.as_ref() == &ResolvedType::Unit
-                    || returns.as_ref() == &ResolvedType::Void
-                {
-                    self.known.insert(
-                        ty,
-                        self.ctx
-                            .void_type()
-                            .fn_type(&[arg.into()], false)
-                            .as_any_type_enum(),
-                    );
-                } else {
-                    let rt = self.resolve_type_as_basic(returns.as_ref().clone());
-                    self.known
-                        .insert(ty, rt.fn_type(&[arg.into()], false).as_any_type_enum());
-                }
+            ResolvedType::Function { .. } => {
+                let r = self
+                    .ctx
+                    .struct_type(
+                        &[self.resolve_type_as_basic(ResolvedType::Pointer {
+                            underlining: INT8.boxed(),
+                        })],
+                        false,
+                    )
+                    .as_any_type_enum();
+                self.known.insert(ty, r);
             }
             ResolvedType::User { name, generics } => todo!(),
             // ResolvedType::ForwardUser { name } => todo!(),
@@ -402,18 +544,46 @@ impl<'ctx> TypeResolver<'ctx> {
             {
                 ()
             }
+
             _ => unimplemented!(),
         }
     }
 
-    pub fn resolve_arg_type(&mut self, ty : &ResolvedType) -> BasicTypeEnum<'ctx> {
+    pub fn resolve_arg_type(&mut self, ty: &ResolvedType) -> BasicTypeEnum<'ctx> {
         self.resolve_type(ty.clone());
         if let ResolvedType::Function { .. } = ty {
-            let i8_ptr = self.known.get(&INT8).unwrap().into_int_type().ptr_type(AddressSpace::default()).as_basic_type_enum();
-            self.ctx.struct_type(&[i8_ptr.into()], false).ptr_type(AddressSpace::default()).as_basic_type_enum()
+            let i8_ptr = self
+                .known
+                .get(&INT8)
+                .unwrap()
+                .into_int_type()
+                .ptr_type(AddressSpace::default())
+                .as_basic_type_enum();
+            self.ctx
+                .struct_type(&[i8_ptr.into()], false)
+                .ptr_type(AddressSpace::default())
+                .as_basic_type_enum()
         } else {
             self.resolve_type_as_basic(ty.clone())
         }
+    }
+
+    pub fn resolve_type_as_function(&mut self, ty: &ResolvedType) -> FunctionType<'ctx> {
+        let ResolvedType::Function { arg, returns } = ty else { unreachable!("trying to make a non function type into a function") };
+        let arg = self.resolve_arg_type(&arg);
+        let curry_holder = self
+            .ctx
+            .struct_type(
+                &[self.ctx.i8_type().ptr_type(AddressSpace::default()).into()],
+                false,
+            )
+            .ptr_type(AddressSpace::default());
+        let rt = if returns.is_function() {
+            curry_holder.as_basic_type_enum()
+        } else {
+            self.resolve_type_as_basic(returns.as_ref().clone())
+        };
+        rt.fn_type(&[curry_holder.into(), arg.into()], false)
     }
 
     pub fn resolve_type_as_basic(&mut self, ty: ResolvedType) -> BasicTypeEnum<'ctx> {

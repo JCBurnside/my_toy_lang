@@ -8,8 +8,8 @@ edition = "2021"
 [dependencies]
 # langstd = {path="langstd"} #this should eventually be linked in.  though will probably will write it in the lang itself and precompile it for use once I make c ffi functional.
 inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "master", features = ["llvm14-0"] }
-itertools = "0.10.3"
-utf8-chars = "2.0.1"
+itertools = "0.11.0"
+utf8-chars = "3.0.0"
 regex = "1.6.0"
 lazy_static = "1.4.0"
-multimap = "0.8.3"
+multimap = "0.9.0"

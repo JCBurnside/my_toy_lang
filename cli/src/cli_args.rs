@@ -14,4 +14,7 @@ pub struct Arguments {
     pub output_llvm: bool,
 
     pub file: PathBuf,
+
+    #[arg(short = 'd', default_value_t = false)]
+    pub debug: bool,
 }

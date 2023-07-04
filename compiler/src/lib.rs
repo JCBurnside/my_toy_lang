@@ -1,13 +1,3 @@
-#![feature(stmt_expr_attributes)]
-#![feature(iter_advance_by)]
-#![feature(drain_filter)]
-#![feature(let_chains)]
-#![feature(generic_arg_infer)]
-#![feature(if_let_guard)]
-#![feature(extend_one)]
-#![feature(entry_insert)]
-#![feature(hash_drain_filter)]
-#![feature(result_option_inspect)]
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::path::PathBuf;
@@ -23,7 +13,7 @@ pub mod types;
 mod util;
 
 use code_gen::CodeGen;
-use typed_ast::{TypedModuleDeclaration, TypedDeclaration};
+use typed_ast::{TypedDeclaration, TypedModuleDeclaration};
 // use code_gen::CodeGen;
 use inkwell::module::Module;
 use itertools::Itertools;
@@ -33,11 +23,12 @@ use types::{ResolvedType, TypeResolver};
 
 use inkwell::context::Context;
 use multimap::MultiMap;
-
+type Location = (usize, usize);
 pub fn from_file<'ctx>(
     file: &PathBuf,
     ctx: &'ctx Context,
     fwd_declarations: HashMap<String, ResolvedType>,
+    is_debug: bool,
 ) -> Result<Module<'ctx>, Vec<Box<dyn Display>>> {
     // TODO: I would like to make this work for now I will read the whole file to a string then
     // let file = File::open(file).map_err(Box::new).map_err(|err| vec![err as Box<dyn Display>])?;
@@ -58,16 +49,16 @@ pub fn from_file<'ctx>(
         type_resolver.clone(),
         fwd_declarations.clone(),
         HashMap::new(),
-        MultiMap::new()
+        MultiMap::new(),
     );
     let ast = parser.module(file_name.to_str().unwrap().to_string());
-    let mut ast = TypedModuleDeclaration::from(ast,&fwd_declarations);//TODO: foward declare std lib
+    let mut ast = TypedModuleDeclaration::from(ast, &fwd_declarations); //TODO: foward declare std lib
     ast.lower_generics(&HashMap::new());
-    ast.declarations.drain_filter(|it| match it {
-        TypedDeclaration::Value(it) => !it.generictypes.is_empty(),
-        _ => false
+    ast.declarations.retain(|it| match it {
+        TypedDeclaration::Value(it) => it.generictypes.is_empty(),
+        _ => true,
     });
-    let module = code_gen.compile_program(vec![ast],false);
+    let module = code_gen.compile_program(vec![ast], false, is_debug);
     Ok(module)
 }
 
@@ -75,15 +66,17 @@ pub fn from_file<'ctx>(
 mod tests {
     use std::collections::HashMap;
 
-    use inkwell::{targets::{InitializationConfig, Target}, context::Context};
+    use inkwell::{
+        context::Context,
+        targets::{InitializationConfig, Target},
+    };
     use multimap::MultiMap;
 
     use crate::types::TypeResolver;
 
     #[test]
     fn integration() {
-        const SRC : &'static str = 
-r#"
+        const SRC: &'static str = r#"
 for<T> let id a : T -> T = a
 
 let use_fn fun a : (int32 -> int32) -> int32 -> int32 =
@@ -100,9 +93,16 @@ let main _ : () -> () =
         let ast = parser.module("test".to_string());
         let mut ast = crate::typed_ast::TypedModuleDeclaration::from(ast, &HashMap::new());
         ast.lower_generics(&HashMap::new());
-        let code_gen = crate::code_gen::CodeGen::with_module(&ctx, ctx.create_module(""), type_resolver, HashMap::new(), HashMap::new(), MultiMap::new());
-        let module = code_gen.compile_program(vec![ast],true);
+        let code_gen = crate::code_gen::CodeGen::with_module(
+            &ctx,
+            ctx.create_module(""),
+            type_resolver,
+            HashMap::new(),
+            HashMap::new(),
+            MultiMap::new(),
+        );
+        let module = code_gen.compile_program(vec![ast], true, true);
         let llvm = module.print_to_string();
-        println!("{:?}",llvm.to_string())
+        println!("{:?}", llvm.to_string())
     }
 }
