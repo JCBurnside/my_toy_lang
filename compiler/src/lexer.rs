@@ -95,6 +95,8 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
             match c {
                 '(' => (Token::GroupOpen, (self.curr_line, self.curr_col)),
                 ')' => (Token::GroupClose, (self.curr_line, self.curr_col)),
+                '{' => (Token::CurlOpen, (self.curr_line, self.curr_col)),
+                '}' => (Token::CurlClose, (self.curr_line, self.curr_col)),
                 '\'' => {
                     let mut prev = '\0';
                     let inside = self
@@ -234,6 +236,34 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     let col = self.curr_col;
                     self.curr_col += 5;
                     (Token::Return, (self.curr_line, col))
+                }
+                't' if self
+                    .source_stream
+                    .clone()
+                    .take_while(|c| c.is_alphabetic())
+                    .collect::<String>()
+                    == "ype" =>
+                {
+                    for _ in 0..3 {
+                        self.source_stream.next();
+                    }
+                    let col = self.curr_col;
+                    self.curr_col += 3;
+                    (Token::Type, (self.curr_line, col))
+                }
+                'e' if self
+                    .source_stream
+                    .clone()
+                    .take_while(|c| c.is_alphabetic())
+                    .collect::<String>()
+                    =="num" =>
+                {
+                    for _ in 0..3 {
+                        self.source_stream.next();
+                    }
+                    let col = self.curr_col;
+                    self.curr_col += 3;
+                    (Token::Enum, (self.curr_line, col))
                 }
                 ':' => (Token::Colon, (self.curr_line, self.curr_col)),
                 c => {
@@ -421,7 +451,37 @@ mod tests {
                 .collect_vec(),
             [Token::NewLine, Token::BeginBlock, Token::EoF],
             "Begin block"
-        )
+        );
+
+        assert_eq!(
+            TokenStream::from_source("type")
+                .map(|(a,_)| a)
+                .collect_vec(),
+            [Token::Type, Token::EoF],
+            "Type"
+        );
+        assert_eq!(
+            TokenStream::from_source("enum")
+                .map(|(a,_)| a)
+                .collect_vec(),
+            [Token::Enum, Token::EoF],
+            "enum"
+        );
+        assert_eq!(
+            TokenStream::from_source("{")
+                .map(|(a,_)| a)
+                .collect_vec(),
+            [Token::CurlOpen, Token::EoF],
+            "Open Curl"
+        );
+        assert_eq!(
+            TokenStream::from_source("}")
+                .map(|(a,_)| a)
+                .collect_vec(),
+            [Token::CurlClose, Token::EoF],
+            "Close Curl"
+        );
+        
     }
 
     #[test]
@@ -572,6 +632,38 @@ let main _ : int32 -> int32 =
                 Ident("put_int32".to_owned()), Integer(false,"100".to_owned()),NewLine,
                 Ident("print_str".to_owned()), StringLiteral("v".to_owned()),NewLine,
                 Return, Integer(false, "32".to_owned()),NewLine,
+            EoF
+            ]
+        )
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn types() {
+        const SRC : &'static str = r#"
+type Foo = {
+    a : int32
+}
+
+enum Bar =
+| A
+| B int32
+| C { a:int32 }"#;
+        use Token::*;
+        assert_eq!(
+            TokenStream::from_source(SRC).map(|(a,_)| a).collect_vec(),
+            [
+            NewLine,
+            Type, Ident("Foo".to_string()), Op("=".to_string()), CurlOpen, NewLine,
+            BeginBlock,
+                Ident("a".to_owned()), Colon, Ident("int32".to_string()), NewLine,
+            EndBlock,
+            CurlClose,NewLine,
+            NewLine,
+            Enum, Ident("Bar".to_string()), Op("=".to_string()), NewLine,
+            Op("|".to_string()), Ident("A".to_string()), NewLine,
+            Op("|".to_string()), Ident("B".to_string()), Ident("int32".to_string()), NewLine,
+            Op("|".to_string()), Ident("C".to_string()), CurlOpen, Ident("a".to_owned()), Colon, Ident("int32".to_string()), CurlClose, 
             EoF
             ]
         )

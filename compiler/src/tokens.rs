@@ -5,9 +5,13 @@ pub enum Token {
     Arrow,      // ->
     GroupOpen,  // (
     GroupClose, // )
+    CurlOpen,   // {
+    CurlClose,  // }
     Colon,
     Ident(String),
     For, // used for generic declaration and maybe composition in a later version
+    Type,
+    Enum,
     // Fn, //to be added latter to distinguish between value and function with 0 args
 
     //literals

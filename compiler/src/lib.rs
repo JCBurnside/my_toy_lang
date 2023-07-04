@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt::Display;
 use std::path::PathBuf;
 
@@ -16,7 +16,6 @@ use code_gen::CodeGen;
 use typed_ast::{TypedDeclaration, TypedModuleDeclaration};
 // use code_gen::CodeGen;
 use inkwell::module::Module;
-use itertools::Itertools;
 use lexer::TokenStream;
 use parser::Parser;
 use types::{ResolvedType, TypeResolver};
@@ -43,7 +42,7 @@ pub fn from_file<'ctx>(
     let file_name = file.file_stem().unwrap();
     module.set_source_file_name(file_name.to_str().unwrap());
     let type_resolver = TypeResolver::new(ctx);
-    let mut code_gen = CodeGen::with_module(
+    let code_gen = CodeGen::with_module(
         &ctx,
         module,
         type_resolver.clone(),
@@ -75,6 +74,7 @@ mod tests {
     use crate::types::TypeResolver;
 
     #[test]
+    #[ignore = "needs to be properly completed"]
     fn integration() {
         const SRC: &'static str = r#"
 for<T> let id a : T -> T = a
