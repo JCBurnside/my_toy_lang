@@ -19,7 +19,7 @@ pub enum Token {
     FloatingPoint(bool, String),
     StringLiteral(String),
     CharLiteral(String),
-
+    #[allow(unused)] //todo implement.
     Compose,
     Op(String),
     //meta tokens

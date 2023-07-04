@@ -256,7 +256,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     .clone()
                     .take_while(|c| c.is_alphabetic())
                     .collect::<String>()
-                    =="num" =>
+                    == "num" =>
                 {
                     for _ in 0..3 {
                         self.source_stream.next();
@@ -455,33 +455,28 @@ mod tests {
 
         assert_eq!(
             TokenStream::from_source("type")
-                .map(|(a,_)| a)
+                .map(|(a, _)| a)
                 .collect_vec(),
             [Token::Type, Token::EoF],
             "Type"
         );
         assert_eq!(
             TokenStream::from_source("enum")
-                .map(|(a,_)| a)
+                .map(|(a, _)| a)
                 .collect_vec(),
             [Token::Enum, Token::EoF],
             "enum"
         );
         assert_eq!(
-            TokenStream::from_source("{")
-                .map(|(a,_)| a)
-                .collect_vec(),
+            TokenStream::from_source("{").map(|(a, _)| a).collect_vec(),
             [Token::CurlOpen, Token::EoF],
             "Open Curl"
         );
         assert_eq!(
-            TokenStream::from_source("}")
-                .map(|(a,_)| a)
-                .collect_vec(),
+            TokenStream::from_source("}").map(|(a, _)| a).collect_vec(),
             [Token::CurlClose, Token::EoF],
             "Close Curl"
         );
-        
     }
 
     #[test]

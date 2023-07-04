@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    mem::size_of,
-};
+use std::{collections::HashMap, mem::size_of};
 
 use crate::util::ExtraUtilFunctions;
 use inkwell::{
@@ -228,7 +225,7 @@ impl ResolvedType {
                 };
                 format!("{}->{}", arg, returns.to_string())
             }
-            ResolvedType::Generic { name } => {
+            ResolvedType::Generic { .. } => {
                 unreachable!("why are you trying to serialize a generic type?")
             }
             ResolvedType::Int {
@@ -240,7 +237,7 @@ impl ResolvedType {
                 width,
             } => "int".to_string() + &width.to_string(),
             ResolvedType::Pointer { underlining } => "p_".to_string() + &underlining.to_string(),
-            ResolvedType::Ref { underlining } | ResolvedType::Slice { underlining } => {
+            ResolvedType::Ref { .. } | ResolvedType::Slice { .. } => {
                 todo!("how to serialize this")
             }
             ResolvedType::Str => "str".to_string(),
@@ -309,7 +306,6 @@ use itertools::Itertools;
 #[derive(Clone)]
 pub struct TypeResolver<'ctx> {
     known: HashMap<ResolvedType, AnyTypeEnum<'ctx>>,
-    known_generics: HashMap<String, ResolvedType>,
     ctx: &'ctx Context,
     ditypes: HashMap<ResolvedType, DIType<'ctx>>,
 }
@@ -358,7 +354,6 @@ impl<'ctx> TypeResolver<'ctx> {
         };
         Self {
             known,
-            known_generics: HashMap::new(),
             ctx,
             ditypes: HashMap::new(),
         }
@@ -392,7 +387,7 @@ impl<'ctx> TypeResolver<'ctx> {
             self.ditypes[ty]
         } else {
             let ditype = match ty {
-                ResolvedType::Int { signed, width } => dibuilder
+                ResolvedType::Int { width, .. } => dibuilder
                     .create_basic_type(
                         &ty.to_string(),
                         width.as_bits(),
@@ -439,8 +434,8 @@ impl<'ctx> TypeResolver<'ctx> {
                     .unwrap()
                     .as_type(),
                 ResolvedType::Void => todo!(),
-                ResolvedType::Slice { underlining } => todo!(),
-                ResolvedType::Function { arg, returns } => dibuilder
+                ResolvedType::Slice { .. } => todo!(),
+                ResolvedType::Function { .. } => dibuilder
                     .create_pointer_type(
                         &ty.to_string(),
                         self.get_di(&INT8, dibuilder),
@@ -449,7 +444,7 @@ impl<'ctx> TypeResolver<'ctx> {
                         AddressSpace::default(),
                     )
                     .as_type(),
-                ResolvedType::User { name, generics } => {
+                ResolvedType::User { .. } => {
                     todo!("probably should store size of type in here?")
                 }
                 ResolvedType::Array { underlying, size } => dibuilder
@@ -460,8 +455,8 @@ impl<'ctx> TypeResolver<'ctx> {
                         &[0..(*size as i64)],
                     )
                     .as_type(),
-                ResolvedType::Alias { actual } => todo!(),
-                ResolvedType::Generic { name } => unreachable!("cannont generate generic di info"),
+                ResolvedType::Alias { .. } => todo!(),
+                ResolvedType::Generic { .. } => unreachable!("cannont generate generic di info"),
                 ResolvedType::Error => unreachable!(
                     "if there is an error node then it can't possibly be generating llvm"
                 ),
@@ -535,7 +530,7 @@ impl<'ctx> TypeResolver<'ctx> {
                     .as_any_type_enum();
                 self.known.insert(ty, r);
             }
-            ResolvedType::User { name, generics } => todo!(),
+            ResolvedType::User { .. } => todo!(),
             // ResolvedType::ForwardUser { name } => todo!(),
             ResolvedType::Alias { actual } => self.resolve_type(actual.as_ref().clone()),
             ResolvedType::Unit => (),
@@ -611,12 +606,6 @@ impl<'ctx> TypeResolver<'ctx> {
     }
 }
 
-enum InsertionError {
-    UnknownType(String),
-    Recursive,
-    Circlular(String),
-    Redeclaration,
-}
 impl ResolvedType {
     pub fn is_float(&self) -> bool {
         matches!(self, Self::Float { .. })

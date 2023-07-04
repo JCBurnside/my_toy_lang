@@ -1,10 +1,10 @@
 use std::{collections::HashSet, num::NonZeroU8};
 
 use crate::types::ResolvedType;
-
+#[allow(unused)]
 pub(crate) type File = ModuleDeclaration;
+#[allow(unused)]
 pub(crate) type Program = Vec<File>;
-
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct ModuleDeclaration {
     pub(crate) loc: Option<crate::Location>,
@@ -29,14 +29,22 @@ pub(crate) enum TypeDefinition {
 
 #[derive(PartialEq, Eq, Debug)]
 pub(crate) struct StructDefinition {
-    pub(crate) values: Vec<(String, ResolvedType)>,
+    pub(crate) generics: HashSet<String>,
+    pub(crate) values: Vec<FieldDecl>,
+}
+
+#[derive(PartialEq, Eq, Debug)]
+pub(crate) struct FieldDecl {
+    pub(crate) name: String,
+    pub(crate) ty: ResolvedType,
+    pub(crate) loc: crate::Location,
 }
 
 #[derive(PartialEq, Eq, Debug)]
 pub(crate) enum EnumVariant {
-    Unit(crate::Location),
-    Tuple(Vec<ResolvedType>, crate::Location),
-    Struct(StructDefinition, crate::Location),
+    Unit(String, crate::Location),
+    Tuple(String, Vec<ResolvedType>, crate::Location),
+    Struct(String, StructDefinition, crate::Location),
 }
 
 #[derive(PartialEq, Eq, Debug)]

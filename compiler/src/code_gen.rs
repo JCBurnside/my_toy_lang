@@ -1,8 +1,6 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::iter::once;
-use std::rc::Rc;
 
 use inkwell::builder::Builder;
 use inkwell::context::Context;
@@ -11,18 +9,17 @@ use inkwell::debug_info::{
     DWARFSourceLanguage, DebugInfoBuilder,
 };
 use inkwell::module::Module;
-use inkwell::types::{AnyTypeEnum, BasicType, BasicTypeEnum};
+use inkwell::types::{AnyTypeEnum, BasicType};
 use inkwell::values::{
     AnyValue, AnyValueEnum, BasicValue, BasicValueEnum, CallableValue, FunctionValue, GlobalValue,
     PointerValue,
 };
 use inkwell::AddressSpace;
 
-use itertools::{Either, Itertools};
+use itertools::Itertools;
 
 use multimap::MultiMap;
 
-use crate::ast::{BinaryOpCall, ValueDeclaration};
 use crate::typed_ast::{
     collect_args, TypedBinaryOpCall, TypedDeclaration, TypedExpr, TypedFnCall, TypedStatement,
     TypedValueDeclaration, TypedValueType,
@@ -286,7 +283,6 @@ impl<'ctx> CodeGen<'ctx> {
             TypedStatement::Declaration(TypedValueDeclaration {
                 ident,
                 ty,
-                args,
                 value,
                 loc,
                 ..
@@ -581,7 +577,8 @@ impl<'ctx> CodeGen<'ctx> {
                                     .as_any_value_enum()
                             }
                             _ => {
-                                self.module.print_to_file("./error.llvm");
+                                #[cfg(debug_assertions)]
+                                let _ = self.module.print_to_file("./error.llvm");
                                 unreachable!();
                             }
                         }
@@ -594,7 +591,8 @@ impl<'ctx> CodeGen<'ctx> {
                             .as_any_value_enum()
                     }
                     _ => {
-                        self.module.print_to_file("./error.llvm");
+                        #[cfg(debug_assertions)]
+                        let _ = self.module.print_to_file("./error.llvm");
                         unreachable!();
                     }
                 }
@@ -701,9 +699,9 @@ impl<'ctx> CodeGen<'ctx> {
                 let v = ty.const_int(value.bytes().next().unwrap() as u64, false);
                 v.as_any_value_enum()
             }
-            TypedExpr::ArrayLiteral { contents } => todo!(),
-            TypedExpr::ListLiteral { contents } => todo!(),
-            TypedExpr::TupleLiteral { contents } => todo!(),
+            TypedExpr::ArrayLiteral { .. } => todo!(),
+            TypedExpr::ListLiteral { .. } => todo!(),
+            TypedExpr::TupleLiteral { .. } => todo!(),
             TypedExpr::ErrorNode => unreachable!(),
         }
     }
@@ -719,7 +717,8 @@ impl<'ctx> CodeGen<'ctx> {
         if let Some(dibuilder) = &mut self.dibuilder {
             dibuilder.finalize()
         }
-        self.module.print_to_file("./what.llvm");
+        #[cfg(debug_assertions)]
+        let _ = self.module.print_to_file("./what.llvm");
         self.module.clone()
     }
 

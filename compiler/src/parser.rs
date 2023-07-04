@@ -279,7 +279,7 @@ where
 
     pub(crate) fn collect_type(&mut self) -> Result<ResolvedType, ParseError> {
         let ty = self.stream.next();
-        if let Some((Token::Ident(ty), span)) = ty {
+        if let Some((Token::Ident(ty), _)) = ty {
             if let Some((Token::Arrow, _)) = self.stream.peek() {
                 self.stream.next();
                 let result = self.collect_type()?;
@@ -340,11 +340,22 @@ where
     }
 
     fn declaration(&mut self) -> Result<ast::Declaration, ParseError> {
-        let next = self.stream.peek();
+        let next = self.stream.clone().next();
         match next {
-            Some((Token::For | Token::Let, _)) => {
-                Ok(ast::Declaration::Value(self.fn_declaration()?))
+            Some((Token::For, loc)) => match self.stream.clone().nth(1) {
+                Some((Token::Let, _)) => Ok(ast::Declaration::Value(self.fn_declaration()?)),
+                Some((Token::Type | Token::Enum, _)) => {
+                    Ok(ast::Declaration::TypeDefinition(self.type_decl()?))
+                }
+                _ => Err(ParseError {
+                    span: loc,
+                    reason: ParseErrorReason::DeclarationError,
+                }),
+            },
+            Some((Token::Type | Token::Enum, _)) => {
+                Ok(ast::Declaration::TypeDefinition(self.type_decl()?))
             }
+            Some((Token::Let, _)) => Ok(ast::Declaration::Value(self.fn_declaration()?)),
             Some((Token::NewLine, _)) => {
                 self.stream.next();
                 self.declaration()
@@ -353,7 +364,88 @@ where
         }
     }
 
-    fn fn_declaration(&mut self) -> Result<ValueDeclaration, ParseError> {
+    fn type_decl(&mut self) -> Result<ast::TypeDefinition, ParseError> {
+        let generics = self.collect_generics()?;
+        let Some((t,loc)) = self.stream.next() else {unreachable!()};
+        match t {
+            Token::Type => {
+                let (ident, loc) = match self.stream.next() {
+                    Some((Token::Ident(ident), loc)) => (ident, loc),
+                    _ => {
+                        return Err(ParseError {
+                            span: loc,
+                            reason: ParseErrorReason::DeclarationError,
+                        })
+                    }
+                };
+                let Some((Token::Op(op),_)) = self.stream.next() else { return Err(ParseError { span: loc, reason: ParseErrorReason::DeclarationError })};
+                if op != "=" {
+                    return Err(ParseError {
+                        span: loc,
+                        reason: ParseErrorReason::DeclarationError,
+                    });
+                }
+                match self.stream.peek() {
+                    Some((Token::Ident(_), _)) => {
+                        let Some((Token::Ident(old),_)) = self.stream.next() else {unreachable!()};
+                        Ok(ast::TypeDefinition::Alias(ident, type_from_string(&old)))
+                    }
+                    Some((Token::CurlOpen, _)) => Ok(ast::TypeDefinition::Struct(
+                        ident,
+                        self.struct_declaration(generics)?,
+                        loc,
+                    )),
+                    Some((Token::Op(op), _)) if op == "|" => Ok(ast::TypeDefinition::Enum(
+                        ident,
+                        self.enum_declaration(generics)?,
+                        loc,
+                    )),
+                    _ => Err(ParseError {
+                        span: loc,
+                        reason: ParseErrorReason::DeclarationError,
+                    }),
+                }
+            }
+            Token::Enum => {
+                todo!()
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn enum_declaration(
+        &mut self,
+        _generics: HashSet<String>,
+    ) -> Result<Vec<ast::EnumVariant>, ParseError> {
+        todo!()
+    }
+
+    fn struct_declaration(
+        &mut self,
+        generics: HashSet<String>,
+    ) -> Result<ast::StructDefinition, ParseError> {
+        let Some((Token::CurlOpen,_)) = self.stream.next() else { unreachable!() };
+        while let Some((Token::BeginBlock | Token::NewLine, _)) = self.stream.clone().next() {
+            self.stream.next();
+        }
+        let mut fields = Vec::<ast::FieldDecl>::new();
+        while let Some((Token::Ident(_), _)) = self.stream.clone().next() {
+            let Some((Token::Ident(name),loc)) = self.stream.next() else { return Err(ParseError { span: (0,10000), reason: ParseErrorReason::DeclarationError }) };
+            let Some((Token::Colon,_)) = self.stream.next() else { return Err(ParseError { span: (0,10000), reason: ParseErrorReason::DeclarationError }) };
+            let ty = self.collect_type()?;
+            fields.push(ast::FieldDecl { name, ty, loc });
+        }
+        while let Some((Token::EndBlock | Token::NewLine, _)) = self.stream.clone().next() {
+            self.stream.next();
+        }
+        let Some((Token::CurlClose,_)) = self.stream.next() else { return Err(ParseError { span: (0,11111), reason: ParseErrorReason::DeclarationError }) };
+        Ok(ast::StructDefinition {
+            values: fields,
+            generics,
+        })
+    }
+
+    fn collect_generics(&mut self) -> Result<HashSet<String>, ParseError> {
         let generics = if let Some((Token::For, _)) = self.stream.peek() {
             let Some((_,span)) = self.stream.next() else { unreachable!() };
             match self.stream.next() {
@@ -364,7 +456,6 @@ where
                         .take_while(|(token, _)| &Token::Op(">".to_string()) != token)
                         .collect_vec();
                     let first_span = out.first().unwrap().1;
-                    let last_span = out.last().unwrap().1;
                     let num = out.len();
                     out.dedup();
                     if out.len() == num {
@@ -382,12 +473,6 @@ where
                     }
                 }
                 _ => {
-                    let (_, end) = self
-                        .stream
-                        .clone()
-                        .take_while(|(token, span)| token != &Token::Let)
-                        .last()
-                        .unwrap();
                     return Err(ParseError {
                         span,
                         reason: ParseErrorReason::DeclarationError,
@@ -403,6 +488,11 @@ where
                 self.stream.next();
             }
         }
+        Ok(generics)
+    }
+
+    fn fn_declaration(&mut self) -> Result<ValueDeclaration, ParseError> {
+        let generics = self.collect_generics()?;
         if let Some((Token::Let, start)) = self.stream.next() {
             let (token, ident_span) = self.stream.next().unwrap();
             return match token {
@@ -411,7 +501,7 @@ where
                     if let Some((Token::Colon, _next)) = next {
                         let ty = self.collect_type()?;
                         match self.stream.next() {
-                            Some((Token::Op(eq), eq_span)) if eq == "=" => {
+                            Some((Token::Op(eq), _)) if eq == "=" => {
                                 self.stream
                                     .peeking_take_while(|(t, _)| t == &Token::NewLine)
                                     .collect_vec();
@@ -471,7 +561,7 @@ where
                                 .fold(ty, |ty, name| ty.replace_user_with_generic(&name));
                             let next = self.stream.next();
                             match next {
-                                Some((Token::Op(eq), eq_span)) if eq == "=" => {
+                                Some((Token::Op(eq), _)) if eq == "=" => {
                                     let consumed = self
                                         .stream
                                         .clone()
@@ -509,7 +599,7 @@ where
                             }
                         } else {
                             match self.stream.next() {
-                                Some((Token::Op(eq), eq_span)) if eq == "=" => {
+                                Some((Token::Op(eq), _)) if eq == "=" => {
                                     let consumed = self
                                         .stream
                                         .clone()
@@ -558,7 +648,7 @@ where
                     if let Some((Token::Colon, _next)) = next {
                         let ty = self.collect_type()?;
                         match self.stream.next() {
-                            Some((Token::Op(eq), eq_span)) if eq == "=" => {
+                            Some((Token::Op(eq), _)) if eq == "=" => {
                                 let consumed = self
                                     .stream
                                     .clone()
@@ -605,7 +695,7 @@ where
                                 });
                             } else {
                                 return Err(ParseError {
-                                    span: (0, 0),
+                                    span: arg_start,
                                     reason: ParseErrorReason::ArgumentError,
                                 });
                             }
@@ -626,7 +716,7 @@ where
                                 .iter()
                                 .fold(ty, |ty, name| ty.replace_user_with_generic(&name));
                             match self.stream.next() {
-                                Some((Token::Op(eq), eq_span)) if eq == "=" => {
+                                Some((Token::Op(eq), _)) if eq == "=" => {
                                     let consumed = self
                                         .stream
                                         .clone()
@@ -664,7 +754,7 @@ where
                             }
                         } else {
                             match self.stream.next() {
-                                Some((Token::Op(eq), eq_span)) if eq == "=" => {
+                                Some((Token::Op(eq), _)) if eq == "=" => {
                                     let value =
                                         if let Some((Token::BeginBlock, _)) = self.stream.peek() {
                                             ValueType::Function(self.collect_block()?)
@@ -708,11 +798,11 @@ where
     }
 
     fn collect_block(&mut self) -> Result<Vec<Statement>, ParseError> {
-        if let Some((Token::BeginBlock, span_start)) = self.stream.next() {
+        if let Some((Token::BeginBlock, _)) = self.stream.next() {
             let mut sub_expr = Vec::new();
             loop {
                 let next = self.stream.peek();
-                if let Some((Token::EndBlock, span)) = next {
+                if let Some((Token::EndBlock, _)) = next {
                     self.stream.next();
                     break;
                 } else if let Some((Token::EoF, _)) = next {
@@ -964,7 +1054,7 @@ mod tests {
     use inkwell::context::Context;
 
     use crate::{
-        ast::ArgDeclation,
+        ast::{ArgDeclation, StructDefinition},
         types::{ResolvedType, TypeResolver},
     };
 
@@ -1353,6 +1443,29 @@ let main _ : int32 -> int32 =
                 generictypes: HashSet::new(),
             }),
             parser.next_statement().unwrap()
+        )
+    }
+
+    #[test]
+    fn struct_decl() {
+        const SRC: &'static str = r#"type Foo = {
+    a : int32
+}"#;
+        let mut parser = Parser::from_source(SRC);
+        assert_eq!(
+            ast::Declaration::TypeDefinition(ast::TypeDefinition::Struct(
+                "Foo".to_string(),
+                StructDefinition {
+                    generics: HashSet::new(),
+                    values: vec![ast::FieldDecl {
+                        name: "a".to_string(),
+                        ty: types::INT32,
+                        loc: (1, 5),
+                    }]
+                },
+                (0, 6)
+            )),
+            parser.declaration().unwrap(),
         )
     }
 }
