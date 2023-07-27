@@ -4,7 +4,49 @@ for<T> enum Option =
     | Some T
     | None
 
-for<T,U> let map func o : (T -> U) -> Option<T> -> Option<U> =
-    match o ->
+for<T,U> let Option::map &self func : &Option<T> -> (&T -> U) -> Option<U> =
+    match self ->
     | Option::Some t -> func t |> Option::Some
+    | Option::None -> Option::None
+
+for<T> let Option::unwrap self : Option<T> -> T =
+    match self
+    | Option::Some t -> t
+    | Option::None -> error 
+
+for<T> let Option::unwrap_or self v : Option<T> -> T -> T
+    match self
+    | Option::Some t -> t
+    | Option::None -> v
+
+for<T> let Option::unwrap_or_else self fun : Option<T> -> (()->T) -> T =
+    match self
+    | Option::Some t -> t
+    | Option::None -> fun
+
+for<T> let Option::is_some &self : &Option<T> -> bool =
+    match self
+    | Option::Some _ -> true
+    | Option::None -> false
+
+for<T> let Option::is_none &self : &Option<T> -> bool = !self.is_some
+
+for<T,E> let Option::ok_or self err : Option<T> -> E -> Result<T,E> = 
+    match self
+    | Option::Some t -> Result::Ok t
+    | Option::None -> Result::Err err
+
+for<T,E> let Option::ok_or_else self err_fun : Option<T> -> (()->E) -> Result<T,E> =
+    match self
+    | Option::Some t -> Result::Ok t
+    | Option::None -> err_fun |> Result::Err
+
+for<T,'opt> let Option::as_ref &self : &'opt Option<T> -> Option<&'opt T>
+    match self
+    | Option::Some t -> Option::Some &t
+    | Option::None -> Option::None
+
+for<T,'opt> let Option::as_mut &mut self : &'opt mut Option<T> -> Option<&'opt mut T>
+    match self
+    | Option::Some t -> Option::Some &mut t
     | Option::None -> Option::None

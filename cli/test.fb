@@ -6,6 +6,17 @@ let id a : int32 -> int32 = a
 let three_arg a b c : int32 -> int32 -> int32 -> int32 =
     return 0
 
+type Concrete = {
+    a : int32
+}
+
+for<T> type Generic = {
+    a : T
+}
+
+let user_type_fun a : Concrete -> Generic<int32> =
+    Generic { a:0 }
+
 let main _ : () -> () = 
     let merp : int32 -> int32 = use_fn id
     merp 3

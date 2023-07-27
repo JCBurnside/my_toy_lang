@@ -1,8 +1,5 @@
 use itertools::Itertools;
-use std::{
-    collections::{HashMap, HashSet},
-    num::NonZeroU8,
-};
+use std::{collections::HashMap, num::NonZeroU8};
 
 use crate::{
     ast::{self, ArgDeclation, Declaration},
@@ -30,9 +27,26 @@ impl TypedModuleDeclaration {
             declarations,
         } = module;
         let mut fwd_declares = fwd_declares.clone();
-        fwd_declares.extend(declarations.iter().filter_map(|it| match it {
-            Declaration::Value(v) => Some((v.ident.clone(), v.ty.clone().unwrap())),
-            _ => None,
+        fwd_declares.extend(declarations.iter().filter_map(|it| {
+            match it {
+                Declaration::Value(v) => Some((v.ident.clone(), v.ty.clone().unwrap())),
+                Declaration::TypeDefinition(decl) => match decl {
+                    ast::TypeDefinition::Alias(name, value) => Some((name.clone(), value.clone())),
+                    ast::TypeDefinition::Enum(_) => todo!(),
+                    ast::TypeDefinition::Struct(strct) => Some((
+                        strct.ident.clone(),
+                        ResolvedType::User {
+                            name: strct.ident.clone(),
+                            generics: strct
+                                .generics
+                                .iter()
+                                .map(|it| ResolvedType::Generic { name: it.clone() })
+                                .collect(),
+                        },
+                    )),
+                },
+                _ => None,
+            }
         }));
         Self {
             loc,
@@ -50,21 +64,6 @@ impl TypedModuleDeclaration {
                 .collect(),
         }
     }
-
-    // pub fn lower_generics(
-    //     &mut self,
-    //     known_values: &HashMap<String, TypedValueDeclaration>,
-    // ) -> Vec<TypedValueDeclaration> {
-    //     let mut known_values = known_values.clone();
-    //     known_values.extend(self.declarations.iter().filter_map(|it| match it {
-    //         TypedDeclaration::Value(data) => Some((data.ident.clone(), data.clone())),
-    //         _ => None,
-    //     }));
-    //     self.declarations
-    //         .iter_mut()
-    //         .flat_map(|it| it.lower_generics(&known_values))
-    //         .collect_vec()
-    // }
 
     pub fn lower_generics(&mut self, fwd_declares: &HashMap<String, TypedDeclaration>) {
         let mut fwd_decl = fwd_declares.clone();
@@ -93,8 +92,7 @@ impl TypedModuleDeclaration {
 pub enum TypedDeclaration {
     Mod(TypedModuleDeclaration),
     Value(TypedValueDeclaration),
-    ///TODO
-    TypeDefinition(),
+    TypeDefinition(ResolvedTypeDeclaration),
 }
 
 impl TypedDeclaration {
@@ -102,7 +100,7 @@ impl TypedDeclaration {
         match self {
             Self::Mod(module) => module.name.as_ref().unwrap().clone(),
             Self::Value(v) => v.ident.clone(),
-            Self::TypeDefinition() => todo!(),
+            Self::TypeDefinition(_) => todo!(),
         }
     }
 
@@ -127,7 +125,7 @@ impl TypedDeclaration {
         match self {
             TypedDeclaration::Mod(_) => unreachable!(),
             TypedDeclaration::Value(value) => value.replace_types(types),
-            TypedDeclaration::TypeDefinition() => todo!(),
+            TypedDeclaration::TypeDefinition(_) => todo!(),
         };
     }
 
@@ -135,8 +133,65 @@ impl TypedDeclaration {
         match self {
             TypedDeclaration::Mod(_) => todo!(),
             TypedDeclaration::Value(value) => value.lower_generics(context),
-            TypedDeclaration::TypeDefinition() => todo!(),
+            TypedDeclaration::TypeDefinition(def) => def.lower_generics(context),
         }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum ResolvedTypeDeclaration {
+    Alias(String, ResolvedType),
+    // Enum(String, Vec<TypedEnumVariant>, crate::Location),
+    Struct(StructDefinition),
+}
+impl ResolvedTypeDeclaration {
+    fn lower_generics(&mut self, context: &mut LoweringContext) {
+        match self {
+            ResolvedTypeDeclaration::Alias(_, old) => match old {
+                ResolvedType::User { name, generics } if !generics.is_empty() => {
+                    let resolved_name = name.clone() + "<" + &generics.iter().map(ResolvedType::to_string).join(",") + ">";
+                    if !context.generated_generics.contains_key(&resolved_name) {
+                        todo!()
+                    }
+                },
+                _ => ()
+            },
+            ResolvedTypeDeclaration::Struct(_) => todo!(),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct StructDefinition {
+    pub(crate) ident: String,
+    pub(crate) generics: Vec<String>,
+    pub(crate) fields: Vec<ast::FieldDecl>,
+    pub(crate) loc: crate::Location,
+}
+
+impl StructDefinition {
+    pub(crate) fn try_from(
+        data: ast::StructDefinition,
+        known_types: &HashMap<String, ResolvedType>,
+    ) -> Result<Self, TypingError> {
+        let ast::StructDefinition {
+            ident,
+            generics,
+            mut values,
+            loc,
+        } = data;
+        for generic in &generics {
+            values.iter_mut().for_each(|field| {
+                field.ty = field.ty.clone().replace_user_with_generic(&generic);
+            })
+        }
+
+        Ok(Self {
+            ident,
+            generics,
+            fields: values,
+            loc,
+        })
     }
 }
 
@@ -148,7 +203,7 @@ pub struct TypedValueDeclaration {
     pub(crate) args: Vec<ArgDeclation>,
     pub(crate) value: TypedValueType,
     pub(crate) ty: ResolvedType,
-    pub(crate) generictypes: HashSet<String>,
+    pub(crate) generictypes: Vec<String>,
     pub(crate) is_curried: bool,
 }
 pub(crate) fn collect_args(t: &ResolvedType) -> Vec<ResolvedType> {
@@ -366,12 +421,11 @@ impl TypedStatement {
                 TypedExpr::try_from(value, known_values, Vec::new())?,
                 loc,
             )),
-            ast::Statement::FnCall(data) => Ok(Self::FnCall(TypedFnCall::try_from(
-                data,
-                known_values,
-                Vec::new(),
-            )?)),
+            ast::Statement::FnCall(data) => {
+                Ok(Self::FnCall(TypedFnCall::try_from(data, known_values)?))
+            }
             ast::Statement::Pipe(_) => todo!(),
+            ast::Statement::StructConstruction(_) => todo!("Convert construction structs")
         }
     }
 
@@ -426,7 +480,6 @@ impl TypedFnCall {
     pub(crate) fn try_from(
         data: ast::FnCall,
         known_values: &HashMap<String, ResolvedType>,
-        mut already_processed: Vec<ResolvedType>,
     ) -> Result<Self, TypingError> {
         let ast::FnCall { loc, value, arg } = data;
         let value = ok_or_err_node(TypedExpr::try_from(*value, known_values, Vec::new()));
@@ -592,11 +645,7 @@ impl TypedExpr {
                 known_values,
             )?)),
             Expr::UnaryOpCall(_) => todo!(),
-            Expr::FnCall(data) => Ok(Self::FnCall(TypedFnCall::try_from(
-                data,
-                known_values,
-                already_processed_args,
-            )?)),
+            Expr::FnCall(data) => Ok(Self::FnCall(TypedFnCall::try_from(data, known_values)?)),
             Expr::ValueRead(value) => {
                 if !known_values.contains_key(&value) {
                     Err(TypingError::UnknownType)
@@ -636,6 +685,7 @@ impl TypedExpr {
             }
             Expr::ListLiteral { contents, loc } => todo!(),
             Expr::TupleLiteral { contents, loc } => todo!(),
+            Expr::StructConstruction(_) => todo!("convert struct construction"),
         }
     }
 
@@ -884,20 +934,14 @@ fn modify_declaration(
             }
             TypedValueType::Err => (),
         }
-        let to_remove = to_lower
+        to_lower
             .generictypes
-            .iter()
-            .filter(|g| replaced.iter().any(|(r, _)| &r == g))
-            .cloned()
-            .collect_vec();
-        to_remove.into_iter().for_each(|it| {
-            to_lower.generictypes.remove(&it);
-        });
+            .retain(|g| !replaced.iter().any(|(r, _)| r == g))
     }
     match &mut to_lower {
         TypedDeclaration::Mod(_) => unreachable!(),
         TypedDeclaration::Value(data) => data.ident = new_name.clone(),
-        TypedDeclaration::TypeDefinition() => todo!(),
+        TypedDeclaration::TypeDefinition(_) => todo!(),
     }
 
     context
@@ -1195,7 +1239,7 @@ mod tests {
     use super::TypedExpr;
     use crate::ast::ArgDeclation;
     use crate::typed_ast::{
-        TypedDeclaration, TypedFnCall, TypedModuleDeclaration, TypedStatement,
+        StructDefinition, TypedDeclaration, TypedFnCall, TypedModuleDeclaration, TypedStatement,
         TypedValueDeclaration, TypedValueType,
     };
     use crate::types::{self, ResolvedType};
@@ -1412,7 +1456,7 @@ mod tests {
                         value: "1".to_string(),
                         ty: types::INT32
                     }),
-                    generictypes: HashSet::new()
+                    generictypes: Vec::new()
                 }),
                 &HashMap::new()
             )
@@ -1427,7 +1471,7 @@ mod tests {
                     size: types::IntWidth::ThirtyTwo
                 }),
                 ty: types::INT32,
-                generictypes: HashSet::new(),
+                generictypes: Vec::new(),
                 is_curried: false,
             }),
             "decl statement"
@@ -1502,7 +1546,7 @@ mod tests {
                         },
                         (0, 0)
                     )]),
-                    generictypes: HashSet::new(),
+                    generictypes: Vec::new(),
                 }),
                 &HashMap::new()
             )
@@ -1526,13 +1570,156 @@ mod tests {
                     },
                     (0, 0)
                 )]),
-                generictypes: HashSet::new(),
+                generictypes: Vec::new(),
                 is_curried: false
             }),
             r#"let test a : int32 -> int32 = 
     return 1"#
         );
         // TODO : mod and type definition.
+    }
+
+    #[test]
+    fn generic_use() {
+        use crate::parser::Parser;
+        let parser = Parser::from_source(
+            r#"
+for<T> let test a : T -> T = a
+
+let main _ : () -> () =
+    test 3
+"#,
+        );
+        let module = parser.module("test".to_string());
+        let module = super::TypedModuleDeclaration::from(module, &HashMap::new());
+        let [generic, main] = &module.declarations[..] else { unreachable!() };
+        assert_eq!(
+            generic,
+            &TypedDeclaration::Value(TypedValueDeclaration {
+                loc: (1, 12),
+                is_op: false,
+                ident: "test".to_string(),
+                args: vec![ArgDeclation {
+                    ident: "a".to_string(),
+                    loc: (1, 17)
+                }],
+                value: TypedValueType::Expr(TypedExpr::ValueRead(
+                    "a".to_string(),
+                    ResolvedType::Generic {
+                        name: "T".to_string()
+                    }
+                ),),
+                ty: ResolvedType::Function {
+                    arg: ResolvedType::Generic {
+                        name: "T".to_string()
+                    }
+                    .boxed(),
+                    returns: ResolvedType::Generic {
+                        name: "T".to_string()
+                    }
+                    .boxed()
+                },
+                generictypes: vec!["T".to_string()],
+                is_curried: false,
+            }),
+            "generic"
+        );
+        assert_eq!(
+            main,
+            &TypedDeclaration::Value(TypedValueDeclaration {
+                loc: (3, 5),
+                is_op: false,
+                ident: "main".to_string(),
+                args: vec![ArgDeclation {
+                    ident: "_".to_string(),
+                    loc: (3, 10)
+                }],
+                value: TypedValueType::Function(vec![TypedStatement::FnCall(TypedFnCall {
+                    loc: (4, 5),
+                    value: TypedExpr::ValueRead(
+                        "test".to_string(),
+                        ResolvedType::Function {
+                            arg: ResolvedType::Generic {
+                                name: "T".to_string()
+                            }
+                            .boxed(),
+                            returns: ResolvedType::Generic {
+                                name: "T".to_string()
+                            }
+                            .boxed()
+                        }
+                    )
+                    .boxed(),
+                    arg: Some(
+                        TypedExpr::IntegerLiteral {
+                            value: "3".to_string(),
+                            size: types::IntWidth::ThirtyTwo
+                        }
+                        .boxed()
+                    ),
+                    rt: ResolvedType::Generic {
+                        name: "T".to_string()
+                    },
+                    arg_t: types::INT32
+                })]),
+                ty: ResolvedType::Function {
+                    arg: types::UNIT.boxed(),
+                    returns: types::UNIT.boxed()
+                },
+                generictypes: Vec::new(),
+                is_curried: false,
+            }),
+            "main"
+        )
+    }
+
+    #[test]
+    fn structs() {
+        use crate::Parser;
+        let parser = Parser::from_source(
+            r"
+for<T,U> type Tuple = {
+    first : T
+    second : U
+}
+
+let first a : Tuple<int32,float64> -> int32 =
+    return 0
+",
+        );
+
+        let module = parser.module("test.fb".to_string());
+        let mut module = TypedModuleDeclaration::from(module, &HashMap::new());
+        let [strct, _] = &module.declarations[..] else { unreachable!() };
+        assert_eq!(
+            strct,
+            &TypedDeclaration::TypeDefinition(crate::typed_ast::ResolvedTypeDeclaration::Struct(
+                StructDefinition {
+                    ident: "Tuple".to_string(),
+                    generics: vec!["T".to_string(), "U".to_string()],
+                    fields: vec![
+                        crate::ast::FieldDecl {
+                            name: "first".to_string(),
+                            ty: ResolvedType::Generic {
+                                name: "T".to_string()
+                            },
+                            loc: (1, 5)
+                        },
+                        crate::ast::FieldDecl {
+                            name: "second".to_string(),
+                            ty: ResolvedType::Generic {
+                                name: "U".to_string()
+                            },
+                            loc: (2, 5)
+                        }
+                    ],
+                    loc: (0, 15)
+                }
+            )),
+            "pre-lowering struct",
+        );
+
+        module.lower_generics(&HashMap::new());
     }
 
     #[test]
@@ -1582,7 +1769,7 @@ let main _ : int32 -> int32 =
                     }
                     .boxed()
                 },
-                generictypes: ["T".to_string()].into_iter().collect(),
+                generictypes: vec!["T".to_string()],
                 is_curried: false,
             }),
             "generic should be untouched"
@@ -1630,7 +1817,7 @@ let main _ : int32 -> int32 =
                     arg: types::INT32.boxed(),
                     returns: types::INT32.boxed()
                 },
-                generictypes: HashSet::new(),
+                generictypes: Vec::new(),
                 is_curried: false,
             }),
             "main should have the value read changed"
@@ -1653,7 +1840,7 @@ let main _ : int32 -> int32 =
                     arg: types::INT32.boxed(),
                     returns: types::INT32.boxed()
                 },
-                generictypes: HashSet::new(),
+                generictypes: Vec::new(),
                 is_curried: false,
             }),
             "this should be generated"

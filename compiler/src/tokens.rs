@@ -7,6 +7,7 @@ pub enum Token {
     GroupClose, // )
     CurlOpen,   // {
     CurlClose,  // }
+    Comma, //,
     Colon,
     Ident(String),
     For, // used for generic declaration and maybe composition in a later version
@@ -21,6 +22,7 @@ pub enum Token {
     CharLiteral(String),
     #[allow(unused)] //todo implement.
     Compose,
+    // |, >, <, !, @,  $, =, &, +, -, \, /, *, ^, .
     Op(String),
     //meta tokens
     NewLine, //needed due to how fn args are parsed.  largely ignored

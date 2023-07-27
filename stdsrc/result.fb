@@ -2,23 +2,34 @@ mod result
 for<T,E> enum Result =
 | Ok T
 | Err E
-// TODO: needs 
+// TODO: needs. actually can probably do what rust does and do `pub use result::Result::{self,Ok,Err};`
 // for<T,E> let Ok = Result::Ok
 
 // for<T,E> let Err = Result::Err
 
-for<T,U,E> let map func r : (T -> U) -> Result<T,E> -> Result<U,E> =
-    match r ->
+for<T,U,E> let Result::map self func : Result<T,E> -> (T -> U) -> Result<U,E> =
+    match self 
     | Result::Ok t -> func t |> Result::Ok
     | Result::Err e -> Result::Err e
 
-for<T,EOld, ENew> let map_err func r : (EOld -> ENew) -> Result<T,EOld> -> Result<T,ENew> =
-    match r ->
+for<T,EOld, ENew> let Result::map_err self func : Result<T,EOld> -> (EOld -> ENew) -> Result<T,ENew> =
+    match self 
     | Result::Ok t -> Result::Ok t
-    | Result::Err e -> func e |> Result::Err e
+    | Result::Err e -> func e |> Result::Err
 
-for<T,E> let ok r : Result<T,E> -> Option<T> =
-    match r ->
+for<T,E> let Result::ok self : Result<T,E> -> Option<T> =
+    match self ->
     | Result::Ok t -> Option::Some t
     | Result::Err _ -> Option::None
 
+for<T,E> let Result::err self : Result<T,E> -> Option<E> =
+    match self
+    | Result::Ok _ -> Option::None
+    | Result::Err e -> Option::Some e
+
+let Result::is_ok &self =
+    match self
+    | Result::Ok _ -> true
+    | Result::Err _ -> false
+
+let Result::is_err &self = !self.is_ok

@@ -1,0 +1,25 @@
+/// making an unsafe function. implies body is unsafe
+unsafe let mwahahahaha x = ....
+
+/// unsafe blocks (please do not write a safe wrapper like this)
+let ehhh_this_is_fine x = unsafe mwahahahaha x
+
+//please use gaurds like the following when wrapping unsafe functions into safe ones
+let gaurds x y = 
+    if x < y then return Err "Oh noes";
+    unsafe mwahahahaha x
+
+/*
+    unsafe functions have to be called from unsafe blocks.
+    common unsafe functions are 
+    FFI functions.
+    anything involving pointers.
+    memory transmutes.
+    stuff you want to say this can go horribly wrong if used incorrect.
+*/
+// you can accept an unsafe function as an arg by specifying it can be unsafe in the typing.  however I recommend against to force the users of said function to create a safe wrapper around the unsafe functions
+let foo x : (unsafe int8 -> int8) -> () =
+    unsafe x 3;
+
+let fn bar =
+    foo mwahahahaha

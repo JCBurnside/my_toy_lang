@@ -105,7 +105,7 @@ pub enum ResolvedType {
     },
     User {
         name: String,
-        generics: Vec<String>,
+        generics: Vec<ResolvedType>,
     },
 
     Array {
@@ -212,7 +212,11 @@ impl ResolvedType {
         }
     }
 
-    pub(crate) fn to_string(&self) -> String {
+    
+}
+
+impl ToString for ResolvedType {
+    fn to_string(&self) -> String {
         match self {
             ResolvedType::Alias { actual } => actual.to_string(),
             ResolvedType::Char => "char".to_string(),
@@ -244,7 +248,7 @@ impl ResolvedType {
             ResolvedType::Unit => "()".to_string(),
             ResolvedType::Void => "".to_string(),
             ResolvedType::User { name, generics } => {
-                name.clone() + "_" + &generics.iter().cloned().join("_")
+                name.clone() + "_" + &generics.iter().map(Self::to_string).join("_")
             }
             ResolvedType::Array { underlying, size } => {
                 format!("[{};{}]", underlying.to_string(), size)
@@ -253,7 +257,6 @@ impl ResolvedType {
         }
     }
 }
-
 #[allow(unused)]
 mod consts {
     use super::*;

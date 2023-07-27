@@ -1,4 +1,4 @@
-use std::{collections::HashSet, num::NonZeroU8};
+use std::{collections::{HashSet, HashMap}, num::NonZeroU8};
 
 use crate::types::ResolvedType;
 #[allow(unused)]
@@ -23,17 +23,27 @@ pub(crate) enum Declaration {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum TypeDefinition {
     Alias(String, ResolvedType),
-    Enum(String, Vec<EnumVariant>, crate::Location),
-    Struct(String, StructDefinition, crate::Location),
+    Enum(EnumDeclation),
+    Struct(StructDefinition),
+}
+
+#[derive(PartialEq, Eq, Debug)]
+pub(crate) struct EnumDeclation {
+    pub(crate) ident: String,
+    pub(crate) generics: Vec<String>,
+    pub(crate) values: Vec<EnumVariant>,
+    pub(crate) loc: crate::Location,
 }
 
 #[derive(PartialEq, Eq, Debug)]
 pub(crate) struct StructDefinition {
-    pub(crate) generics: HashSet<String>,
+    pub(crate) ident: String,
+    pub(crate) generics: Vec<String>,
     pub(crate) values: Vec<FieldDecl>,
+    pub(crate) loc: crate::Location,
 }
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Clone)]
 pub(crate) struct FieldDecl {
     pub(crate) name: String,
     pub(crate) ty: ResolvedType,
@@ -68,7 +78,7 @@ pub struct ValueDeclaration {
     pub(crate) args: Vec<ArgDeclation>,
     pub(crate) ty: Option<ResolvedType>,
     pub(crate) value: ValueType, //need to figure out this. as value would be expr here but function would be a list of statements
-    pub(crate) generictypes: HashSet<String>,
+    pub(crate) generictypes: Vec<String>,
 }
 
 #[derive(PartialEq, Eq, Debug)]
@@ -76,6 +86,7 @@ pub enum Statement {
     Declaration(ValueDeclaration),
     Return(Expr, crate::Location),
     FnCall(FnCall),
+    StructConstruction(StructConstruction),
     Pipe(Pipe),
 }
 
@@ -90,6 +101,7 @@ pub struct Pipe {
 
 #[derive(PartialEq, Eq, Debug)]
 pub struct UnaryOpCall {
+    pub(crate) loc : crate::Location,
     pub(crate) operand: Box<Expr>,
     pub(crate) operator: String,
 }
@@ -110,7 +122,15 @@ pub struct FnCall {
 }
 
 #[derive(PartialEq, Eq, Debug)]
+pub struct StructConstruction {
+    pub(crate) loc : crate::Location,
+    pub(crate) fields : HashMap<String,(Expr,crate::Location)>,
+    pub(crate) ty : ResolvedType,
+}
+
+#[derive(PartialEq, Eq, Debug)]
 pub enum Expr {
+    Error,
     /// any integer or floating point value
     NumericLiteral { value: String, ty: ResolvedType },
     /// "hello world!"
@@ -151,4 +171,6 @@ pub enum Expr {
         contents: Vec<Expr>,
         loc: crate::Location,
     },
+
+    StructConstruction(StructConstruction)
 }

@@ -712,7 +712,7 @@ impl<'ctx> CodeGen<'ctx> {
             TypedDeclaration::Value(data) => {
                 self.compile_function(data);
             }
-            TypedDeclaration::TypeDefinition() => todo!(),
+            TypedDeclaration::TypeDefinition(_) => todo!(),
         }
         if let Some(dibuilder) = &mut self.dibuilder {
             dibuilder.finalize()
@@ -731,7 +731,7 @@ impl<'ctx> CodeGen<'ctx> {
                     self.known_functions.insert(decl.ident.clone(), fun);
                 }
             }
-            TypedDeclaration::TypeDefinition() => todo!(),
+            TypedDeclaration::TypeDefinition(_) => todo!(),
         }
     }
 

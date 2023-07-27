@@ -1,0 +1,25 @@
+for<T> type Vec = {
+    start : *mut T,
+    count : usize,
+    capacity : usize,
+}
+
+for<T> let fn Vec::new : () -> Vec<T> = Vec { start:nullptr, count:0, capacity:0}
+
+for<T> let Vec::push_back &mut self it : &mut Vec<T> -> T -> ()
+    todo
+
+let Vec::len &self = self.count
+
+let Vec::capacity &self = self.capacity
+
+for<T> let !! &vec idx : &Vec<T> -> usize -> &T = 
+    if idx > self.count then error "index out of bounds"
+    unsafe 
+        &*std::ptr::offset vec.start idx
+
+for<T> let Vec::mut_idx &mut self idx : &mut Vec<T> -> usize -> &mut T =
+    if idx > self.count then error "index out of bounds"
+    unsafe 
+        &mut *std::ptr::offset vec.start idx
+    
