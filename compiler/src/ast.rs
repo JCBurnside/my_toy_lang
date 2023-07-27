@@ -125,7 +125,8 @@ pub struct FnCall {
 pub struct StructConstruction {
     pub(crate) loc : crate::Location,
     pub(crate) fields : HashMap<String,(Expr,crate::Location)>,
-    pub(crate) ty : ResolvedType,
+    pub(crate) generics : Vec<ResolvedType>,
+    pub(crate) ident : String,
 }
 
 #[derive(PartialEq, Eq, Debug)]

@@ -686,6 +686,7 @@ impl TypedExpr {
             Expr::ListLiteral { contents, loc } => todo!(),
             Expr::TupleLiteral { contents, loc } => todo!(),
             Expr::StructConstruction(_) => todo!("convert struct construction"),
+            Expr::Error => Ok(Self::ErrorNode),
         }
     }
 
