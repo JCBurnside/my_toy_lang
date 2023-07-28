@@ -5,15 +5,15 @@
 */
 //this declares a c function `putchar` 
 // `c_int` will be an alias for the appropriate sized int type for the targat
-extern "C" let putchar : std::ffi::c_int -> std::ffi::c_int;
+unsafe extern "C" let putchar : std::ffi::c_int -> std::ffi::c_int;
 // this show how to do varargs.
-extern "C" let printf : std::ffi::c_str -> ... -> std::ffi::c_int;
+unsafe extern "C" let printf : std::ffi::c_str -> ... -> std::ffi::c_int;
 
 //you can declare a function for foriegn use with a similar syntax.
 //when `extern`ing you MUST specify the type in full and varargs are not allowed. 
 //borrows are not allowed but pointers are.
 extern "C" let hey_i_can_use_this x : std::ffi::c_int -> std::ffi::c_int =
-    putchar x;
+    unsafe putchar x;
     0
 
 //from c this would be called like

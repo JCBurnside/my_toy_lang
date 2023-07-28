@@ -48,12 +48,18 @@ impl TypedModuleDeclaration {
                 _ => None,
             }
         }));
+
+        let types : HashMap<String,ast::TypeDefinition> = declarations.iter().filter_map::<(String,ast::TypeDefinition),_>(|it| match it {
+            ast::Declaration::TypeDefinition(def) => Some((def.get_ident(),def.clone())),
+            _ => None,
+        }).collect();
+
         Self {
             loc,
             name,
             declarations: declarations
                 .into_iter()
-                .map(|decl| TypedDeclaration::try_from(decl, &fwd_declares))
+                .map(|decl| TypedDeclaration::try_from(decl, &fwd_declares,&types))
                 .filter_map(|decl| match decl {
                     Ok(decl) => Some(decl),
                     Err(e) => {
@@ -82,6 +88,7 @@ impl TypedModuleDeclaration {
         };
         self.declarations
             .iter_mut()
+            .filter(|it| it.get_generics().is_empty())
             .for_each(|it| it.lower_generics(&mut context));
         self.declarations
             .extend(context.generated_generics.into_iter().map(|(_, it)| it));
@@ -100,13 +107,14 @@ impl TypedDeclaration {
         match self {
             Self::Mod(module) => module.name.as_ref().unwrap().clone(),
             Self::Value(v) => v.ident.clone(),
-            Self::TypeDefinition(_) => todo!(),
+            Self::TypeDefinition(decl) => decl.get_ident(),
         }
     }
 
     pub(crate) fn try_from(
         data: ast::Declaration,
         known_values: &HashMap<String, ResolvedType>,
+        known_types:&HashMap<String, ast::TypeDefinition>
     ) -> Result<Self, TypingError> {
         match data {
             Declaration::Mod(module) => Ok(Self::Mod(TypedModuleDeclaration::from(
@@ -116,20 +124,29 @@ impl TypedDeclaration {
             Declaration::Value(decl) => Ok(Self::Value(TypedValueDeclaration::try_from(
                 decl,
                 known_values,
+                known_types,
             )?)),
-            Declaration::TypeDefinition(_) => todo!(),
+            Declaration::TypeDefinition(define) => Ok(Self::TypeDefinition(ResolvedTypeDeclaration::try_from(define,known_values)?)),
         }
     }
 
-    fn replace_types(&mut self, types: &[(String, ResolvedType)]) {
+    pub(crate) fn replace_types(&mut self, types: &[(String, ResolvedType)]) {
         match self {
             TypedDeclaration::Mod(_) => unreachable!(),
             TypedDeclaration::Value(value) => value.replace_types(types),
-            TypedDeclaration::TypeDefinition(_) => todo!(),
+            TypedDeclaration::TypeDefinition(strct) => strct.replace_types(types),
         };
     }
 
-    fn lower_generics(&mut self, context: &mut LoweringContext) {
+    pub(crate) fn get_generics(&self) -> Vec<String> {
+        match self {
+            TypedDeclaration::Mod(_) => Vec::new(),
+            TypedDeclaration::Value(v) => v.generictypes.clone(),
+            TypedDeclaration::TypeDefinition(define) => define.get_generics(),
+        }
+    }
+
+    pub(crate) fn lower_generics(&mut self, context: &mut LoweringContext) {
         match self {
             TypedDeclaration::Mod(_) => todo!(),
             TypedDeclaration::Value(value) => value.lower_generics(context),
@@ -145,18 +162,52 @@ pub enum ResolvedTypeDeclaration {
     Struct(StructDefinition),
 }
 impl ResolvedTypeDeclaration {
+
+    fn try_from(origin : ast::TypeDefinition, known_types : &HashMap<String,ResolvedType>) -> Result<Self,TypingError> {
+        match origin {
+            ast::TypeDefinition::Alias(new, old) => Ok(Self::Alias(new,old)),
+            ast::TypeDefinition::Enum(_) => todo!(),
+            ast::TypeDefinition::Struct(strct) => Ok(ResolvedTypeDeclaration::Struct(StructDefinition::try_from(strct, known_types)?)),
+        }
+    }
+
     fn lower_generics(&mut self, context: &mut LoweringContext) {
         match self {
             ResolvedTypeDeclaration::Alias(_, old) => match old {
                 ResolvedType::User { name, generics } if !generics.is_empty() => {
                     let resolved_name = name.clone() + "<" + &generics.iter().map(ResolvedType::to_string).join(",") + ">";
                     if !context.generated_generics.contains_key(&resolved_name) {
-                        todo!()
+                        let mut target = context.globals.get(name).unwrap().clone();
+                        let zipped = target.get_generics().into_iter().zip(generics.iter().cloned()).collect_vec();
+                        target.replace_types(&zipped);
+                        target.lower_generics(context);
+                        let _ = context.generated_generics.insert(resolved_name, target);
                     }
                 },
                 _ => ()
             },
-            ResolvedTypeDeclaration::Struct(_) => todo!(),
+            ResolvedTypeDeclaration::Struct(stct) => stct.lower_generics(context),
+        }
+    }
+
+    fn get_ident(&self) -> String {
+        match self {
+            ResolvedTypeDeclaration::Alias(old, _) => old.clone(),
+            ResolvedTypeDeclaration::Struct(strct) => strct.ident.clone(),
+        }
+    }
+
+    fn get_generics(&self) -> Vec<String> {
+        match self {
+            ResolvedTypeDeclaration::Alias(_, _) => todo!("allow for generic aliasing"),
+            ResolvedTypeDeclaration::Struct(strct) => strct.generics.clone(),
+        }
+    }
+
+    fn replace_types(&mut self, types: &[(String, ResolvedType)]) {
+        match self {
+            ResolvedTypeDeclaration::Alias(_, _) => todo!("allow for generic aliasing"),
+            ResolvedTypeDeclaration::Struct(strct) => strct.replace_types(types),
         }
     }
 }
@@ -192,6 +243,22 @@ impl StructDefinition {
             fields: values,
             loc,
         })
+    }
+
+    fn lower_generics(&mut self, context: &mut LoweringContext) {
+        if self.generics.is_empty() {
+            for field in &mut self.fields {
+                field.ty.lower_generics(context)
+            }
+        }
+    }
+
+    fn replace_types(&mut self, types: &[(String, ResolvedType)]) {
+        self.generics = self.generics.iter().cloned().filter(|name| !types.iter().map(|(n,_)| n).contains(name)).collect();
+        assert_eq!(self.generics.len(),0,"generic not completed.  should not be reached!");
+        for field in &mut self.fields {
+            field.ty = types.iter().fold(field.ty.clone(),|old_ty,ty| old_ty.replace_generic(&ty.0, ty.1.clone()));
+        }
     }
 }
 
@@ -233,6 +300,7 @@ impl TypedValueDeclaration {
     pub(crate) fn try_from(
         data: ast::ValueDeclaration,
         known_values: &HashMap<String, ResolvedType>,
+        known_types: &HashMap<String,ast::TypeDefinition>,
     ) -> Result<Self, TypingError> {
         let ast::ValueDeclaration {
             loc,
@@ -250,7 +318,7 @@ impl TypedValueDeclaration {
                 .map(|it| it.ident.clone())
                 .zip(collect_args(&ty).into_iter()),
         );
-        let value = match TypedValueType::try_from(value, &known_values) {
+        let value = match TypedValueType::try_from(value, &known_values,known_types) {
             Ok(value) => value,
             Err(e) => {
                 println!("{:?}", e);
@@ -274,6 +342,7 @@ impl TypedValueDeclaration {
         })
     }
     fn lower_generics(&mut self, context: &mut LoweringContext) {
+        self.ty.lower_generics(context);
         match &mut self.value {
             TypedValueType::Expr(expr) => expr.lower_generics(context),
             TypedValueType::Function(stmnts) => {
@@ -298,16 +367,17 @@ impl TypedValueType {
     pub(crate) fn try_from(
         data: ast::ValueType,
         known_values: &HashMap<String, ResolvedType>,
+        known_types : &HashMap<String, ast::TypeDefinition>,
     ) -> Result<Self, TypingError> {
         match data {
             ast::ValueType::Expr(expr) => {
-                TypedExpr::try_from(expr, known_values, Vec::new()).map(|expr| Self::Expr(expr))
+                TypedExpr::try_from(expr, known_values,known_types, Vec::new()).map(|expr| Self::Expr(expr))
             }
             ast::ValueType::Function(stmnts) => {
                 let mut output = Vec::with_capacity(stmnts.len());
                 let mut known_values = known_values.clone();
                 for stmnt in stmnts {
-                    match TypedStatement::try_from(stmnt, &known_values) {
+                    match TypedStatement::try_from(stmnt, &known_values, known_types) {
                         Ok(stmnt) => {
                             if let TypedStatement::Declaration(data) = &stmnt {
                                 let mut e = known_values
@@ -406,10 +476,11 @@ impl TypedStatement {
     pub(crate) fn try_from(
         statement: ast::Statement,
         known_values: &HashMap<String, ResolvedType>,
+        known_types : &HashMap<String, ast::TypeDefinition>,
     ) -> Result<Self, TypingError> {
         match statement {
             ast::Statement::Declaration(data) => {
-                Ok(match TypedValueDeclaration::try_from(data, known_values) {
+                Ok(match TypedValueDeclaration::try_from(data, known_values,known_types) {
                     Ok(d) => Self::Declaration(d),
                     Err(e) => {
                         println!("{:?}", e);
@@ -418,14 +489,13 @@ impl TypedStatement {
                 })
             }
             ast::Statement::Return(value, loc) => Ok(Self::Return(
-                TypedExpr::try_from(value, known_values, Vec::new())?,
+                TypedExpr::try_from(value, known_values, known_types, Vec::new())?,
                 loc,
             )),
             ast::Statement::FnCall(data) => {
-                Ok(Self::FnCall(TypedFnCall::try_from(data, known_values)?))
+                Ok(Self::FnCall(TypedFnCall::try_from(data, known_values, known_types)?))
             }
             ast::Statement::Pipe(_) => todo!(),
-            ast::Statement::StructConstruction(_) => todo!("Convert construction structs")
         }
     }
 
@@ -480,12 +550,13 @@ impl TypedFnCall {
     pub(crate) fn try_from(
         data: ast::FnCall,
         known_values: &HashMap<String, ResolvedType>,
+        known_types : &HashMap<String, ast::TypeDefinition>,
     ) -> Result<Self, TypingError> {
         let ast::FnCall { loc, value, arg } = data;
-        let value = ok_or_err_node(TypedExpr::try_from(*value, known_values, Vec::new()));
+        let value = ok_or_err_node(TypedExpr::try_from(*value, known_values, known_types, Vec::new()));
 
         let arg = arg.map(
-            |arg| match TypedExpr::try_from(*arg, known_values, Vec::new()) {
+            |arg| match TypedExpr::try_from(*arg, known_values, known_types, Vec::new()) {
                 Ok(arg) => arg,
                 Err(e) => {
                     println!("{:?}", e);
@@ -568,6 +639,71 @@ impl TypedFnCall {
 }
 
 #[derive(PartialEq, Debug, Clone)]
+pub struct TypedStructConstruction {
+    pub(crate) loc : crate::Location,
+    pub(crate) fields : HashMap<String, (TypedExpr,crate::Location)>,
+    pub(crate) generics : Vec<ResolvedType>,
+    pub(crate) ident : String
+}
+
+impl TypedStructConstruction {
+    fn from(data : ast::StructConstruction, known_values : &HashMap<String,ResolvedType>, known_types : &HashMap<String,ast::TypeDefinition>) -> Result<Self,TypingError> {
+        let ast::StructConstruction { loc, fields, generics, ident } = data;
+        let mut new_fields = HashMap::new();
+        let declaration = match known_types.get(&ident){
+            Some(ast::TypeDefinition::Struct(decl)) => decl,
+            Some(_) => {
+                println!("not a struct declaration");
+                return Err(TypingError::UnknownType);
+            }
+            None => {
+                println!("Type not found in scope");
+                return Err(TypingError::UnknownType);
+            },
+        };
+        for (name,(field,loc)) in fields {
+            if new_fields.contains_key(&name) {
+                println!("duplicate field {}", name);
+                new_fields.insert("_".to_string(),(TypedExpr::ErrorNode,loc));
+                continue;
+            }
+            let field = match TypedExpr::try_from(field, known_values, known_types, Vec::new()){
+                Ok(expr) => expr,
+                Err(e) => {
+                    println!("{:?}",e);
+                    TypedExpr::ErrorNode
+                }
+            };
+            if field.get_ty() != ResolvedType::Error {
+                if let Some(old_field) = declaration.values.iter().find(|it| it.name == name) {
+                    if old_field.ty == field.get_ty() || old_field.ty.is_generic() {
+                        new_fields.insert(name, (field,loc));
+                    } else {
+                        println!("type mismatch.  expected {} but got {} at line {} column {}", old_field.ty.to_string(), field.get_ty().to_string(), loc.0, loc.1);
+                        new_fields.insert(name, (TypedExpr::ErrorNode,loc));
+                    }
+                } else {
+                    println!("{} doesn't exist on type {}", name, ident);
+                    new_fields.insert("_".to_string(), (TypedExpr::ErrorNode,loc));
+                }
+            } else {
+                new_fields.insert(name, (TypedExpr::ErrorNode,loc));
+            }
+        }
+        Ok(Self {
+            loc,
+            fields:new_fields,
+            generics,
+            ident
+        })
+    }
+
+    fn lower_generics(&mut self, context: &mut LoweringContext) {
+        // TODO
+    }
+}
+
+#[derive(PartialEq, Debug, Clone)]
 pub enum TypedExpr {
     /// Integers
     IntegerLiteral {
@@ -614,6 +750,8 @@ pub enum TypedExpr {
         contents: Vec<TypedExpr>,
     },
 
+    StructConstruction(TypedStructConstruction),
+
     // This is used to allow to continue type checking.  should never naturally generate.
     ErrorNode,
 }
@@ -622,6 +760,7 @@ impl TypedExpr {
     pub(crate) fn try_from(
         value: ast::Expr,
         known_values: &HashMap<String, ResolvedType>,
+        known_types: &HashMap<String,ast::TypeDefinition>,
         already_processed_args: Vec<ResolvedType>,
     ) -> Result<Self, TypingError> {
         use ast::Expr;
@@ -643,9 +782,10 @@ impl TypedExpr {
             Expr::BinaryOpCall(data) => Ok(Self::BinaryOpCall(TypedBinaryOpCall::try_from(
                 data,
                 known_values,
+                known_types,
             )?)),
             Expr::UnaryOpCall(_) => todo!(),
-            Expr::FnCall(data) => Ok(Self::FnCall(TypedFnCall::try_from(data, known_values)?)),
+            Expr::FnCall(data) => Ok(Self::FnCall(TypedFnCall::try_from(data, known_values, known_types)?)),
             Expr::ValueRead(value) => {
                 if !known_values.contains_key(&value) {
                     Err(TypingError::UnknownType)
@@ -657,7 +797,7 @@ impl TypedExpr {
             Expr::ArrayLiteral { contents, loc } => {
                 let contents = contents
                     .into_iter()
-                    .map(|value| TypedExpr::try_from(value, known_values, Vec::new()))
+                    .map(|value| TypedExpr::try_from(value, known_values, known_types, Vec::new()))
                     .map(|value| match value {
                         Ok(value) => value,
                         Err(e) => {
@@ -685,7 +825,7 @@ impl TypedExpr {
             }
             Expr::ListLiteral { contents, loc } => todo!(),
             Expr::TupleLiteral { contents, loc } => todo!(),
-            Expr::StructConstruction(_) => todo!("convert struct construction"),
+            Expr::StructConstruction(strct) => Ok(Self::StructConstruction(TypedStructConstruction::from(strct,known_values,known_types)?)),
             Expr::Error => Ok(Self::ErrorNode),
         }
     }
@@ -744,12 +884,14 @@ impl TypedExpr {
             Self::FnCall(data) => data.rt.clone(),
             Self::ValueRead(_, ty) => ty.clone(),
             Self::ArrayLiteral { contents } => ResolvedType::Array {
-                underlying: contents.first().unwrap().get_ty().boxed(),
+                underlining: contents.first().unwrap().get_ty().boxed(),
                 size: contents.len(),
             },
             Self::ListLiteral { contents } => todo!(),
             Self::TupleLiteral { contents } => todo!(),
             Self::ErrorNode => types::ERROR,
+            Self::StructConstruction(strct) => ResolvedType::User { name: strct.ident.clone(), generics: strct.generics.clone() },
+            Self::ErrorNode => ResolvedType::Error,
         }
     }
 
@@ -869,6 +1011,7 @@ impl TypedExpr {
             | Self::StringLiteral(_)
             | Self::CharLiteral(_)
             | Self::UnitLiteral => (),
+            Self::StructConstruction(strct) => strct.lower_generics(context),
             Self::BinaryOpCall(data) => data.lower_generics(context),
             Self::UnaryOpCall(data) => todo!("unary op type lowering"),
             Self::ValueRead(_, _) => (),
@@ -877,12 +1020,13 @@ impl TypedExpr {
     }
 }
 
-struct LoweringContext {
-    globals: HashMap<String, TypedDeclaration>,
-    locals: HashMap<String, TypedValueDeclaration>,
-    curried_locals: HashMap<String, TypedExpr>,
-    generated_generics: HashMap<String, TypedDeclaration>,
-    args: Vec<ResolvedType>,
+#[derive(Clone)]
+pub(crate) struct LoweringContext {
+    pub(crate) globals: HashMap<String, TypedDeclaration>,
+    pub(crate) locals: HashMap<String, TypedValueDeclaration>,
+    pub(crate) curried_locals: HashMap<String, TypedExpr>,
+    pub(crate) generated_generics: HashMap<String, TypedDeclaration>,
+    pub(crate) args: Vec<ResolvedType>,
 }
 
 pub fn map_types_to_args(
@@ -1087,6 +1231,7 @@ impl TypedBinaryOpCall {
     pub(crate) fn try_from(
         value: ast::BinaryOpCall,
         known_values: &HashMap<String, ResolvedType>,
+        known_types : &HashMap<String,ast::TypeDefinition>,
     ) -> Result<Self, TypingError> {
         let ast::BinaryOpCall {
             loc,
@@ -1094,14 +1239,14 @@ impl TypedBinaryOpCall {
             rhs,
             operator,
         } = value;
-        let lhs = match TypedExpr::try_from(*lhs, known_values, Vec::new()) {
+        let lhs = match TypedExpr::try_from(*lhs, known_values, known_types, Vec::new()) {
             Ok(lhs) => lhs,
             Err(e) => {
                 println!("{:?}", e);
                 TypedExpr::ErrorNode
             }
         };
-        let rhs = match TypedExpr::try_from(*rhs, known_values, Vec::new()) {
+        let rhs = match TypedExpr::try_from(*rhs, known_values, known_types, Vec::new()) {
             Ok(rhs) => rhs,
             Err(e) => {
                 println!("{:?}", e);
@@ -1263,6 +1408,7 @@ mod tests {
                     ty: types::INT32,
                 },
                 &HashMap::new(),
+                &HashMap::new(),
                 Vec::new()
             )
             .expect(""),
@@ -1280,6 +1426,7 @@ mod tests {
                     ty: types::FLOAT32
                 },
                 &HashMap::new(),
+                &HashMap::new(),
                 Vec::new()
             )
             .expect(""),
@@ -1294,6 +1441,7 @@ mod tests {
             TypedExpr::try_from(
                 Expr::StringLiteral("merp".to_string()),
                 &HashMap::new(),
+                &HashMap::new(),
                 Vec::new()
             )
             .expect(""),
@@ -1305,6 +1453,7 @@ mod tests {
             TypedExpr::try_from(
                 Expr::CharLiteral("a".to_string()),
                 &HashMap::new(),
+                &HashMap::new(),
                 Vec::new()
             )
             .expect(""),
@@ -1313,7 +1462,7 @@ mod tests {
         );
 
         assert_eq!(
-            TypedExpr::try_from(Expr::UnitLiteral, &HashMap::new(), Vec::new()).expect(""),
+            TypedExpr::try_from(Expr::UnitLiteral, &HashMap::new(), &HashMap::new(), Vec::new()).expect(""),
             TypedExpr::UnitLiteral,
             "()"
         );
@@ -1334,6 +1483,7 @@ mod tests {
                     .boxed(),
                     operator: "+".to_string()
                 }),
+                &HashMap::new(),
                 &HashMap::new(),
                 Vec::new()
             )
@@ -1362,6 +1512,7 @@ mod tests {
             TypedExpr::try_from(
                 Expr::ValueRead("bar".to_string()),
                 &PREDEFINED_VALUES,
+                &HashMap::new(),
                 Vec::new()
             )
             .expect(""),
@@ -1377,6 +1528,7 @@ mod tests {
                     arg: Some(Expr::ValueRead("bar".to_string()).boxed()),
                 }),
                 &PREDEFINED_VALUES,
+                &HashMap::new(),
                 Vec::new()
             )
             .expect(""),
@@ -1408,7 +1560,8 @@ mod tests {
                     value: "1".to_string(),
                     ty: types::INT32
                 }),
-                &HashMap::new()
+                &HashMap::new(),
+                &HashMap::new(),
             )
             .expect(""),
             TypedValueType::Expr(TypedExpr::IntegerLiteral {
@@ -1427,7 +1580,8 @@ mod tests {
                     },
                     (0, 0)
                 )]),
-                &PREDEFINED_VALUES
+                &PREDEFINED_VALUES,
+                &HashMap::new(),
             )
             .expect(""),
             TypedValueType::Function(vec![super::TypedStatement::Return(
@@ -1459,7 +1613,8 @@ mod tests {
                     }),
                     generictypes: Vec::new()
                 }),
-                &HashMap::new()
+                &HashMap::new(),
+                &HashMap::new(),
             )
             .expect(""),
             TypedStatement::Declaration(TypedValueDeclaration {
@@ -1481,7 +1636,8 @@ mod tests {
         assert_eq!(
             TypedStatement::try_from(
                 Statement::Return(ast::Expr::ValueRead("bar".to_string()), (0, 0)),
-                &PREDEFINED_VALUES
+                &PREDEFINED_VALUES,
+                &HashMap::new(),
             )
             .expect(""),
             TypedStatement::Return(
@@ -1498,7 +1654,8 @@ mod tests {
                     value: ast::Expr::ValueRead("foo".to_string()).boxed(),
                     arg: Some(ast::Expr::ValueRead("bar".to_string()).boxed()),
                 }),
-                &PREDEFINED_VALUES
+                &PREDEFINED_VALUES,
+                &HashMap::new(),
             )
             .expect(""),
             TypedStatement::FnCall(super::TypedFnCall {
@@ -1549,7 +1706,8 @@ mod tests {
                     )]),
                     generictypes: Vec::new(),
                 }),
-                &HashMap::new()
+                &HashMap::new(),
+                &HashMap::new(),
             )
             .expect(""),
             TypedDeclaration::Value(super::TypedValueDeclaration {
@@ -1704,23 +1862,26 @@ let first a : Tuple<int32,float64> -> int32 =
                             ty: ResolvedType::Generic {
                                 name: "T".to_string()
                             },
-                            loc: (1, 5)
+                            loc: (2, 5)
                         },
                         crate::ast::FieldDecl {
                             name: "second".to_string(),
                             ty: ResolvedType::Generic {
                                 name: "U".to_string()
                             },
-                            loc: (2, 5)
+                            loc: (3, 5)
                         }
                     ],
-                    loc: (0, 15)
+                    loc: (1, 15)
                 }
             )),
             "pre-lowering struct",
         );
 
         module.lower_generics(&HashMap::new());
+        
+        
+
     }
 
     #[test]

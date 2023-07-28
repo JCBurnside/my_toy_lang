@@ -20,14 +20,24 @@ pub(crate) enum Declaration {
     TypeDefinition(TypeDefinition),
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub(crate) enum TypeDefinition {
     Alias(String, ResolvedType),
     Enum(EnumDeclation),
     Struct(StructDefinition),
 }
 
-#[derive(PartialEq, Eq, Debug)]
+impl TypeDefinition {
+    pub(crate) fn get_ident(&self) -> String {
+        match self {
+            TypeDefinition::Alias(name, _) => name.clone(),
+            TypeDefinition::Enum(_) => todo!(),
+            TypeDefinition::Struct(strct) => strct.ident.clone(),
+        }
+    }
+}
+
+#[derive(PartialEq, Eq, Debug, Clone)]
 pub(crate) struct EnumDeclation {
     pub(crate) ident: String,
     pub(crate) generics: Vec<String>,
@@ -35,7 +45,14 @@ pub(crate) struct EnumDeclation {
     pub(crate) loc: crate::Location,
 }
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Clone)]
+pub(crate) enum EnumVariant {
+    Unit(String, crate::Location),
+    Tuple(String, Vec<ResolvedType>, crate::Location),
+    Struct(String, StructDefinition, crate::Location),
+}
+
+#[derive(PartialEq, Eq, Debug,Clone)]
 pub(crate) struct StructDefinition {
     pub(crate) ident: String,
     pub(crate) generics: Vec<String>,
@@ -50,12 +67,6 @@ pub(crate) struct FieldDecl {
     pub(crate) loc: crate::Location,
 }
 
-#[derive(PartialEq, Eq, Debug)]
-pub(crate) enum EnumVariant {
-    Unit(String, crate::Location),
-    Tuple(String, Vec<ResolvedType>, crate::Location),
-    Struct(String, StructDefinition, crate::Location),
-}
 
 #[derive(PartialEq, Eq, Debug)]
 pub enum ValueType {
@@ -86,7 +97,6 @@ pub enum Statement {
     Declaration(ValueDeclaration),
     Return(Expr, crate::Location),
     FnCall(FnCall),
-    StructConstruction(StructConstruction),
     Pipe(Pipe),
 }
 

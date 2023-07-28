@@ -1,6 +1,6 @@
 use std::{collections::HashMap, mem::size_of};
 
-use crate::util::ExtraUtilFunctions;
+use crate::{util::ExtraUtilFunctions, typed_ast};
 use inkwell::{
     context::Context,
     debug_info::{DIFile, DIFlags, DIFlagsConstants, DISubroutineType, DIType, DebugInfoBuilder},
@@ -109,7 +109,7 @@ pub enum ResolvedType {
     },
 
     Array {
-        underlying: Box<ResolvedType>,
+        underlining: Box<ResolvedType>,
         size: usize,
     },
     // ForwardUser{name:String},
@@ -201,8 +201,8 @@ impl ResolvedType {
                 arg: arg.replace_user_with_generic(target_name).boxed(),
                 returns: returns.replace_user_with_generic(target_name).boxed(),
             },
-            ResolvedType::Array { underlying, size } => Self::Array {
-                underlying: underlying.replace_user_with_generic(target_name).boxed(),
+            ResolvedType::Array { underlining: underlying, size } => Self::Array {
+                underlining: underlying.replace_user_with_generic(target_name).boxed(),
                 size,
             },
             ResolvedType::User { name, .. } if &name == target_name => {
@@ -212,7 +212,40 @@ impl ResolvedType {
         }
     }
 
-    
+    pub(crate) fn lower_generics(&mut self, context:&mut typed_ast::LoweringContext) {
+        match self {
+            ResolvedType::Int { .. } |
+            ResolvedType::Float { .. } |
+            ResolvedType::Char |
+            ResolvedType::Str |
+            ResolvedType::Unit |
+            ResolvedType::Generic { .. } |
+            ResolvedType::Void => (),
+            ResolvedType::Pointer { underlining } | 
+            ResolvedType::Slice { underlining } |
+            ResolvedType::Array { underlining, .. } |
+            ResolvedType::Alias { actual:underlining } |
+            ResolvedType::Ref { underlining } => underlining.as_mut().lower_generics(context),
+            ResolvedType::Function { arg, returns } => {
+                arg.as_mut().lower_generics(context);
+                returns.as_mut().lower_generics(context);
+            },
+            ResolvedType::User { name, generics } => {
+                if generics.iter().any(ResolvedType::is_generic) {
+                    return;
+                }
+                let new_name = format!("{}<{}>",name.clone(),generics.iter().map(ResolvedType::to_string).join(","));
+                if !context.generated_generics.contains_key(&new_name) {
+                    let mut target = context.globals.get(name).unwrap().clone();
+                    let zipped = target.get_generics().into_iter().zip(generics.iter().cloned()).collect_vec();
+                    target.replace_types(&zipped);
+                    target.lower_generics(context);
+                    let _ = context.generated_generics.insert(new_name, target);
+                }
+            },
+            ResolvedType::Error => todo!(),
+        }
+    }
 }
 
 impl ToString for ResolvedType {
@@ -250,7 +283,7 @@ impl ToString for ResolvedType {
             ResolvedType::User { name, generics } => {
                 name.clone() + "_" + &generics.iter().map(Self::to_string).join("_")
             }
-            ResolvedType::Array { underlying, size } => {
+            ResolvedType::Array { underlining: underlying, size } => {
                 format!("[{};{}]", underlying.to_string(), size)
             }
             ResolvedType::Error => "<ERROR>".to_string(),
@@ -450,7 +483,7 @@ impl<'ctx> TypeResolver<'ctx> {
                 ResolvedType::User { .. } => {
                     todo!("probably should store size of type in here?")
                 }
-                ResolvedType::Array { underlying, size } => dibuilder
+                ResolvedType::Array { underlining: underlying, size } => dibuilder
                     .create_array_type(
                         self.get_di(&underlying, dibuilder),
                         size_of::<*const ()>() as u64,

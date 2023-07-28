@@ -14,8 +14,8 @@ for<T> type Generic = {
     a : T
 }
 
-let user_type_fun a : Concrete -> Generic<int32> =
-    Generic { a:0 }
+let user_type_fun a : Generic<int32> -> Concrete  =
+    return Concrete { a:0 }
 
 let main _ : () -> () = 
     let merp : int32 -> int32 = use_fn id

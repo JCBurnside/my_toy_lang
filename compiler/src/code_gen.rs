@@ -703,6 +703,7 @@ impl<'ctx> CodeGen<'ctx> {
             TypedExpr::ListLiteral { .. } => todo!(),
             TypedExpr::TupleLiteral { .. } => todo!(),
             TypedExpr::ErrorNode => unreachable!(),
+            TypedExpr::StructConstruction(_) => todo!(),
         }
     }
 

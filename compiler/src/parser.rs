@@ -76,7 +76,6 @@ where
         }
     }
     pub fn next_statement(&mut self) -> Result<Statement, ParseError> {
-        #[cfg(debug_assertions)] let _peeked = dbg!(self.stream.peek());
         match self.stream.clone().next() {
             Some((Token::NewLine, _)) => {
                 self.stream.next();
@@ -87,11 +86,9 @@ where
             }
             Some((Token::Return, _)) => self.ret(),
              // hmmm should handle if it's actually a binary op call esp and/or compose.
-            Some((Token::Ident(_), _)) =>if let Some((Token::CurlOpen,_)) = self.stream.clone().skip(1).skip_while(|(it,_)| matches!(it,Token::NewLine|Token::BeginBlock)).next() {
-                Ok(Statement::StructConstruction(self.struct_construct()?))
-            } else { 
-                Ok(Statement::FnCall(self.function_call()?.0)) 
-            }, 
+            Some((Token::Ident(_), _)) =>
+            // for now last statement in a block is not treated as return though will allow for that soon.
+                Ok(Statement::FnCall(self.function_call()?.0)), 
             _ => unreachable!("how?"),
         }
     }
