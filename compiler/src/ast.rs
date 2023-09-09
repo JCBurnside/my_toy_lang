@@ -1,4 +1,7 @@
-use std::{collections::{HashSet, HashMap}, num::NonZeroU8};
+use std::{
+    collections::{HashMap, HashSet},
+    num::NonZeroU8,
+};
 
 use crate::types::ResolvedType;
 #[allow(unused)]
@@ -52,7 +55,7 @@ pub(crate) enum EnumVariant {
     Struct(String, StructDefinition, crate::Location),
 }
 
-#[derive(PartialEq, Eq, Debug,Clone)]
+#[derive(PartialEq, Eq, Debug, Clone)]
 pub(crate) struct StructDefinition {
     pub(crate) ident: String,
     pub(crate) generics: Vec<String>,
@@ -66,7 +69,6 @@ pub(crate) struct FieldDecl {
     pub(crate) ty: ResolvedType,
     pub(crate) loc: crate::Location,
 }
-
 
 #[derive(PartialEq, Eq, Debug)]
 pub enum ValueType {
@@ -111,7 +113,7 @@ pub struct Pipe {
 
 #[derive(PartialEq, Eq, Debug)]
 pub struct UnaryOpCall {
-    pub(crate) loc : crate::Location,
+    pub(crate) loc: crate::Location,
     pub(crate) operand: Box<Expr>,
     pub(crate) operator: String,
 }
@@ -133,17 +135,20 @@ pub struct FnCall {
 
 #[derive(PartialEq, Eq, Debug)]
 pub struct StructConstruction {
-    pub(crate) loc : crate::Location,
-    pub(crate) fields : HashMap<String,(Expr,crate::Location)>,
-    pub(crate) generics : Vec<ResolvedType>,
-    pub(crate) ident : String,
+    pub(crate) loc: crate::Location,
+    pub(crate) fields: HashMap<String, (Expr, crate::Location)>,
+    pub(crate) generics: Vec<ResolvedType>,
+    pub(crate) ident: String,
 }
 
 #[derive(PartialEq, Eq, Debug)]
 pub enum Expr {
     Error,
     /// any integer or floating point value
-    NumericLiteral { value: String, ty: ResolvedType },
+    NumericLiteral {
+        value: String,
+        ty: ResolvedType,
+    },
     /// "hello world!"
     StringLiteral(String),
     /// `'a'`
@@ -151,7 +156,10 @@ pub enum Expr {
     /// ()
     UnitLiteral,
     /// a >>> b
-    Compose { lhs: Box<Expr>, rhs: Box<Expr> },
+    Compose {
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+    },
     /// `a + b`. come on everyone should know this one
     BinaryOpCall(BinaryOpCall),
     /// NOT IMPLEMENTED YET
@@ -183,5 +191,5 @@ pub enum Expr {
         loc: crate::Location,
     },
 
-    StructConstruction(StructConstruction)
+    StructConstruction(StructConstruction),
 }

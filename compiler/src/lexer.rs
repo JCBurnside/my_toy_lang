@@ -93,7 +93,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
             }
 
             match c {
-                ',' => (Token::Comma, (self.curr_line,self.curr_col)),
+                ',' => (Token::Comma, (self.curr_line, self.curr_col)),
                 '(' => (Token::GroupOpen, (self.curr_line, self.curr_col)),
                 ')' => (Token::GroupClose, (self.curr_line, self.curr_col)),
                 '{' => (Token::CurlOpen, (self.curr_line, self.curr_col)),

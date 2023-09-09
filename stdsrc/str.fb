@@ -1,0 +1,27 @@
+
+
+for<'a> let str::split &self c : &'a str -> char -> SplitSeq<'a> =
+
+let str::find &self c =
+    if self.len == 0 then 
+        None
+    else if self !! 0 == c then 
+        Some 0 
+    else 
+        &(self !! 1..).find c |> Option::map ((+) 1)
+
+for<'a> type SplitSeq = {
+    source : &'a str,
+    on : char,
+}
+
+for<'a> implement Seq<&'a str> for SplitSeq<'a> =
+    let Seq::next &mut self : &mut SplitSeq<'a> -> Option<&'a str> =
+        if self.source.len == 0 then 
+            None
+        else
+            let end = self.source.find self.on
+            let next = &(self.source !! 0..end)
+            self.source = &(self.source !! end..)
+            Some next
+

@@ -9,14 +9,14 @@
             "type": "cppvsdbg",
             "request": "launch",
             "program": "${workspaceFolder}/target/debug/cli.exe",
-            "args": ["--llvm","-d","-o","./test_output.llvm","./cli/test.fb",],
+            "args": ["-r","./cli/test.fb"],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
             "environment": [
                 {"name": "RUST_BACKTRACE", "value": "1"}
             ],
             "console": "externalTerminal",
-            "preLaunchTask": "MyTask"
+            "preLaunchTask": "rust: cargo build"
         },
         {
             "name": "test",

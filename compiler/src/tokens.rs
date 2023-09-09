@@ -7,7 +7,7 @@ pub enum Token {
     GroupClose, // )
     CurlOpen,   // {
     CurlClose,  // }
-    Comma, //,
+    Comma,      //,
     Colon,
     Ident(String),
     For, // used for generic declaration and maybe composition in a later version

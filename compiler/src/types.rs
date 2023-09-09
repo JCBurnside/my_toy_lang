@@ -1,6 +1,6 @@
 use std::{collections::HashMap, mem::size_of};
 
-use crate::{util::ExtraUtilFunctions, typed_ast};
+use crate::{typed_ast, util::ExtraUtilFunctions};
 use inkwell::{
     context::Context,
     debug_info::{DIFile, DIFlags, DIFlagsConstants, DISubroutineType, DIType, DebugInfoBuilder},
@@ -123,6 +123,17 @@ pub enum ResolvedType {
 }
 
 impl ResolvedType {
+    pub fn is_void_or_unit(&self) -> bool {
+        match self {
+            Self::Void | Self::Unit => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_user(&self) -> bool {
+        matches!(self, Self::User { .. })
+    }
+
     pub fn as_c_function(&self) -> (Vec<Self>, Self) {
         // (args, return type)
         match self {
@@ -201,7 +212,10 @@ impl ResolvedType {
                 arg: arg.replace_user_with_generic(target_name).boxed(),
                 returns: returns.replace_user_with_generic(target_name).boxed(),
             },
-            ResolvedType::Array { underlining: underlying, size } => Self::Array {
+            ResolvedType::Array {
+                underlining: underlying,
+                size,
+            } => Self::Array {
                 underlining: underlying.replace_user_with_generic(target_name).boxed(),
                 size,
             },
@@ -212,37 +226,49 @@ impl ResolvedType {
         }
     }
 
-    pub(crate) fn lower_generics(&mut self, context:&mut typed_ast::LoweringContext) {
+    pub(crate) fn lower_generics(&mut self, context: &mut typed_ast::LoweringContext) {
         match self {
-            ResolvedType::Int { .. } |
-            ResolvedType::Float { .. } |
-            ResolvedType::Char |
-            ResolvedType::Str |
-            ResolvedType::Unit |
-            ResolvedType::Generic { .. } |
-            ResolvedType::Void => (),
-            ResolvedType::Pointer { underlining } | 
-            ResolvedType::Slice { underlining } |
-            ResolvedType::Array { underlining, .. } |
-            ResolvedType::Alias { actual:underlining } |
-            ResolvedType::Ref { underlining } => underlining.as_mut().lower_generics(context),
+            ResolvedType::Int { .. }
+            | ResolvedType::Float { .. }
+            | ResolvedType::Char
+            | ResolvedType::Str
+            | ResolvedType::Unit
+            | ResolvedType::Generic { .. }
+            | ResolvedType::Void => (),
+            ResolvedType::Pointer { underlining }
+            | ResolvedType::Slice { underlining }
+            | ResolvedType::Array { underlining, .. }
+            | ResolvedType::Alias {
+                actual: underlining,
+            }
+            | ResolvedType::Ref { underlining } => underlining.as_mut().lower_generics(context),
             ResolvedType::Function { arg, returns } => {
                 arg.as_mut().lower_generics(context);
                 returns.as_mut().lower_generics(context);
-            },
+            }
             ResolvedType::User { name, generics } => {
-                if generics.iter().any(ResolvedType::is_generic) {
+                if generics.iter().any(ResolvedType::is_generic) || generics.len() == 0 {
                     return;
                 }
-                let new_name = format!("{}<{}>",name.clone(),generics.iter().map(ResolvedType::to_string).join(","));
+                let new_name = format!(
+                    "{}<{}>",
+                    name.clone(),
+                    generics.iter().map(ResolvedType::to_string).join(",")
+                );
                 if !context.generated_generics.contains_key(&new_name) {
                     let mut target = context.globals.get(name).unwrap().clone();
-                    let zipped = target.get_generics().into_iter().zip(generics.iter().cloned()).collect_vec();
-                    target.replace_types(&zipped);
+                    let zipped = target
+                        .get_generics()
+                        .into_iter()
+                        .zip(generics.iter().cloned())
+                        .collect_vec();
+                    target.replace_types(&zipped, context);
                     target.lower_generics(context);
-                    let _ = context.generated_generics.insert(new_name, target);
+                    let _ = context.generated_generics.insert(new_name.clone(), target);
                 }
-            },
+                *name = new_name;
+                *generics = Vec::new();
+            }
             ResolvedType::Error => todo!(),
         }
     }
@@ -281,9 +307,20 @@ impl ToString for ResolvedType {
             ResolvedType::Unit => "()".to_string(),
             ResolvedType::Void => "".to_string(),
             ResolvedType::User { name, generics } => {
-                name.clone() + "_" + &generics.iter().map(Self::to_string).join("_")
+                if generics.len() > 0 {
+                    format!(
+                        "{}<{}>",
+                        name,
+                        &generics.iter().map(Self::to_string).join(",")
+                    )
+                } else {
+                    name.clone()
+                }
             }
-            ResolvedType::Array { underlining: underlying, size } => {
+            ResolvedType::Array {
+                underlining: underlying,
+                size,
+            } => {
                 format!("[{};{}]", underlying.to_string(), size)
             }
             ResolvedType::Error => "<ERROR>".to_string(),
@@ -399,109 +436,6 @@ impl<'ctx> TypeResolver<'ctx> {
         self.known.contains_key(ty)
     }
 
-    pub fn get_di_fn(
-        &mut self,
-        ty: &ResolvedType,
-        dibuilder: &DebugInfoBuilder<'ctx>,
-        file: &DIFile<'ctx>,
-    ) -> DISubroutineType<'ctx> {
-        let (args, rt) = ty.as_c_function();
-        let rt = self.get_di(&rt, dibuilder);
-        let args = args
-            .into_iter()
-            .map(|arg| self.get_di(&arg, dibuilder))
-            .collect_vec();
-        dibuilder.create_subroutine_type(*file, Some(rt), &args, DIFlags::PUBLIC)
-    }
-
-    pub fn get_di(
-        &mut self,
-        ty: &ResolvedType,
-        dibuilder: &DebugInfoBuilder<'ctx>,
-    ) -> DIType<'ctx> {
-        if self.ditypes.contains_key(ty) {
-            self.ditypes[ty]
-        } else {
-            let ditype = match ty {
-                ResolvedType::Int { width, .. } => dibuilder
-                    .create_basic_type(
-                        &ty.to_string(),
-                        width.as_bits(),
-                        0, //TODO figure out wtf this is for
-                        DIFlags::PUBLIC,
-                    )
-                    .unwrap()
-                    .as_type(),
-                ResolvedType::Float { width } => dibuilder
-                    .create_basic_type(
-                        &ty.to_string(),
-                        width.as_bits(),
-                        0, //TODO figure out wtf this is for
-                        DIFlags::PUBLIC,
-                    )
-                    .unwrap()
-                    .as_type(),
-                ResolvedType::Char => dibuilder
-                    .create_basic_type(
-                        &ty.to_string(),
-                        8,
-                        0, //TODO figure out wtf this is for
-                        DIFlags::PUBLIC,
-                    )
-                    .unwrap()
-                    .as_type(),
-                ResolvedType::Str => unimplemented!(
-                    "not sure how to handle this one yet, will probably handle as slice."
-                ),
-                ResolvedType::Ref { underlining } => dibuilder
-                    .create_reference_type(self.get_di(&underlining, dibuilder), 0)
-                    .as_type(),
-                ResolvedType::Pointer { underlining } => dibuilder
-                    .create_pointer_type(
-                        &ty.to_string(),
-                        self.get_di(&underlining, dibuilder),
-                        size_of::<*const ()>() as u64,
-                        0,
-                        AddressSpace::default(),
-                    )
-                    .as_type(),
-                ResolvedType::Unit => dibuilder
-                    .create_basic_type("()", 0, 0, DIFlags::PUBLIC)
-                    .unwrap()
-                    .as_type(),
-                ResolvedType::Void => todo!(),
-                ResolvedType::Slice { .. } => todo!(),
-                ResolvedType::Function { .. } => dibuilder
-                    .create_pointer_type(
-                        &ty.to_string(),
-                        self.get_di(&INT8, dibuilder),
-                        size_of::<*const ()>() as u64,
-                        0,
-                        AddressSpace::default(),
-                    )
-                    .as_type(),
-                ResolvedType::User { .. } => {
-                    todo!("probably should store size of type in here?")
-                }
-                ResolvedType::Array { underlining: underlying, size } => dibuilder
-                    .create_array_type(
-                        self.get_di(&underlying, dibuilder),
-                        size_of::<*const ()>() as u64,
-                        0,
-                        &[0..(*size as i64)],
-                    )
-                    .as_type(),
-                ResolvedType::Alias { .. } => todo!(),
-                ResolvedType::Generic { .. } => unreachable!("cannont generate generic di info"),
-                ResolvedType::Error => unreachable!(
-                    "if there is an error node then it can't possibly be generating llvm"
-                ),
-            };
-            self.ditypes.insert(ty.clone(), ditype);
-            ditype
-        }
-    }
-
     // pub fn insert_many_user_types(&mut self,types:Vec<(String,Vec<ResolvedType>)>) -> Vec<Result<AnyTypeEnum,Vec<InsertionError>>> {
     //     let mut out = types.drain_filter(|(name,))
     //     let names = types.iter().map(|(name,_)| name).collect_vec();
@@ -566,7 +500,32 @@ impl<'ctx> TypeResolver<'ctx> {
                     .as_any_type_enum();
                 self.known.insert(ty, r);
             }
-            ResolvedType::User { .. } => todo!(),
+            ResolvedType::User { name, generics }
+                if generics
+                    .iter()
+                    .map(ResolvedType::is_generic)
+                    .all(|it| it == false)
+                    || generics.is_empty() =>
+            {
+                let new_name = if generics.is_empty() {
+                    name.clone()
+                } else {
+                    format!(
+                        "{}<{}>",
+                        name,
+                        generics.iter().map(ResolvedType::to_string).join(",")
+                    )
+                };
+                match self.ctx.get_struct_type(&new_name) {
+                    None => {
+                        let strct = self.ctx.opaque_struct_type(&new_name);
+                        self.known.insert(ty.clone(), strct.as_any_type_enum());
+                    }
+                    Some(strct) => {
+                        self.known.insert(ty.clone(), strct.as_any_type_enum());
+                    }
+                }
+            }
             // ResolvedType::ForwardUser { name } => todo!(),
             ResolvedType::Alias { actual } => self.resolve_type(actual.as_ref().clone()),
             ResolvedType::Unit => (),
@@ -594,6 +553,10 @@ impl<'ctx> TypeResolver<'ctx> {
                 .struct_type(&[i8_ptr.into()], false)
                 .ptr_type(AddressSpace::default())
                 .as_basic_type_enum()
+        } else if ty == &ResolvedType::Str || ty.is_user() {
+            self.resolve_type_as_basic(ty.clone())
+                .ptr_type(AddressSpace::default())
+                .as_basic_type_enum()
         } else {
             self.resolve_type_as_basic(ty.clone())
         }
@@ -609,6 +572,12 @@ impl<'ctx> TypeResolver<'ctx> {
                 false,
             )
             .ptr_type(AddressSpace::default());
+        if returns.is_void_or_unit() {
+            return self
+                .ctx
+                .void_type()
+                .fn_type(&[curry_holder.into(), arg.into()], false);
+        }
         let rt = if returns.is_function() {
             curry_holder.as_basic_type_enum()
         } else {

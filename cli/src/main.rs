@@ -35,7 +35,7 @@ fn main() {
         "print_str".to_owned(),
         ResolvedType::Function {
             arg: Box::new(types::STR),
-            returns: Box::new(types::UNIT),
+            returns: Box::new(ResolvedType::Void),
         },
     );
 
@@ -53,12 +53,13 @@ fn main() {
                     .unwrap();
                 let Some(str_t) = ctx.get_struct_type("str") else { unreachable!("how do you not have the basic str type????")};
                 let jitstd = ctx.create_module("jitstd");
-                jitstd::add_printstr(&ctx, &jitstd, str_t.as_basic_type_enum());
+                let fun = jitstd::add_printstr(&ctx, &jitstd, str_t.as_basic_type_enum());
+                jit.add_global_mapping(&fun, jitstd::print_str as usize);
                 jit.add_module(&jitstd).unwrap();
                 jitstd.print_to_file("./jitstd.llvm").unwrap();
                 // TODO: Jit redirects.
                 unsafe {
-                    jit.get_function::<unsafe extern "C" fn() -> ()>("main")
+                    jit.get_function::<unsafe extern "C" fn()>("main")
                         .unwrap()
                         .call();
                 }

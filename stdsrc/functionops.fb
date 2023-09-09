@@ -1,0 +1,12 @@
+public let pipe a b = b a
+
+public let |> a b = pipe a b
+
+public let uncurry fun (a,b) = fun a b
+
+public let curry fun a b = fun (a,b) 
+
+public let compose a b c = a c |> b
+
+public let >>> a b = compose a b
+

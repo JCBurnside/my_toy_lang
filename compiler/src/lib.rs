@@ -15,7 +15,10 @@ mod util;
 use code_gen::CodeGen;
 use typed_ast::{TypedDeclaration, TypedModuleDeclaration};
 // use code_gen::CodeGen;
-use inkwell::module::Module;
+use inkwell::{
+    module::Module,
+    targets::{CodeModel, Target, TargetMachine},
+};
 use lexer::TokenStream;
 use parser::Parser;
 use types::{ResolvedType, TypeResolver};
@@ -33,15 +36,33 @@ pub fn from_file<'ctx>(
     // let file = File::open(file).map_err(Box::new).map_err(|err| vec![err as Box<dyn Display>])?;
     // let file = BufReader::new(file);
     // let lex = TokenStream::from_iter(file.chars().map(|r| r.unwrap()));
+
+    // file contents
     let contents = std::fs::read_to_string(file)
         .map_err(Box::new)
         .map_err(|err| vec![err as Box<dyn Display>])?;
+    // lexer
     let strm = TokenStream::from_source(&contents);
+    // parser
     let parser = Parser::from_stream(strm);
     let module = ctx.create_module(file.file_stem().unwrap().to_str().unwrap());
+    // set for the llvm module
+    let type_resolver = TypeResolver::new(ctx);
     let file_name = file.file_stem().unwrap();
     module.set_source_file_name(file_name.to_str().unwrap());
-    let type_resolver = TypeResolver::new(ctx);
+    // target specifics eg usize/isize and prefered alignments.  also used to get di
+    let target_triple = TargetMachine::get_default_triple();
+    let target = Target::from_triple(&target_triple).unwrap();
+    let target_machine = target
+        .create_target_machine(
+            &target_triple,
+            TargetMachine::get_host_cpu_name().to_str().unwrap(),
+            &TargetMachine::get_host_cpu_features().to_str().unwrap(),
+            inkwell::OptimizationLevel::None,
+            inkwell::targets::RelocMode::Default,
+            CodeModel::Default,
+        )
+        .unwrap();
     let code_gen = CodeGen::with_module(
         &ctx,
         module,
@@ -49,7 +70,9 @@ pub fn from_file<'ctx>(
         fwd_declarations.clone(),
         HashMap::new(),
         MultiMap::new(),
+        target_machine.get_target_data(),
     );
+
     let ast = parser.module(file_name.to_str().unwrap().to_string());
     let mut ast = TypedModuleDeclaration::from(ast, &fwd_declarations); //TODO: foward declare std lib
     ast.lower_generics(&HashMap::new());
@@ -57,6 +80,7 @@ pub fn from_file<'ctx>(
         TypedDeclaration::Value(it) => it.generictypes.is_empty(),
         _ => true,
     });
+
     let module = code_gen.compile_program(vec![ast], false, is_debug);
     Ok(module)
 }
@@ -67,7 +91,7 @@ mod tests {
 
     use inkwell::{
         context::Context,
-        targets::{InitializationConfig, Target},
+        targets::{CodeModel, InitializationConfig, Target, TargetMachine, TargetTriple},
     };
     use multimap::MultiMap;
 
@@ -88,7 +112,18 @@ let main _ : () -> () =
         Target::initialize_native(&InitializationConfig::default()).unwrap();
         let ctx = Context::create();
         let type_resolver = TypeResolver::new(&ctx);
-
+        let target_triple = TargetMachine::get_default_triple();
+        let target = Target::from_triple(&target_triple).unwrap();
+        let target_machine = target
+            .create_target_machine(
+                &target_triple,
+                TargetMachine::get_host_cpu_name().to_str().unwrap(),
+                &TargetMachine::get_host_cpu_features().to_str().unwrap(),
+                inkwell::OptimizationLevel::None,
+                inkwell::targets::RelocMode::Default,
+                CodeModel::Default,
+            )
+            .unwrap();
         let parser = crate::parser::Parser::from_source(SRC);
         let ast = parser.module("test".to_string());
         let mut ast = crate::typed_ast::TypedModuleDeclaration::from(ast, &HashMap::new());
@@ -100,6 +135,7 @@ let main _ : () -> () =
             HashMap::new(),
             HashMap::new(),
             MultiMap::new(),
+            target_machine.get_target_data(),
         );
         let module = code_gen.compile_program(vec![ast], true, true);
         let llvm = module.print_to_string();

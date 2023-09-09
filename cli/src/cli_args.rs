@@ -10,7 +10,7 @@ pub struct Arguments {
     #[arg(short, long)]
     pub out_file: Option<PathBuf>,
 
-    #[arg(long = "llvm", default_value_t = true)]
+    #[arg(long = "llvm", default_value_t = false)]
     pub output_llvm: bool,
 
     pub file: PathBuf,

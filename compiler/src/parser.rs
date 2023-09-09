@@ -1,9 +1,16 @@
-use std::{collections::{HashSet, HashMap}, iter::Peekable, str::Chars};
+use std::{
+    collections::{HashMap, HashSet},
+    iter::Peekable,
+    str::Chars,
+};
 
 use itertools::Itertools;
 
 use crate::{
-    ast::{self, BinaryOpCall, Expr, FnCall, Statement, ValueDeclaration, ValueType, StructConstruction},
+    ast::{
+        self, BinaryOpCall, Expr, FnCall, Statement, StructConstruction, ValueDeclaration,
+        ValueType,
+    },
     lexer::TokenStream,
     tokens::Token,
     types::{self, ResolvedType},
@@ -85,10 +92,12 @@ where
                 Ok(Statement::Declaration(self.fn_declaration(Vec::new())?))
             }
             Some((Token::Return, _)) => self.ret(),
-             // hmmm should handle if it's actually a binary op call esp and/or compose.
+            // hmmm should handle if it's actually a binary op call esp and/or compose.
             Some((Token::Ident(_), _)) =>
             // for now last statement in a block is not treated as return though will allow for that soon.
-                Ok(Statement::FnCall(self.function_call()?.0)), 
+            {
+                Ok(Statement::FnCall(self.function_call()?.0))
+            }
             _ => unreachable!("how?"),
         }
     }
@@ -151,10 +160,16 @@ where
                 {
                     let (call, loc) = self.function_call()?;
                     Ok((Expr::FnCall(call), loc))
-                } else if let Some((Token::CurlOpen,_)) = self.stream.clone().skip(1).skip_while(|(it,_)| matches!(it,Token::NewLine|Token::BeginBlock)).next() {
+                } else if let Some((Token::CurlOpen, _)) = self
+                    .stream
+                    .clone()
+                    .skip(1)
+                    .skip_while(|(it, _)| matches!(it, Token::NewLine | Token::BeginBlock))
+                    .next()
+                {
                     let strct = self.struct_construct()?;
                     let loc = strct.loc;
-                    Ok((Expr::StructConstruction(strct),loc))
+                    Ok((Expr::StructConstruction(strct), loc))
                 } else {
                     self.value()
                 }
@@ -267,34 +282,45 @@ where
         }
     }
 
-    fn struct_construct(&mut self) -> Result<StructConstruction,ParseError> {
+    fn struct_construct(&mut self) -> Result<StructConstruction, ParseError> {
         let Some((Token::Ident(ident),loc)) = self.stream.next() else {unreachable!()};
-        let _ : Vec<_> = self.stream.peeking_take_while(|(t,_)| matches!(t,Token::BeginBlock|Token::NewLine)).collect();
-        if let Some((Token::Colon,_)) = self.stream.peek() {
+        let _: Vec<_> = self
+            .stream
+            .peeking_take_while(|(t, _)| matches!(t, Token::BeginBlock | Token::NewLine))
+            .collect();
+        if let Some((Token::Colon, _)) = self.stream.peek() {
             todo!("explicit generics collection")
         }
         let Some((Token::CurlOpen,_)) = self.stream.next() else { unreachable!() };
         let mut fields = HashMap::new();
-        while let Some((Token::Ident(_),_)) = self.stream.peek() {
+        while let Some((Token::Ident(_), _)) = self.stream.peek() {
             let Some((Token::Ident(ident),loc)) = self.stream.next() else {unreachable!()};
             let Some((Token::Colon,_)) = self.stream.next() else {todo!("handle infered assignment")};
             let expr = match self.next_expr() {
-                Ok((expr,_)) => expr,
+                Ok((expr, _)) => expr,
                 Err(e) => {
                     println!("{:?}", e);
                     Expr::Error
-                },
+                }
             };
             if fields.contains_key(&ident) {
-                let (_,loc) : &(_,crate::Location) = &fields[&ident];
+                let (_, loc): &(_, crate::Location) = &fields[&ident];
                 println!("already declared at line {} column {}", loc.0, loc.1)
             } else {
-                fields.insert(ident, (expr,loc));
+                fields.insert(ident, (expr, loc));
             }
         }
-        let _ : Vec<_> = self.stream.peeking_take_while(|(t,_)| matches!(t,Token::EndBlock|Token::NewLine)).collect();
+        let _: Vec<_> = self
+            .stream
+            .peeking_take_while(|(t, _)| matches!(t, Token::EndBlock | Token::NewLine))
+            .collect();
         let Some((Token::CurlClose,_)) = self.stream.next() else { println!("not closed"); return Err(ParseError { span: loc, reason: ParseErrorReason::UnbalancedBraces }) };
-         Ok(StructConstruction { loc, fields, generics : Vec::new(), ident })
+        Ok(StructConstruction {
+            loc,
+            fields,
+            generics: Vec::new(),
+            ident,
+        })
     }
 
     fn ret(&mut self) -> Result<Statement, ParseError> {
@@ -1621,14 +1647,23 @@ for<T,U> type Tuple = {
 
     #[test]
     fn struct_construction() {
-        const SRC : &'static str = "Foo { a : 0 }";
+        const SRC: &'static str = "Foo { a : 0 }";
         let mut parser = Parser::from_source(SRC);
         assert_eq!(
-            ast::Expr::StructConstruction(StructConstruction { 
-                loc: (0,1), 
-                fields: HashMap::from(
-                    [("a".to_string(),(Expr::NumericLiteral { value: "0".to_string(), ty: types::INT32 },(0,7)))]
-                ), generics: Vec::new(), ident: "Foo".to_string()
+            ast::Expr::StructConstruction(StructConstruction {
+                loc: (0, 1),
+                fields: HashMap::from([(
+                    "a".to_string(),
+                    (
+                        Expr::NumericLiteral {
+                            value: "0".to_string(),
+                            ty: types::INT32
+                        },
+                        (0, 7)
+                    )
+                )]),
+                generics: Vec::new(),
+                ident: "Foo".to_string()
             }),
             parser.next_expr().unwrap().0
         )

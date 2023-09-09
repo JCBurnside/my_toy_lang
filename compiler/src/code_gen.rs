@@ -1,15 +1,17 @@
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::iter::once;
+use std::process::Output;
 
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::debug_info::{
     AsDIScope, DICompileUnit, DIFile, DIFlags, DIFlagsConstants, DILocalVariable, DISubprogram,
-    DWARFSourceLanguage, DebugInfoBuilder,
+    DIType, DWARFSourceLanguage, DebugInfoBuilder,
 };
 use inkwell::module::Module;
-use inkwell::types::{AnyTypeEnum, BasicType};
+use inkwell::targets::TargetData;
+use inkwell::types::{AnyTypeEnum, BasicType, BasicTypeEnum};
 use inkwell::values::{
     AnyValue, AnyValueEnum, BasicValue, BasicValueEnum, CallableValue, FunctionValue, GlobalValue,
     PointerValue,
@@ -21,8 +23,8 @@ use itertools::Itertools;
 use multimap::MultiMap;
 
 use crate::typed_ast::{
-    collect_args, TypedBinaryOpCall, TypedDeclaration, TypedExpr, TypedFnCall, TypedStatement,
-    TypedValueDeclaration, TypedValueType,
+    collect_args, ResolvedTypeDeclaration, StructDefinition, TypedBinaryOpCall, TypedDeclaration,
+    TypedExpr, TypedFnCall, TypedStatement, TypedValueDeclaration, TypedValueType,
 };
 use crate::types::{self, ResolvedType, TypeResolver};
 
@@ -32,42 +34,47 @@ pub struct CodeGen<'ctx> {
     builder: Builder<'ctx>,
     type_resolver: TypeResolver<'ctx>,
     known_functions: HashMap<String, GlobalValue<'ctx>>,
+    known_types: HashMap<String, ResolvedTypeDeclaration>,
     incomplete_functions: HashMap<String, FunctionValue<'ctx>>, //this should be the ones left to compile.  sometimes same as above
     _known_ops: MultiMap<String, FunctionValue<'ctx>>,
     known_values: HashMap<String, BasicValueEnum<'ctx>>,
     locals: HashMap<String, PointerValue<'ctx>>,
     current_module: String,
+    target_info: TargetData,
     // debug info starts here
     dibuilder: Option<DebugInfoBuilder<'ctx>>,
     compile_unit: Option<DICompileUnit<'ctx>>,
     difile: Option<DIFile<'ctx>>,
     difunction: Option<DISubprogram<'ctx>>,
     dilocals: HashMap<String, DILocalVariable<'ctx>>, // curried_locals : HashMap<String, (PointerValue<'ctx>,ResolvedType)>,
+    ditypes: HashMap<String, DIType<'ctx>>,
+    needsdi: Vec<ResolvedTypeDeclaration>,
 }
 
 impl<'ctx> CodeGen<'ctx> {
     pub fn with_module(
         ctx: &'ctx Context,
         module: Module<'ctx>,
-        mut type_resolver: TypeResolver<'ctx>,
+        type_resolver: TypeResolver<'ctx>,
         seed_functions: HashMap<String, ResolvedType>,
         known_values: HashMap<String, BasicValueEnum<'ctx>>,
         seed_ops: MultiMap<String, FunctionValue<'ctx>>,
+        target_info: TargetData,
     ) -> Self {
         let builder = ctx.create_builder();
         let known_functions = seed_functions
             .into_iter()
             .map(|(name, ty)| {
-                let ty = module
-                    .get_function(&name)
-                    .unwrap_or_else(|| {
-                        module.add_function(
-                            &name,
-                            type_resolver.resolve_type_as_function(&ty),
-                            None,
-                        )
-                    })
-                    .as_global_value();
+                let ty = module.get_global(&name).unwrap_or_else(|| {
+                    module.add_global(
+                        ctx.struct_type(
+                            &[ctx.i8_type().ptr_type(AddressSpace::default()).into()],
+                            false,
+                        ),
+                        None,
+                        &name,
+                    )
+                });
                 (name, ty)
             })
             .collect();
@@ -80,6 +87,7 @@ impl<'ctx> CodeGen<'ctx> {
             known_functions,
             incomplete_functions: HashMap::new(),
             known_values,
+            known_types: HashMap::new(),
             _known_ops: seed_ops,
             locals: HashMap::new(),
             current_module: String::new(),
@@ -88,15 +96,48 @@ impl<'ctx> CodeGen<'ctx> {
             difile: None,
             difunction: None,
             dilocals: HashMap::new(), // curried_locals : HashMap::new(),
+            target_info,
+            ditypes: HashMap::new(),
+            needsdi: Vec::new(),
         }
     }
 
     fn compile_function(&mut self, decl: TypedValueDeclaration) {
         let v = self.incomplete_functions.get(&decl.ident).unwrap().clone();
-
         if let Some(dibuilder) = &self.dibuilder {
             let Some(difile) = self.difile.as_ref() else { unreachable!() };
-            let fnty = self.type_resolver.get_di_fn(&decl.ty, dibuilder, difile);
+            let fnty = {
+                let (args, rt) = decl.ty.as_c_function();
+                #[allow(non_snake_case)]
+                let FUNCTION_NAME = "<Function>".to_string();
+                let rt_name = if rt.is_function() {
+                    FUNCTION_NAME.clone()
+                } else {
+                    rt.to_string()
+                };
+                let rtdi = self.ditypes[&rt_name];
+                let args = args
+                    .into_iter()
+                    .map(|it| {
+                        let it_name = it.to_string();
+                        self.ditypes[if it.is_function() {
+                            &FUNCTION_NAME
+                        } else {
+                            &it_name
+                        }]
+                    })
+                    .collect_vec();
+                dibuilder.create_subroutine_type(
+                    *difile,
+                    if rt.is_void_or_unit() {
+                        None
+                    } else {
+                        Some(rtdi)
+                    },
+                    &args,
+                    DIFlags::PUBLIC,
+                )
+            };
             let ident = self.current_module.clone() + "$" + &decl.ident;
             let fun_scope = dibuilder.create_function(
                 difile.as_debug_info_scope(),
@@ -166,7 +207,7 @@ impl<'ctx> CodeGen<'ctx> {
                 let Some(dibuilder) = &self.dibuilder else { unreachable!() };
                 let Some(file) = &self.difile else { unreachable!() };
                 let ty = &decl.ty.as_c_function().0[idx];
-                let ty = self.type_resolver.get_di(ty, dibuilder);
+                let ty = self.ditypes[&ty.to_string()];
                 let local = dibuilder.create_parameter_variable(
                     fnscope.as_debug_info_scope(),
                     &arg_name.ident,
@@ -190,6 +231,7 @@ impl<'ctx> CodeGen<'ctx> {
         }
         let last_param = v.get_last_param().unwrap();
         let last_param_info = decl.args.last().unwrap();
+        //TODO! handle creating sret functions for returning stuff like [T;N]
         let arg = self
             .builder
             .build_alloca(last_param.get_type(), &last_param_info.ident);
@@ -199,7 +241,12 @@ impl<'ctx> CodeGen<'ctx> {
             let Some(file) = &self.difile else { unreachable!() };
             let types = decl.ty.as_c_function().0;
             let ty = types.last().unwrap();
-            let ty = self.type_resolver.get_di(ty, dibuilder);
+            let ty_name = if ty.is_function() {
+                "<Function>".to_string()
+            } else {
+                ty.to_string()
+            };
+            let ty = self.ditypes[&ty_name];
             let local = dibuilder.create_parameter_variable(
                 fnscope.as_debug_info_scope(),
                 &last_param_info.ident,
@@ -312,7 +359,7 @@ impl<'ctx> CodeGen<'ctx> {
                             &ident,
                             file.clone(),
                             loc.0.try_into().unwrap(),
-                            self.type_resolver.get_di(&ty, dibuilder),
+                            self.ditypes[&ty.to_string()],
                             false,
                             DIFlags::ZERO,
                             0,
@@ -476,6 +523,7 @@ impl<'ctx> CodeGen<'ctx> {
                 let arg_t = self.type_resolver.resolve_arg_type(&arg_t);
                 let arg = self.compile_expr(*arg);
                 let arg: BasicValueEnum = arg.try_into().unwrap();
+                let value_t = value.get_ty();
                 let value = self.compile_expr(*value);
                 if let Some(dibuilder) = &self.dibuilder {
                     let loc = dibuilder.create_debug_location(
@@ -494,29 +542,9 @@ impl<'ctx> CodeGen<'ctx> {
                                 let target_fun =
                                     self.builder.build_struct_gep(target, 0, "").unwrap();
                                 let target_fun = self.builder.build_load(target_fun, "");
-                                let ty = if let ResolvedType::Function { .. } = rt {
-                                    self.ctx
-                                        .struct_type(
-                                            &[self
-                                                .ctx
-                                                .i8_type()
-                                                .ptr_type(AddressSpace::default())
-                                                .into()],
-                                            false,
-                                        )
-                                        .ptr_type(AddressSpace::default())
-                                        .as_basic_type_enum()
-                                } else {
-                                    self.type_resolver.resolve_type_as_basic(rt)
-                                };
-                                let ty = ty
-                                    .fn_type(
-                                        &[
-                                            strct_t.ptr_type(AddressSpace::default()).into(),
-                                            arg_t.into(),
-                                        ],
-                                        false,
-                                    )
+                                let ty = self
+                                    .type_resolver
+                                    .resolve_type_as_function(&value_t)
                                     .ptr_type(AddressSpace::default());
                                 let target_fun = self
                                     .builder
@@ -699,27 +727,146 @@ impl<'ctx> CodeGen<'ctx> {
                 let v = ty.const_int(value.bytes().next().unwrap() as u64, false);
                 v.as_any_value_enum()
             }
+            TypedExpr::StructConstruction(con) => {
+                let target_t = self.ctx.get_struct_type(&con.ident).unwrap();
+                let out = self.builder.build_malloc(target_t, "").unwrap();
+
+                let ResolvedTypeDeclaration::Struct(def) = self.known_types.get(&con.ident).unwrap().clone() else { unreachable!() };
+                let order = con.fields.into_iter().map(|(field, expr)| {
+                    return (
+                        expr,
+                        def.fields
+                            .iter()
+                            .find_position(|it| &it.name == &field)
+                            .unwrap()
+                            .0,
+                    );
+                });
+                for ((value, loc), offest) in order {
+                    let target_gep = self
+                        .builder
+                        .build_struct_gep(out, offest as u32, "")
+                        .unwrap();
+                    if let Some(dibuilder) = &self.dibuilder {
+                        if let Some(scope) = &self.difunction {
+                            dibuilder.create_debug_location(
+                                self.ctx,
+                                loc.0 as u32,
+                                loc.1 as u32,
+                                scope.as_debug_info_scope(),
+                                None,
+                            );
+                        }
+                    }
+                    let result = convert_to_basic_value(self.compile_expr(value));
+                    self.builder.build_store(target_gep, result);
+                }
+                out.as_any_value_enum()
+            }
             TypedExpr::ArrayLiteral { .. } => todo!(),
             TypedExpr::ListLiteral { .. } => todo!(),
             TypedExpr::TupleLiteral { .. } => todo!(),
             TypedExpr::ErrorNode => unreachable!(),
-            TypedExpr::StructConstruction(_) => todo!(),
         }
     }
 
+    fn add_struct_di(&mut self, def: &StructDefinition) -> bool {
+        let Some(dibuilder) = &self.dibuilder else {unreachable!()};
+        let Some(file) = &self.difile else {unreachable!()};
+        let fields = def
+            .fields
+            .iter()
+            .map(|field| (field.name.clone(), field.ty.clone(), field.loc))
+            .collect_vec();
+        let fields_no_name = fields
+            .iter()
+            .map(|(_, it, _)| self.type_resolver.resolve_type_as_basic(it.clone()))
+            .collect_vec();
+        if fields
+            .iter()
+            .any(|(_, field, _)| !self.ditypes.contains_key(&field.to_string()))
+        {
+            return false;
+        }
+        let strct = self.ctx.get_struct_type(&def.ident).unwrap();
+        let info: Vec<(DIType<'ctx>, u64)> =
+            fields.into_iter().fold(Vec::new(), |mut out, field| {
+                let ditype = self.ditypes[&field.1.to_string()];
+                let last = out.last().map_or(0, |(_, it)| *it);
+                let size = ditype.get_size_in_bits();
+                let ty = dibuilder.create_member_type(
+                    file.as_debug_info_scope(),
+                    &field.0,
+                    *file,
+                    field.2 .0 as u32,
+                    size,
+                    ditype.get_align_in_bits(),
+                    last,
+                    DIFlags::PUBLIC,
+                    ditype,
+                );
+                out.push((ty.as_type(), last + size));
+                out
+            });
+        let size = 0;
+        let Some(discope) = &self.difile else {unreachable!()};
+        let difields = info.into_iter().map(|(it, _)| it).collect_vec();
+        let di_struct = dibuilder.create_struct_type(
+            discope.as_debug_info_scope(),
+            &def.ident,
+            *discope,
+            def.loc.0 as u32,
+            size,
+            self.target_info.get_preferred_alignment(&strct),
+            DIFlags::PUBLIC,
+            None,
+            &difields,
+            0,
+            None,
+            "",
+        );
+        true
+    }
     pub fn compile_decl(&mut self, decl: TypedDeclaration) -> Module<'ctx> {
         match decl {
             TypedDeclaration::Mod(_) => todo!(),
             TypedDeclaration::Value(data) => {
                 self.compile_function(data);
             }
-            TypedDeclaration::TypeDefinition(_) => todo!(),
+            TypedDeclaration::TypeDefinition(def) => match def {
+                crate::typed_ast::ResolvedTypeDeclaration::Alias(_, _) => (),
+                crate::typed_ast::ResolvedTypeDeclaration::Struct(def) => {
+                    if !def.generics.is_empty() {
+                        return self.module.clone();
+                    }
+                    let strct = self.ctx.get_struct_type(&def.ident).unwrap();
+                    self.known_types.insert(
+                        def.ident.clone(),
+                        ResolvedTypeDeclaration::Struct(def.clone()),
+                    );
+                    let fields = def
+                        .fields
+                        .iter()
+                        .map(|field| {
+                            (
+                                field.name.clone(),
+                                self.type_resolver.resolve_type_as_basic(field.ty.clone()),
+                            )
+                        })
+                        .collect_vec();
+                    let fields_no_name = fields.iter().map(|(_, it)| it.clone()).collect_vec();
+                    strct.set_body(&fields_no_name, false);
+                    if let Some(dibuilder) = &self.dibuilder {
+                        if !self.add_struct_di(&def) {
+                            self.needsdi.push(ResolvedTypeDeclaration::Struct(def));
+                        }
+                    }
+                }
+            },
         }
         if let Some(dibuilder) = &mut self.dibuilder {
             dibuilder.finalize()
         }
-        #[cfg(debug_assertions)]
-        let _ = self.module.print_to_file("./what.llvm");
         self.module.clone()
     }
 
@@ -732,7 +879,15 @@ impl<'ctx> CodeGen<'ctx> {
                     self.known_functions.insert(decl.ident.clone(), fun);
                 }
             }
-            TypedDeclaration::TypeDefinition(_) => todo!(),
+            TypedDeclaration::TypeDefinition(def) => match def {
+                crate::typed_ast::ResolvedTypeDeclaration::Alias(_, _) => (),
+                crate::typed_ast::ResolvedTypeDeclaration::Struct(decl) => {
+                    if decl.generics.len() != 0 {
+                        return;
+                    }
+                    let _strct = self.ctx.opaque_struct_type(&decl.ident);
+                }
+            },
         }
     }
 
@@ -778,7 +933,14 @@ impl<'ctx> CodeGen<'ctx> {
             let arg_t = self.type_resolver.resolve_type_as_basic(*arg_t);
             rt.fn_type(&[curry_placeholder.into(), arg_t.into()], false)
         } else {
-            let rt = self.type_resolver.resolve_type_as_basic(*rt);
+            let rt = if rt.is_user() {
+                self.type_resolver
+                    .resolve_type_as_basic(*rt)
+                    .ptr_type(AddressSpace::default())
+                    .as_basic_type_enum()
+            } else {
+                self.type_resolver.resolve_type_as_basic(*rt)
+            };
             let arg_t = self.type_resolver.resolve_type_as_basic(*arg_t);
             rt.fn_type(&[curry_placeholder.into(), arg_t.into()], false)
         };
@@ -793,11 +955,9 @@ impl<'ctx> CodeGen<'ctx> {
             .tuple_windows()
             .enumerate()
         {
-            let bb = self.ctx.append_basic_block(dbg!(*curr), "");
+            let bb = self.ctx.append_basic_block(*curr, "");
             self.builder.position_at_end(bb);
-            let ret_t = self
-                .ctx
-                .struct_type(dbg!(&curried_args[..=(idx + 1)]), false);
+            let ret_t = self.ctx.struct_type(&curried_args[..=(idx + 1)], false);
             let ret = self.builder.build_malloc(ret_t, "ret").unwrap();
             let next_fn_ptr = self.builder.build_bitcast(
                 next.as_global_value().as_pointer_value(),
@@ -857,7 +1017,7 @@ impl<'ctx> CodeGen<'ctx> {
 
     pub fn compile_module(
         &mut self,
-        ast: crate::typed_ast::TypedModuleDeclaration,
+        mut ast: crate::typed_ast::TypedModuleDeclaration,
     ) -> Module<'ctx> {
         if self.dibuilder.is_some() {
             let debug_metadata_version = self.ctx.i32_type().const_int(3, false);
@@ -867,13 +1027,43 @@ impl<'ctx> CodeGen<'ctx> {
                 debug_metadata_version,
             )
         }
+
+        ast.declarations.sort_by(|a, b| match (a, b) {
+            (TypedDeclaration::Value(_), TypedDeclaration::Value(_)) => std::cmp::Ordering::Equal,
+            (_, TypedDeclaration::Value(_)) => std::cmp::Ordering::Less,
+            (TypedDeclaration::Value(_), _) => std::cmp::Ordering::Greater,
+            _ => std::cmp::Ordering::Equal,
+        });
+
         for decl in &ast.declarations {
             self.create_define(decl);
         }
-
+        #[cfg(debug_assertions)]
+        let _ = self.module.print_to_file("./debug.llvm");
         for decl in ast.declarations {
             self.compile_decl(decl);
         }
+        let mut prev_len = self.needsdi.len();
+        while self.needsdi.len() > 0 {
+            let mut to_remove = Vec::new();
+            for (idx, def) in self.needsdi.clone().iter().enumerate() {
+                let result = match def {
+                    ResolvedTypeDeclaration::Struct(def) => self.add_struct_di(def),
+                    _ => unreachable!(),
+                };
+                if result {
+                    to_remove.push(idx);
+                }
+            }
+            for (offset, to_remove) in to_remove.into_iter().enumerate() {
+                self.needsdi.remove(to_remove + offset);
+            }
+            if prev_len == self.needsdi.len() {
+                panic!("di is impossible")
+            }
+            prev_len = self.needsdi.len();
+        }
+
         if let Some(dibuilder) = &self.dibuilder {
             dibuilder.finalize()
         }
@@ -887,6 +1077,7 @@ impl<'ctx> CodeGen<'ctx> {
         is_debug: bool,
     ) -> Module<'ctx> {
         use crate::util::ExtraUtilFunctions;
+
         let main_name = ast.iter().find_map(|file| {
             file.declarations
                 .iter()
@@ -927,7 +1118,92 @@ impl<'ctx> CodeGen<'ctx> {
                 "",
                 "",
             );
-
+            let difile = dibulder.create_file("builtin", "");
+            let ptr_t = self.ctx.i8_type().ptr_type(AddressSpace::default());
+            let ptr_size = self.target_info.get_bit_size(&ptr_t);
+            let ptr_align = self.target_info.get_preferred_alignment(&ptr_t);
+            let curry_t = self.ctx.struct_type(
+                &[self.ctx.i8_type().ptr_type(AddressSpace::default()).into()],
+                false,
+            );
+            let curry_t_size = self.target_info.get_bit_size(&curry_t);
+            let curry_t_align = self.target_info.get_preferred_alignment(&curry_t);
+            let int8_di = dibulder
+                .create_basic_type("int8", 8, 0, DIFlags::PUBLIC)
+                .unwrap();
+            let int8_ptr_di = dibulder.create_pointer_type(
+                "<NEXT_PTR>",
+                int8_di.as_type(),
+                8,
+                0,
+                AddressSpace::default(),
+            );
+            self.ditypes = [
+                ("int8", int8_di.as_type()),
+                (
+                    "int16",
+                    dibulder
+                        .create_basic_type("int16", 16, 0, DIFlags::PUBLIC)
+                        .unwrap()
+                        .as_type(),
+                ),
+                (
+                    "int32",
+                    dibulder
+                        .create_basic_type("int32", 32, 0, DIFlags::PUBLIC)
+                        .unwrap()
+                        .as_type(),
+                ),
+                (
+                    "int64",
+                    dibulder
+                        .create_basic_type("int64", 64, 0, DIFlags::PUBLIC)
+                        .unwrap()
+                        .as_type(),
+                ),
+                (
+                    "float32",
+                    dibulder
+                        .create_basic_type("float32", 32, 0, DIFlags::PUBLIC)
+                        .unwrap()
+                        .as_type(),
+                ),
+                (
+                    "float64",
+                    dibulder
+                        .create_basic_type("float64", 64, 0, DIFlags::PUBLIC)
+                        .unwrap()
+                        .as_type(),
+                ),
+                ("<Function>", {
+                    let pointee = dibulder.create_struct_type(
+                        compile_unit.as_debug_info_scope(),
+                        "<Function_internal>",
+                        difile,
+                        0,
+                        curry_t_size,
+                        curry_t_align,
+                        DIFlags::PUBLIC,
+                        None,
+                        &[int8_ptr_di.as_type()],
+                        0,
+                        None,
+                        "",
+                    );
+                    dibulder
+                        .create_pointer_type(
+                            "<Function>",
+                            pointee.as_type(),
+                            ptr_size,
+                            ptr_align,
+                            AddressSpace::default(),
+                        )
+                        .as_type()
+                }),
+            ]
+            .into_iter()
+            .map(|(a, b)| (a.to_string(), b))
+            .collect();
             self.dibuilder = Some(dibulder);
             self.compile_unit = Some(compile_unit);
         }
@@ -964,14 +1240,38 @@ impl<'ctx> CodeGen<'ctx> {
                         main,
                         self.ctx
                             .void_type()
-                            .fn_type(&[self.ctx.struct_type(&[], false).into()], false)
+                            .fn_type(
+                                &[
+                                    self.ctx
+                                        .struct_type(
+                                            &[self
+                                                .ctx
+                                                .i8_type()
+                                                .ptr_type(AddressSpace::default())
+                                                .into()],
+                                            false,
+                                        )
+                                        .ptr_type(AddressSpace::default())
+                                        .into(),
+                                    self.ctx.struct_type(&[], false).into(),
+                                ],
+                                false,
+                            )
                             .ptr_type(AddressSpace::default()),
                         "",
                     )
                     .into_pointer_value();
                 let main: CallableValue = main.try_into().unwrap();
-                self.builder
-                    .build_call(main, &[self.ctx.const_struct(&[], false).into()], "");
+                #[cfg(debug_assertions)]
+                let _ = self.module.print_to_file("./debug.llvm");
+                self.builder.build_call(
+                    main,
+                    &[
+                        gs.as_basic_value_enum().into(),
+                        self.ctx.const_struct(&[], false).into(),
+                    ],
+                    "",
+                );
                 self.builder.build_return(None);
             } else {
                 panic!("could not find suitable main");

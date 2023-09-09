@@ -33,3 +33,4 @@ let Result::is_ok &self =
     | Result::Err _ -> false
 
 let Result::is_err &self = !self.is_ok
+
