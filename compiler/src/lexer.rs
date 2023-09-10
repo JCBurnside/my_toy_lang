@@ -11,7 +11,7 @@ struct Lexer<I: Clone> {
 
 macro_rules! operators {
     () => {
-        '|' | '>' | '<' | '!' | '@' |  '$' | '=' | '&' | '+' | '-' | '\\' | '/' | '*' | '^'
+        '|' | '>' | '<' | '!' | '@' |  '$' | '=' | '&' | '+' | '-' | '\\' | '/' | '*' | '^' | '.'
     };
 }
 
@@ -186,7 +186,20 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                         (Token::Integer(c == '-', inside), (self.curr_line, start))
                     }
                 }
-
+                c if c.is_numeric() && self.source_stream.peek() == Some(&'.') => {
+                    let inner: String = self
+                        .source_stream
+                        .clone()
+                        .take_while(|c| (c.is_numeric()) || c == &'_' || c == &'.')
+                        .collect();
+                    for _ in 0..inner.len() {
+                        self.source_stream.next();
+                    }
+                    let start = self.curr_col;
+                    self.curr_col += inner.len();
+                    let inner = c.to_string() + &inner;
+                    (Token::FloatingPoint(false, inner), (self.curr_line, start))
+                }
                 operators!() => {
                     let inside: String = self
                         .source_stream
@@ -271,7 +284,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     let inner: String = self
                         .source_stream
                         .clone()
-                        .take_while(|c| (c.is_alphanumeric()) || c == &'_' || c == &'.')
+                        .take_while(|c| (c.is_alphanumeric()) || c == &'_')
                         .collect();
                     // self.source_stream.advance_by(,inner.len()).unwrap();
                     for _ in 0..inner.len() {

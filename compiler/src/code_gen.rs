@@ -834,7 +834,6 @@ impl<'ctx> CodeGen<'ctx> {
                 self.compile_function(data);
             }
             TypedDeclaration::TypeDefinition(def) => match def {
-                crate::typed_ast::ResolvedTypeDeclaration::Alias(_, _) => (),
                 crate::typed_ast::ResolvedTypeDeclaration::Struct(def) => {
                     if !def.generics.is_empty() {
                         return self.module.clone();
@@ -880,7 +879,6 @@ impl<'ctx> CodeGen<'ctx> {
                 }
             }
             TypedDeclaration::TypeDefinition(def) => match def {
-                crate::typed_ast::ResolvedTypeDeclaration::Alias(_, _) => (),
                 crate::typed_ast::ResolvedTypeDeclaration::Struct(decl) => {
                     if decl.generics.len() != 0 {
                         return;
@@ -1093,7 +1091,7 @@ impl<'ctx> CodeGen<'ctx> {
                         false
                     }
                 })
-                .map(|_| file.name.clone().unwrap_or_default() + "$main")
+                .map(|_| file.name.clone() + "$main")
         });
 
         if is_debug {
@@ -1209,10 +1207,10 @@ impl<'ctx> CodeGen<'ctx> {
         }
 
         for file in ast {
-            self.current_module = file.name.clone().unwrap_or("unknown.fb".to_string());
+            self.current_module = file.name.clone() + ".fb";
             if is_debug {
                 let Some(dibuilder) = &self.dibuilder else { unreachable!() };
-                let difile = dibuilder.create_file(file.name.as_ref().unwrap(), "");
+                let difile = dibuilder.create_file(&file.name, "");
                 self.difile = Some(difile);
             }
             self.compile_module(file);

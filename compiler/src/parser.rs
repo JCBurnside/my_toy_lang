@@ -78,7 +78,7 @@ where
         }
         ast::ModuleDeclaration {
             loc: None,
-            name: Some(name),
+            name,
             declarations: decls,
         }
     }
@@ -104,8 +104,6 @@ where
 
     pub fn next_expr(&mut self) -> Result<(crate::ast::Expr, crate::Location), ParseError> {
         let cloned_stream = self.stream.clone();
-        #[cfg(debug_assertions)]
-        let _test = self.stream.peek();
         match self.stream.clone().next() {
             Some((Token::GroupOpen, loc))
                 if matches!(self.stream.clone().nth(1), Some((Token::GroupClose, _))) =>
@@ -495,7 +493,11 @@ where
         }
         let mut fields = Vec::<ast::FieldDecl>::new();
         while let Some((Token::Ident(_), _)) = self.stream.clone().next() {
-            let Some((Token::Ident(name),loc)) = self.stream.next() else { return Err(ParseError { span: (0,10000), reason: ParseErrorReason::DeclarationError }) };
+            let Some((Token::Ident(name),loc)) =
+                self.stream.next()
+                else {
+                    return Err(ParseError { span: (0,10000), reason: ParseErrorReason::DeclarationError })
+                };
             let Some((Token::Colon,_)) = self.stream.next() else { return Err(ParseError { span: (0,10000), reason: ParseErrorReason::DeclarationError }) };
             let ty = self.collect_type()?;
             while let Some((Token::EndBlock | Token::NewLine, _)) = self.stream.clone().next() {
@@ -916,12 +918,15 @@ where
         for _ in 0..tokens.len() {
             self.stream.next();
         }
-        const PRECIDENCE: [(&'static str, usize, bool); 5] = [
-            ("**", 4, true),
-            ("*", 3, false),
-            ("/", 3, false),
-            ("+", 2, false),
-            ("-", 2, false),
+
+        // (name,weight,right associative)
+        const PRECIDENCE: [(&'static str, usize, bool); 6] = [
+            (".", usize::MAX, true),
+            ("**", 4, false),
+            ("*", 3, true),
+            ("/", 3, true),
+            ("+", 2, true),
+            ("-", 2, true),
         ];
         let mut output = Vec::with_capacity(tokens.len());
         let mut op_stack = Vec::with_capacity(tokens.len() / 3);
@@ -988,9 +993,12 @@ where
                             let Some(op_back) = op_stack.pop() else { unreachable!() };
                             output.push(ShuntingYardOptions::Op(op_back));
                         } else {
-                            op_stack.push((ident,loc));
+                            op_stack.push((ident.clone(),loc));
                             break;
                         }
+                    }
+                    if op_stack.last().is_none() {
+                        op_stack.push((ident,loc));
                     }
                 }
                 _ => break
@@ -1115,6 +1123,14 @@ enum ShuntingYardOptions {
     Expr((ast::Expr, crate::Location)),
     Op((String, crate::Location)),
 }
+impl std::fmt::Debug for ShuntingYardOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Expr(arg0) => f.debug_tuple("Expr").field(&arg0.0).finish(),
+            Self::Op(arg0) => f.debug_tuple("Op").field(&arg0.0).finish(),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -1129,14 +1145,10 @@ mod tests {
     #[test]
     #[ignore = "This is for singled out tests"]
     fn for_debugging_only() {
-        const SRC: &'static str = "let a : int32 -> int32 = foo b";
-        let _expr = Parser::from_source(SRC).next_expr().unwrap();
-        let ctx = Context::create();
-        let _type_resolver = TypeResolver::new(&ctx);
-        let _ty = Parser::from_source("int32 -> int32 -> int32")
-            .collect_type()
-            .unwrap();
+        let _expr = Parser::from_source(" 1 + 2  - 3").binary_op().unwrap().0;
+        let _othr = Parser::from_source("(1 + 2) - 3").binary_op().unwrap().0;
 
+        assert_eq!(_expr, _othr);
         // let expr = TypedExpr::try_from(&ctx, type_resolver, values, &HashSet::new(), expr).unwrap();
         // println!("{:?}",expr);
     }
@@ -1423,43 +1435,43 @@ let main _ : int32 -> int32 =
         assert_eq!(
             Expr::BinaryOpCall(BinaryOpCall {
                 loc: (0, 5),
-                operator: "+".to_string(),
                 lhs: Expr::NumericLiteral {
                     value: "100".to_string(),
                     ty: types::INT32
                 }
                 .boxed(),
                 rhs: Expr::BinaryOpCall(BinaryOpCall {
-                    loc: (0, 11),
-                    operator: "*".to_string(),
-                    lhs: Expr::NumericLiteral {
-                        value: "100".to_string(),
-                        ty: types::INT32
-                    }
+                    loc: (0, 17),
+                    lhs: Expr::BinaryOpCall(BinaryOpCall {
+                        loc: (0, 11),
+                        lhs: Expr::NumericLiteral {
+                            value: "100".to_string(),
+                            ty: types::INT32
+                        }
+                        .boxed(),
+                        rhs: Expr::ValueRead("foo".to_string()).boxed(),
+                        operator: "*".to_string()
+                    })
                     .boxed(),
                     rhs: Expr::BinaryOpCall(BinaryOpCall {
-                        loc: (0, 17),
-                        operator: "*".to_string(),
-                        lhs: Expr::ValueRead("foo".to_string()).boxed(),
-                        rhs: Expr::BinaryOpCall(BinaryOpCall {
-                            loc: (0, 24),
-                            operator: "-".to_string(),
-                            lhs: Expr::NumericLiteral {
-                                value: "10".to_string(),
-                                ty: types::INT32
-                            }
-                            .boxed(),
-                            rhs: Expr::NumericLiteral {
-                                value: "1".to_string(),
-                                ty: types::INT32
-                            }
-                            .boxed(),
-                        })
-                        .boxed()
+                        loc: (0, 24),
+                        lhs: Expr::NumericLiteral {
+                            value: "10".to_string(),
+                            ty: types::INT32
+                        }
+                        .boxed(),
+                        rhs: Expr::NumericLiteral {
+                            value: "1".to_string(),
+                            ty: types::INT32
+                        }
+                        .boxed(),
+                        operator: "-".to_string()
                     })
-                    .boxed()
+                    .boxed(),
+                    operator: "*".to_string()
                 })
-                .boxed()
+                .boxed(),
+                operator: "+".to_string()
             }),
             parser.next_expr().unwrap().0
         );
@@ -1510,6 +1522,40 @@ let main _ : int32 -> int32 =
                 generictypes: Vec::new(),
             }),
             parser.next_statement().unwrap()
+        );
+        //a b . 2 + c d . -
+        const SRC_MEMBER_ACCESS: &'static str = "a.b + 2 - c.d";
+        let mut parser = Parser::from_source(SRC_MEMBER_ACCESS);
+        assert_eq!(
+            ast::Expr::BinaryOpCall(BinaryOpCall {
+                loc: (0, 9),
+                lhs: ast::Expr::BinaryOpCall(BinaryOpCall {
+                    loc: (0, 5),
+                    lhs: ast::Expr::BinaryOpCall(BinaryOpCall {
+                        loc: (0, 2),
+                        lhs: ast::Expr::ValueRead("a".to_string()).boxed(),
+                        rhs: ast::Expr::ValueRead("b".to_string()).boxed(),
+                        operator: ".".to_string()
+                    })
+                    .boxed(),
+                    rhs: ast::Expr::NumericLiteral {
+                        value: "2".to_string(),
+                        ty: types::INT32
+                    }
+                    .boxed(),
+                    operator: "+".to_string()
+                })
+                .boxed(),
+                rhs: ast::Expr::BinaryOpCall(BinaryOpCall {
+                    loc: (0, 12),
+                    lhs: ast::Expr::ValueRead("c".to_string()).boxed(),
+                    rhs: ast::Expr::ValueRead("d".to_string()).boxed(),
+                    operator: ".".to_string()
+                })
+                .boxed(),
+                operator: "-".to_string()
+            }),
+            parser.next_expr().unwrap().0,
         )
     }
 

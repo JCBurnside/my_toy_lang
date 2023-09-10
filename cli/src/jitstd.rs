@@ -12,7 +12,7 @@ pub struct MyStr {
     end: *const u8,
 }
 
-pub unsafe fn print_str(_:*const std::ffi::c_void, my_str: *const MyStr) {
+pub unsafe fn print_str(_: *const std::ffi::c_void, my_str: *const MyStr) {
     let mut curr = (*my_str).start;
     while curr != (*my_str).end {
         print!("{}", *curr as char);
@@ -25,17 +25,15 @@ pub fn add_printstr<'ctx>(
     module: &Module<'ctx>,
     str_t: BasicTypeEnum<'ctx>,
 ) -> FunctionValue<'ctx> {
-    let putchar = module.add_function(
-        "putchar",
-        ctx.i32_type().fn_type(&[ctx.i8_type().into()], false),
-        None,
+    let fun_ty = ctx.void_type().fn_type(
+        &[
+            ctx.struct_type(&[], false)
+                .ptr_type(AddressSpace::default())
+                .into(),
+            str_t.ptr_type(AddressSpace::default()).into(),
+        ],
+        false,
     );
-    let fun_ty = ctx
-        .void_type()
-        .fn_type(&[
-            ctx.struct_type(&[], false).ptr_type(AddressSpace::default()).into(),
-            str_t.ptr_type(AddressSpace::default()).into()
-        ], false);
     let builder = ctx.create_builder();
     let gs = module.add_global(
         ctx.struct_type(

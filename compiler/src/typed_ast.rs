@@ -12,7 +12,7 @@ pub type ProgramTyped = Vec<FileTyped>;
 #[derive(Debug, PartialEq, Clone)]
 pub struct TypedModuleDeclaration {
     pub(crate) loc: Option<crate::Location>,
-    pub(crate) name: Option<String>,
+    pub(crate) name: String,
     pub(crate) declarations: Vec<TypedDeclaration>,
 }
 
@@ -108,7 +108,7 @@ pub enum TypedDeclaration {
 impl TypedDeclaration {
     fn get_ident(&self) -> String {
         match self {
-            Self::Mod(module) => module.name.as_ref().unwrap().clone(),
+            Self::Mod(module) => module.name.clone(),
             Self::Value(v) => v.ident.clone(),
             Self::TypeDefinition(decl) => decl.get_ident(),
         }
@@ -166,14 +166,13 @@ impl TypedDeclaration {
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum ResolvedTypeDeclaration {
-    Alias(String, ResolvedType),
+    // Alias(String, ResolvedType),
     // Enum(String, Vec<TypedEnumVariant>, crate::Location),
     Struct(StructDefinition),
 }
 impl ResolvedTypeDeclaration {
     pub(crate) fn get_depends_on(&self) -> Vec<ResolvedType> {
         match self {
-            ResolvedTypeDeclaration::Alias(_, old) if !old.is_generic() => vec![old.clone()],
             ResolvedTypeDeclaration::Struct(def) if def.generics.is_empty() => {
                 def.fields.iter().map(|field| field.ty.clone()).collect()
             }
@@ -186,57 +185,55 @@ impl ResolvedTypeDeclaration {
         known_types: &HashMap<String, ResolvedType>,
     ) -> Result<Self, TypingError> {
         match origin {
-            ast::TypeDefinition::Alias(new, old) => Ok(Self::Alias(new, old)),
+            // ast::TypeDefinition::Alias(new, old) => Ok(Self::Alias(new, old)),
             ast::TypeDefinition::Enum(_) => todo!(),
             ast::TypeDefinition::Struct(strct) => Ok(ResolvedTypeDeclaration::Struct(
                 StructDefinition::try_from(strct, known_types)?,
             )),
+            ast::TypeDefinition::Alias(_, _) => unreachable!(), //there should be no aliases left after canonializing
         }
     }
 
     fn lower_generics(&mut self, context: &mut LoweringContext) {
         match self {
-            ResolvedTypeDeclaration::Alias(_, old) => match old {
-                ResolvedType::User { name, generics } if !generics.is_empty() => {
-                    let resolved_name = name.clone()
-                        + "<"
-                        + &generics.iter().map(ResolvedType::to_string).join(",")
-                        + ">";
-                    if !context.generated_generics.contains_key(&resolved_name) {
-                        let mut target = context.globals.get(name).unwrap().clone();
-                        let zipped = target
-                            .get_generics()
-                            .into_iter()
-                            .zip(generics.iter().cloned())
-                            .collect_vec();
-                        target.replace_types(&zipped, context);
-                        target.lower_generics(context);
-                        let _ = context.generated_generics.insert(resolved_name, target);
-                    }
-                }
-                _ => (),
-            },
+            // ResolvedTypeDeclaration::Alias(_, old) => match old {
+            //     ResolvedType::User { name, generics } if !generics.is_empty() => {
+            //         let resolved_name = name.clone()
+            //             + "<"
+            //             + &generics.iter().map(ResolvedType::to_string).join(",")
+            //             + ">";
+            //         if !context.generated_generics.contains_key(&resolved_name) {
+            //             let mut target = context.globals.get(name).unwrap().clone();
+            //             let zipped = target
+            //                 .get_generics()
+            //                 .into_iter()
+            //                 .zip(generics.iter().cloned())
+            //                 .collect_vec();
+            //             target.replace_types(&zipped, context);
+            //             target.lower_generics(context);
+            //             let _ = context.generated_generics.insert(resolved_name, target);
+            //         }
+            //     }
+            //     _ => (),
+            // },
             ResolvedTypeDeclaration::Struct(stct) => stct.lower_generics(context),
         }
     }
 
     fn get_ident(&self) -> String {
         match self {
-            ResolvedTypeDeclaration::Alias(old, _) => old.clone(),
             ResolvedTypeDeclaration::Struct(strct) => strct.ident.clone(),
         }
     }
 
     fn get_generics(&self) -> Vec<String> {
         match self {
-            ResolvedTypeDeclaration::Alias(_, _) => todo!("allow for generic aliasing"),
             ResolvedTypeDeclaration::Struct(strct) => strct.generics.clone(),
         }
     }
 
     fn replace_types(&mut self, types: &[(String, ResolvedType)], context: &mut LoweringContext) {
         match self {
-            ResolvedTypeDeclaration::Alias(_, _) => todo!("allow for generic aliasing"),
             ResolvedTypeDeclaration::Struct(strct) => strct.replace_types(types, context),
         }
     }
@@ -843,7 +840,7 @@ impl TypedExpr {
                 let ResolvedType::Int { width, ..} = ty else { unreachable!() };
                 Ok(Self::IntegerLiteral { value, size: width })
             }
-            Expr::NumericLiteral { value, ty } if matches!(ty, ResolvedType::Float { width }) => {
+            Expr::NumericLiteral { value, ty } if matches!(ty, ResolvedType::Float { .. }) => {
                 let ResolvedType::Float { width} = ty else { unreachable!() };
 
                 Ok(Self::FloatLiteral { value, size: width })
@@ -872,7 +869,7 @@ impl TypedExpr {
                     Ok(Self::ValueRead(value, ty))
                 }
             }
-            Expr::ArrayLiteral { contents, loc } => {
+            Expr::ArrayLiteral { contents, .. } => {
                 let contents = contents
                     .into_iter()
                     .map(|value| TypedExpr::try_from(value, known_values, known_types, Vec::new()))
@@ -901,49 +898,14 @@ impl TypedExpr {
                     Ok(Self::ArrayLiteral { contents })
                 }
             }
+            #[allow(unused)]
             Expr::ListLiteral { contents, loc } => todo!(),
+            #[allow(unused)]
             Expr::TupleLiteral { contents, loc } => todo!(),
             Expr::StructConstruction(strct) => Ok(Self::StructConstruction(
                 TypedStructConstruction::from(strct, known_values, known_types)?,
             )),
             Expr::Error => Ok(Self::ErrorNode),
-        }
-    }
-
-    fn replace_value_name(
-        &mut self,
-        old_name: &str,
-        new_name: &String,
-        replaced: &Vec<(String, ResolvedType)>,
-    ) {
-        match self {
-            Self::BinaryOpCall(b) => {
-                b.lhs.replace_value_name(old_name, new_name, replaced);
-                b.rhs.replace_value_name(old_name, new_name, replaced);
-            }
-            Self::UnaryOpCall(u) => u.operand.replace_value_name(old_name, new_name, replaced),
-            Self::FnCall(call) => {
-                match call.arg.as_mut() {
-                    Some(arg) => arg.replace_value_name(old_name, new_name, replaced),
-                    None => (),
-                }
-                call.value.replace_value_name(old_name, new_name, replaced);
-            }
-            Self::ValueRead(ident, ty) if *ident == old_name => {
-                *ident = new_name.clone();
-                replaced
-                    .iter()
-                    .for_each(|(name, new_ty)| *ty = ty.replace_generic(&name, new_ty.clone()))
-            }
-            Self::ArrayLiteral { contents }
-            | Self::ListLiteral { contents }
-            | Self::TupleLiteral { contents } => {
-                for expr in contents.iter_mut() {
-                    expr.replace_value_name(old_name, new_name, replaced);
-                }
-            }
-            Self::ErrorNode => todo!(),
-            _ => (),
         }
     }
 
@@ -974,7 +936,6 @@ impl TypedExpr {
                 name: strct.ident.clone(),
                 generics: strct.generics.clone(),
             },
-            Self::ErrorNode => ResolvedType::Error,
         }
     }
 
@@ -1337,6 +1298,9 @@ impl TypedBinaryOpCall {
             }
         };
         match operator.as_str() {
+            "." => {
+                todo!()
+            }
             "*" | "+" | "/" | "-" => {
                 // TODO: need to add support for overloading this.
                 let lhs_t = lhs.get_ty();

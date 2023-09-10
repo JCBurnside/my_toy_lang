@@ -272,6 +272,26 @@ impl ResolvedType {
             ResolvedType::Error => todo!(),
         }
     }
+
+    pub fn replace(&self, nice_name: &str, actual: &str) -> Self {
+        match self {
+            Self::User { name, generics } => {
+                if name == nice_name {
+                    let out = self.clone();
+                    Self::User { name:actual.to_string(), generics:generics.clone() }
+                } else {
+                    Self::User {
+                        name: name.clone(),
+                        generics: generics
+                            .iter()
+                            .map(|it| it.replace(nice_name, actual))
+                            .collect(),
+                    }
+                }
+            }
+            _ => self.clone(),
+        }
+    }
 }
 
 impl ToString for ResolvedType {

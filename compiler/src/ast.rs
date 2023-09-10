@@ -3,6 +3,8 @@ use std::{
     num::NonZeroU8,
 };
 
+use itertools::Itertools;
+
 use crate::types::ResolvedType;
 #[allow(unused)]
 pub(crate) type File = ModuleDeclaration;
@@ -11,21 +13,89 @@ pub(crate) type Program = Vec<File>;
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct ModuleDeclaration {
     pub(crate) loc: Option<crate::Location>,
-    pub(crate) name: Option<String>,
+    pub(crate) name: String,
     pub(crate) declarations: Vec<Declaration>,
+}
+
+impl ModuleDeclaration {
+    pub fn canonialize(&mut self, mut path: Vec<String>) {
+        path.push(self.name.clone());
+        let to_remove = self
+            .declarations
+            .iter()
+            .enumerate()
+            .filter_map(|(pos, it)| match it {
+                Declaration::TypeDefinition(decl) => match decl {
+                    TypeDefinition::Alias(_, _) => Some(pos),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for (offset, idx) in to_remove.into_iter().enumerate() {
+            let Declaration::TypeDefinition(TypeDefinition::Alias(new,old)) = self.declarations.remove(idx-offset) else { unreachable!() };
+            for decl in &mut self.declarations {
+                decl.replace(&new, &old.to_string());
+            }
+        }
+        for i in 0..self.declarations.len() {
+            let (old_name,new_name) = match &mut self.declarations[i] {
+                Declaration::Mod(m) => {
+                    m.canonialize(path.clone());
+                    continue;
+                },
+                Declaration::Value(v) => {
+                    // todo check if externed.  if so no work needed.
+                    let old = v.ident.clone();
+                    v.ident = path.iter().cloned().join("::") + "::" + &v.ident;
+                    (old,v.ident.clone())
+                },
+                Declaration::TypeDefinition(def) => {
+                    let old = def.get_ident();
+                    let new = path.iter().cloned().join("::") + "::" + &old;
+                    (old,new)
+                },
+            };
+
+            for decl in &mut self.declarations {
+                decl.replace(&old_name, &new_name);
+            }
+        }
+        let mut holder = Vec::with_capacity(self.declarations.capacity());
+        std::mem::swap(&mut holder, &mut self.declarations);
+        for decl in holder {
+            match decl {
+                Declaration::Mod(m) => self.declarations.extend(m.declarations),
+                _ => self.declarations.push(decl),
+            }
+        }
+    }
 }
 
 #[derive(PartialEq, Eq, Debug)]
 pub(crate) enum Declaration {
+    #[allow(unused)]//TODO submoduling
     Mod(ModuleDeclaration),
     Value(ValueDeclaration),
     /// TODO
     TypeDefinition(TypeDefinition),
 }
 
+impl Declaration {
+
+    pub fn replace(&mut self, nice_name: &str, actual: &str) {
+        match self {
+            Self::Mod(_) => (), //do nothing as super mod alias should not leak into submodules
+            Self::TypeDefinition(def) => def.replace(nice_name, actual),
+            Self::Value(decl) => decl.replace(nice_name, actual),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub(crate) enum TypeDefinition {
     Alias(String, ResolvedType),
+    #[allow(unused)]
     Enum(EnumDeclation),
     Struct(StructDefinition),
 }
@@ -36,6 +106,18 @@ impl TypeDefinition {
             TypeDefinition::Alias(name, _) => name.clone(),
             TypeDefinition::Enum(_) => todo!(),
             TypeDefinition::Struct(strct) => strct.ident.clone(),
+        }
+    }
+
+    fn replace(&mut self, nice_name: &str, actual: &str) {
+        match self {
+            Self::Alias(_, ty) => *ty = ty.replace(nice_name, actual),
+            Self::Enum(_) => todo!(),
+            Self::Struct(strct) => {
+                for field in &mut strct.values {
+                    field.ty = field.ty.replace(nice_name, actual);
+                }
+            }
         }
     }
 }
@@ -49,6 +131,7 @@ pub(crate) struct EnumDeclation {
 }
 
 #[derive(PartialEq, Eq, Debug, Clone)]
+#[allow(unused)]
 pub(crate) enum EnumVariant {
     Unit(String, crate::Location),
     Tuple(String, Vec<ResolvedType>, crate::Location),
@@ -75,6 +158,16 @@ pub enum ValueType {
     Expr(Expr),
     Function(Vec<Statement>),
 }
+impl ValueType {
+    fn replace(&mut self, nice_name: &str, actual: &str) {
+        match self {
+            ValueType::Expr(expr) => expr.replace(nice_name, actual),
+            ValueType::Function(stmnts) => stmnts
+                .iter_mut()
+                .for_each(|it| it.replace(nice_name, actual)),
+        }
+    }
+}
 
 #[derive(PartialEq, Eq, Debug, Clone)]
 pub(crate) struct ArgDeclation {
@@ -90,8 +183,16 @@ pub struct ValueDeclaration {
     pub(crate) ident: String,
     pub(crate) args: Vec<ArgDeclation>,
     pub(crate) ty: Option<ResolvedType>,
-    pub(crate) value: ValueType, //need to figure out this. as value would be expr here but function would be a list of statements
+    pub(crate) value: ValueType,
     pub(crate) generictypes: Vec<String>,
+}
+impl ValueDeclaration {
+    fn replace(&mut self, nice_name: &str, actual: &str) {
+        if let Some(ty) = self.ty.as_mut() {
+            *ty = ty.replace(nice_name, actual);
+        }
+        self.value.replace(nice_name, actual);
+    }
 }
 
 #[derive(PartialEq, Eq, Debug)]
@@ -100,6 +201,16 @@ pub enum Statement {
     Return(Expr, crate::Location),
     FnCall(FnCall),
     Pipe(Pipe),
+}
+impl Statement {
+    fn replace(&mut self, nice_name: &str, actual: &str) {
+        match self {
+            Statement::Declaration(decl) => decl.replace(nice_name, actual),
+            Statement::Return(expr, _) => expr.replace(nice_name, actual),
+            Statement::FnCall(fncall) => fncall.replace(nice_name, actual),
+            Statement::Pipe(_) => todo!(),
+        }
+    }
 }
 
 #[derive(PartialEq, Eq, Debug)]
@@ -125,12 +236,24 @@ pub struct BinaryOpCall {
     pub(crate) rhs: Box<Expr>,
     pub(crate) operator: String,
 }
+impl BinaryOpCall {
+    fn replace(&mut self, nice_name: &str, actual: &str) {
+        self.lhs.replace(nice_name, actual);
+        self.rhs.replace(nice_name, actual);
+    }
+}
 
 #[derive(PartialEq, Eq, Debug)]
 pub struct FnCall {
     pub(crate) loc: crate::Location,
     pub(crate) value: Box<Expr>,
     pub(crate) arg: Option<Box<Expr>>,
+}
+impl FnCall {
+    fn replace(&mut self, nice_name: &str, actual: &str) {
+        self.value.replace(nice_name, actual);
+        self.arg.as_mut().map(|it| it.replace(nice_name, actual));
+    }
 }
 
 #[derive(PartialEq, Eq, Debug)]
@@ -139,6 +262,16 @@ pub struct StructConstruction {
     pub(crate) fields: HashMap<String, (Expr, crate::Location)>,
     pub(crate) generics: Vec<ResolvedType>,
     pub(crate) ident: String,
+}
+impl StructConstruction {
+    fn replace(&mut self, nice_name: &str, actual: &str) {
+        for (it, _) in self.fields.values_mut() {
+            it.replace(nice_name, actual);
+        }
+        for it in &mut self.generics {
+            *it = it.replace(nice_name, actual);
+        }
+    }
 }
 
 #[derive(PartialEq, Eq, Debug)]
@@ -168,6 +301,7 @@ pub enum Expr {
     FnCall(FnCall),
     /// basically an ident on it's own
     ValueRead(String),
+
     /// NOT IMPLEMENTED YET
     /// defined like [ expr, expr, expr, ... ]
     /// type [T;N]
@@ -192,4 +326,28 @@ pub enum Expr {
     },
 
     StructConstruction(StructConstruction),
+}
+impl Expr {
+    fn replace(&mut self, nice_name: &str, actual: &str) {
+        match self {
+            
+            Expr::ValueRead(read) if read == nice_name => {
+                *read = actual.to_string();
+            },
+            Expr::BinaryOpCall(bin) => bin.replace(nice_name, actual),
+            Expr::UnaryOpCall(_) => todo!("unary ops are not implemented yet"),
+            Expr::FnCall(call) => call.replace(nice_name, actual),
+            Expr::ListLiteral { contents, loc }
+            | Expr::TupleLiteral { contents, loc }
+            | Expr::ArrayLiteral { contents, loc } => contents
+                .iter_mut()
+                .for_each(|it| it.replace(nice_name, actual)),
+            Expr::StructConstruction(con) => con.replace(nice_name, actual),
+            Expr::Compose { lhs, rhs } => {
+                lhs.replace(nice_name, actual);
+                rhs.replace(nice_name, actual);
+            },
+            _=>(),
+        }
+    }
 }

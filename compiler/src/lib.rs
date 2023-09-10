@@ -31,6 +31,7 @@ pub fn from_file<'ctx>(
     ctx: &'ctx Context,
     fwd_declarations: HashMap<String, ResolvedType>,
     is_debug: bool,
+    project_name: String,
 ) -> Result<Module<'ctx>, Vec<Box<dyn Display>>> {
     // TODO: I would like to make this work for now I will read the whole file to a string then
     // let file = File::open(file).map_err(Box::new).map_err(|err| vec![err as Box<dyn Display>])?;
@@ -73,7 +74,8 @@ pub fn from_file<'ctx>(
         target_machine.get_target_data(),
     );
 
-    let ast = parser.module(file_name.to_str().unwrap().to_string());
+    let mut ast = parser.module(file_name.to_str().unwrap().to_string());
+    ast.canonialize(vec![project_name]);
     let mut ast = TypedModuleDeclaration::from(ast, &fwd_declarations); //TODO: foward declare std lib
     ast.lower_generics(&HashMap::new());
     ast.declarations.retain(|it| match it {

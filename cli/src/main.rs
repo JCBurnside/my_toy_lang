@@ -39,7 +39,7 @@ fn main() {
         },
     );
 
-    let program = compiler::from_file(&args.file, &ctx, fwd_decl, args.debug);
+    let program = compiler::from_file(&args.file, &ctx, fwd_decl, args.debug, "jit".to_string());
     match program {
         Err(errors) => {
             for err in errors {
