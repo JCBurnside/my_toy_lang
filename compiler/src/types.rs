@@ -277,8 +277,10 @@ impl ResolvedType {
         match self {
             Self::User { name, generics } => {
                 if name == nice_name {
-                    let out = self.clone();
-                    Self::User { name:actual.to_string(), generics:generics.clone() }
+                    Self::User {
+                        name: actual.to_string(),
+                        generics: generics.clone(),
+                    }
                 } else {
                     Self::User {
                         name: name.clone(),
@@ -289,6 +291,10 @@ impl ResolvedType {
                     }
                 }
             }
+            Self::Function { arg, returns } => Self::Function {
+                arg: arg.replace(nice_name, actual).boxed(),
+                returns: returns.replace(nice_name, actual).boxed(),
+            },
             _ => self.clone(),
         }
     }

@@ -9,7 +9,7 @@
             "type": "cppvsdbg",
             "request": "launch",
             "program": "${workspaceFolder}/target/debug/cli.exe",
-            "args": ["-r","./cli/test.fb"],
+            "args": ["--llvm","-o","./test_output.llvm","./cli/test.fb"],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
             "environment": [

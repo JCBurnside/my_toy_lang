@@ -39,22 +39,23 @@ impl ModuleDeclaration {
             }
         }
         for i in 0..self.declarations.len() {
-            let (old_name,new_name) = match &mut self.declarations[i] {
+            let (old_name, new_name) = match &mut self.declarations[i] {
                 Declaration::Mod(m) => {
                     m.canonialize(path.clone());
                     continue;
-                },
+                }
                 Declaration::Value(v) => {
                     // todo check if externed.  if so no work needed.
                     let old = v.ident.clone();
                     v.ident = path.iter().cloned().join("::") + "::" + &v.ident;
-                    (old,v.ident.clone())
-                },
+                    (old, v.ident.clone())
+                }
                 Declaration::TypeDefinition(def) => {
                     let old = def.get_ident();
                     let new = path.iter().cloned().join("::") + "::" + &old;
-                    (old,new)
-                },
+                    def.replace(&old, &new);
+                    (old, new)
+                }
             };
 
             for decl in &mut self.declarations {
@@ -74,7 +75,7 @@ impl ModuleDeclaration {
 
 #[derive(PartialEq, Eq, Debug)]
 pub(crate) enum Declaration {
-    #[allow(unused)]//TODO submoduling
+    #[allow(unused)] //TODO submoduling
     Mod(ModuleDeclaration),
     Value(ValueDeclaration),
     /// TODO
@@ -82,7 +83,6 @@ pub(crate) enum Declaration {
 }
 
 impl Declaration {
-
     pub fn replace(&mut self, nice_name: &str, actual: &str) {
         match self {
             Self::Mod(_) => (), //do nothing as super mod alias should not leak into submodules
@@ -114,6 +114,9 @@ impl TypeDefinition {
             Self::Alias(_, ty) => *ty = ty.replace(nice_name, actual),
             Self::Enum(_) => todo!(),
             Self::Struct(strct) => {
+                if strct.ident == nice_name {
+                    strct.ident = actual.to_string();
+                }
                 for field in &mut strct.values {
                     field.ty = field.ty.replace(nice_name, actual);
                 }
@@ -153,22 +156,6 @@ pub(crate) struct FieldDecl {
     pub(crate) loc: crate::Location,
 }
 
-#[derive(PartialEq, Eq, Debug)]
-pub enum ValueType {
-    Expr(Expr),
-    Function(Vec<Statement>),
-}
-impl ValueType {
-    fn replace(&mut self, nice_name: &str, actual: &str) {
-        match self {
-            ValueType::Expr(expr) => expr.replace(nice_name, actual),
-            ValueType::Function(stmnts) => stmnts
-                .iter_mut()
-                .for_each(|it| it.replace(nice_name, actual)),
-        }
-    }
-}
-
 #[derive(PartialEq, Eq, Debug, Clone)]
 pub(crate) struct ArgDeclation {
     pub(crate) loc: crate::Location,
@@ -192,6 +179,21 @@ impl ValueDeclaration {
             *ty = ty.replace(nice_name, actual);
         }
         self.value.replace(nice_name, actual);
+    }
+}
+#[derive(PartialEq, Eq, Debug)]
+pub enum ValueType {
+    Expr(Expr),
+    Function(Vec<Statement>),
+}
+impl ValueType {
+    fn replace(&mut self, nice_name: &str, actual: &str) {
+        match self {
+            ValueType::Expr(expr) => expr.replace(nice_name, actual),
+            ValueType::Function(stmnts) => stmnts
+                .iter_mut()
+                .for_each(|it| it.replace(nice_name, actual)),
+        }
     }
 }
 
@@ -265,6 +267,9 @@ pub struct StructConstruction {
 }
 impl StructConstruction {
     fn replace(&mut self, nice_name: &str, actual: &str) {
+        if self.ident == nice_name {
+            self.ident = actual.to_string();
+        }
         for (it, _) in self.fields.values_mut() {
             it.replace(nice_name, actual);
         }
@@ -330,10 +335,9 @@ pub enum Expr {
 impl Expr {
     fn replace(&mut self, nice_name: &str, actual: &str) {
         match self {
-            
             Expr::ValueRead(read) if read == nice_name => {
                 *read = actual.to_string();
-            },
+            }
             Expr::BinaryOpCall(bin) => bin.replace(nice_name, actual),
             Expr::UnaryOpCall(_) => todo!("unary ops are not implemented yet"),
             Expr::FnCall(call) => call.replace(nice_name, actual),
@@ -346,8 +350,8 @@ impl Expr {
             Expr::Compose { lhs, rhs } => {
                 lhs.replace(nice_name, actual);
                 rhs.replace(nice_name, actual);
-            },
-            _=>(),
+            }
+            _ => (),
         }
     }
 }

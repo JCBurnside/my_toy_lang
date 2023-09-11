@@ -87,6 +87,7 @@ impl TypedModuleDeclaration {
             locals: HashMap::new(),
             curried_locals: HashMap::new(),
             generated_generics: HashMap::new(),
+            functions: HashMap::new(),
             args: Vec::new(),
         };
         self.declarations
@@ -503,15 +504,6 @@ pub enum TypedStatement {
 }
 
 impl TypedStatement {
-    pub(crate) fn get_loc(&self) -> crate::Location {
-        match self {
-            TypedStatement::Declaration(decl) => decl.loc,
-            TypedStatement::Return(_, loc) => *loc,
-            TypedStatement::FnCall(call) => call.loc,
-            TypedStatement::Pipe(_) => todo!(),
-            TypedStatement::Error => todo!(),
-        }
-    }
     fn replace_types(&mut self, replaced: &[(String, ResolvedType)]) {
         match self {
             Self::Declaration(data) => data.replace_types(replaced),
@@ -794,6 +786,10 @@ pub enum TypedExpr {
     UnitLiteral,
     /// `a + b`
     BinaryOpCall(TypedBinaryOpCall),
+
+    /// `a.b`
+    MemeberRead(TypedMemberRead),
+
     /// `!a`
     UnaryOpCall(TypedUnaryOpCall),
     /// `foo bar`
@@ -826,7 +822,6 @@ pub enum TypedExpr {
     // This is used to allow to continue type checking.  should never naturally generate.
     ErrorNode,
 }
-
 impl TypedExpr {
     pub(crate) fn try_from(
         value: ast::Expr,
@@ -850,6 +845,9 @@ impl TypedExpr {
             Expr::CharLiteral(value) => Ok(Self::CharLiteral(value)),
             Expr::UnitLiteral => Ok(Self::UnitLiteral),
             Expr::Compose { lhs, rhs } => todo!(),
+            Expr::BinaryOpCall(data) if data.operator == "." => Ok(Self::MemeberRead(
+                TypedMemberRead::try_from(data, known_values, known_types, already_processed_args)?,
+            )),
             Expr::BinaryOpCall(data) => Ok(Self::BinaryOpCall(TypedBinaryOpCall::try_from(
                 data,
                 known_values,
@@ -936,6 +934,7 @@ impl TypedExpr {
                 name: strct.ident.clone(),
                 generics: strct.generics.clone(),
             },
+            Self::MemeberRead(member_read) => member_read.get_ty(),
         }
     }
 
@@ -1050,6 +1049,7 @@ impl TypedExpr {
                 }
                 std::mem::swap(&mut old_args, &mut context.args);
             }
+            Self::MemeberRead(read) => read.lower_generics(context),
             Self::IntegerLiteral { .. }
             | Self::FloatLiteral { .. }
             | Self::StringLiteral(_)
@@ -1064,12 +1064,110 @@ impl TypedExpr {
     }
 }
 
+#[derive(PartialEq, Debug, Clone)]
+pub struct TypedMemberRead {
+    pub(crate) target: Box<TypedExpr>,
+    pub(crate) member: String,
+    pub(crate) offset: Option<usize>,
+    pub(crate) ty: ResolvedType,
+    pub(crate) loc: crate::Location,
+}
+impl TypedMemberRead {
+    pub(crate) fn try_from(
+        value: ast::BinaryOpCall,
+        known_values: &HashMap<String, ResolvedType>,
+        known_types: &HashMap<String, ast::TypeDefinition>,
+        already_processed_args: Vec<ResolvedType>,
+    ) -> Result<Self, TypingError> {
+        let ast::BinaryOpCall { loc, lhs, rhs, .. } = value;
+        let ast::Expr::ValueRead(member) = *rhs else { return Err(TypingError::MemberMustBeIdent) };
+        let value = TypedExpr::try_from(*lhs, known_values, known_types, already_processed_args)?;
+        let ty = value.get_ty();
+        if ty == ResolvedType::Error {
+            return Err(TypingError::UnknownType);
+        }
+        if ty.is_generic() {
+            // we will have to do checking after lowering.  will do as part of lowering.
+            Ok(Self {
+                target: value.boxed(),
+                member,
+                offset: None,
+                ty: ResolvedType::Error,
+                loc,
+            })
+        } else if let Some(strct) = known_types.get(&ty.to_string()) {
+            let ast::TypeDefinition::Struct(def) = strct else { unreachable!("how are you accessing a member not on a struct")};
+            let offset = def.values.iter().position(|it| it.name == member);
+            let ty = def
+                .values
+                .iter()
+                .find_map(|it| {
+                    if it.name == member {
+                        Some(it.ty.clone())
+                    } else {
+                        None
+                    }
+                })
+                .or_else(|| {
+                    known_values
+                        .get(&format!("{}::{}", def.ident, member))
+                        .cloned()
+                })
+                .unwrap_or(ResolvedType::Error);
+            Ok(Self {
+                target: value.boxed(),
+                offset,
+                member,
+                ty,
+                loc,
+            })
+        } else {
+            Err(TypingError::UnknownType)
+        }
+    }
+
+    fn lower_generics(&mut self, context: &mut LoweringContext) {
+        if !self.target.get_ty().is_generic() {
+            return;
+        }
+        self.target.lower_generics(context);
+        let Some(strct) = context.globals.get(&self.target.get_ty().to_string()) else {
+            self.ty = ResolvedType::Error;
+            return;
+        };
+        let TypedDeclaration::TypeDefinition(ResolvedTypeDeclaration::Struct(def)) = strct else { unreachable!("how are you accessing a member not on a struct")};
+        self.offset = def.fields.iter().position(|it| it.name == self.member);
+        self.ty = def
+            .fields
+            .iter()
+            .find_map(|it| {
+                if it.name == self.member {
+                    Some(it.ty.clone())
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                context
+                    .functions
+                    .get(&format!("{}::{}", def.ident, self.member))
+                    .cloned()
+            })
+            .unwrap_or(ResolvedType::Error);
+    }
+
+    fn get_ty(&self) -> ResolvedType {
+        self.ty.clone()
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct LoweringContext {
     pub(crate) globals: HashMap<String, TypedDeclaration>,
     pub(crate) locals: HashMap<String, TypedValueDeclaration>,
     pub(crate) curried_locals: HashMap<String, TypedExpr>,
     pub(crate) generated_generics: HashMap<String, TypedDeclaration>,
+    pub(crate) functions: HashMap<String, ResolvedType>,
     pub(crate) args: Vec<ResolvedType>,
 }
 
@@ -1419,6 +1517,7 @@ pub enum TypingError {
     ReturnTypeMismatch,
     FnNotDeclared,
     BlockTypeMismatch,
+    MemberMustBeIdent,
     OpNotSupported, //temp.
     UnknownType,
     DoubleTyped,
@@ -1431,6 +1530,7 @@ mod tests {
 
     use super::TypedExpr;
     use crate::ast::ArgDeclation;
+    use crate::parser::Parser;
     use crate::typed_ast::{
         ResolvedTypeDeclaration, StructDefinition, TypedDeclaration, TypedFnCall,
         TypedModuleDeclaration, TypedStatement, TypedValueDeclaration, TypedValueType,
@@ -1445,6 +1545,22 @@ mod tests {
             out
         };
     }
+
+    #[test]
+    #[ignore = "for debugging only"]
+    fn debugging() {
+        const SRC: &'static str = r#"for<T> type Generic = {
+    a : T
+}
+
+let foo a : Generic<int32> -> int32 = a.a
+"#;
+        let parser = Parser::from_source(SRC);
+        let mut module = parser.module("foo".to_string());
+        module.canonialize(vec!["P".to_string()]);
+        let module = TypedModuleDeclaration::from(module, &HashMap::new());
+    }
+
     #[test]
     fn expr_convert() {
         use crate::ast::{self, Expr};

@@ -24,7 +24,7 @@ use multimap::MultiMap;
 
 use crate::typed_ast::{
     collect_args, ResolvedTypeDeclaration, StructDefinition, TypedBinaryOpCall, TypedDeclaration,
-    TypedExpr, TypedFnCall, TypedStatement, TypedValueDeclaration, TypedValueType,
+    TypedExpr, TypedFnCall, TypedMemberRead, TypedStatement, TypedValueDeclaration, TypedValueType,
 };
 use crate::types::{self, ResolvedType, TypeResolver};
 
@@ -115,7 +115,15 @@ impl<'ctx> CodeGen<'ctx> {
                 } else {
                     rt.to_string()
                 };
-                let rtdi = self.ditypes[&rt_name];
+                let rtdi = self
+                    .ditypes
+                    .entry(rt_name)
+                    .or_insert_with(|| unsafe {
+                        dibuilder
+                            .create_placeholder_derived_type(self.ctx)
+                            .as_type()
+                    })
+                    .clone();
                 let args = args
                     .into_iter()
                     .map(|it| {
@@ -138,11 +146,10 @@ impl<'ctx> CodeGen<'ctx> {
                     DIFlags::PUBLIC,
                 )
             };
-            let ident = self.current_module.clone() + "$" + &decl.ident;
             let fun_scope = dibuilder.create_function(
                 difile.as_debug_info_scope(),
                 &decl.ident,
-                Some(&ident),
+                Some(&decl.ident),
                 difile.clone(),
                 decl.loc.0.try_into().unwrap(),
                 fnty,
@@ -275,8 +282,13 @@ impl<'ctx> CodeGen<'ctx> {
         match decl.value {
             TypedValueType::Expr(expr) => {
                 let value = self.compile_expr(expr);
+                let value = if value.is_pointer_value() {
+                    self.builder.build_load(value.into_pointer_value(),"")
+                } else {
+                    value.try_into().unwrap()
+                };
                 self.builder
-                    .build_return(Some(&convert_to_basic_value(value)));
+                    .build_return(Some(&value));
             }
             TypedValueType::Function(body) => {
                 for expr in body {
@@ -306,9 +318,27 @@ impl<'ctx> CodeGen<'ctx> {
                 if let TypedExpr::UnitLiteral = expr {
                     self.builder.build_return(None);
                 } else {
-                    let sub = self.compile_expr(expr);
-                    self.builder
-                        .build_return(Some(&convert_to_basic_value(sub)));
+                    if expr.get_ty().is_user() {
+                        let target_t = self
+                            .ctx
+                            .get_struct_type(&expr.get_ty().to_string())
+                            .unwrap();
+                        let out = self.builder.build_malloc(target_t, "ret").unwrap();
+                        let sub = self.compile_expr(expr).into_pointer_value();
+                        let sub = self.builder.build_load(sub, "");
+                        self.builder
+                            .build_store::<BasicValueEnum<'ctx>>(out, sub.try_into().unwrap());
+                        self.builder.build_return(Some(&out));
+                    } else {
+                        let sub = self.compile_expr(expr);
+                        let sub = if sub.is_pointer_value() {
+                            self.builder.build_load(sub.into_pointer_value(),"")
+                        } else {
+                            sub.try_into().unwrap()
+                        };
+                        self.builder
+                            .build_return(Some(&sub));
+                    }
                 }
             }
 
@@ -337,10 +367,14 @@ impl<'ctx> CodeGen<'ctx> {
                 if let TypedValueType::Expr(expr) = value {
                     let rty = self
                         .type_resolver
-                        .resolve_type_as_basic(ty.clone())
-                        .ptr_type(AddressSpace::default());
+                        .resolve_type_as_basic(ty.clone());
                     let pvalue = self.builder.build_alloca(rty, &ident);
                     let result = self.compile_expr(expr);
+                    let result = if ty.is_user() {
+                        self.builder.build_load(result.into_pointer_value(),"").as_any_value_enum()
+                    } else {
+                        result
+                    };
                     self.builder
                         .build_store::<BasicValueEnum>(pvalue, result.try_into().unwrap());
                     self.locals.insert(ident.clone(), pvalue);
@@ -383,6 +417,8 @@ impl<'ctx> CodeGen<'ctx> {
     }
 
     pub fn compile_expr(&mut self, expr: TypedExpr) -> AnyValueEnum<'ctx> {
+        #[cfg(debug_assertions)]
+        let _ = self.module.print_to_file("./debug.llvm");
         match expr {
             TypedExpr::BinaryOpCall(TypedBinaryOpCall {
                 operator,
@@ -523,6 +559,11 @@ impl<'ctx> CodeGen<'ctx> {
                 let arg_t = self.type_resolver.resolve_arg_type(&arg_t);
                 let arg = self.compile_expr(*arg);
                 let arg: BasicValueEnum = arg.try_into().unwrap();
+                let arg = if arg.is_pointer_value() && !arg.into_pointer_value().get_type().get_element_type().is_struct_type() {//there has to be a better way to do this.
+                    self.builder.build_load(arg.into_pointer_value(), "")
+                } else {
+                    arg
+                };
                 let value_t = value.get_ty();
                 let value = self.compile_expr(*value);
                 if let Some(dibuilder) = &self.dibuilder {
@@ -540,7 +581,7 @@ impl<'ctx> CodeGen<'ctx> {
                         match target.get_type().get_element_type() {
                             AnyTypeEnum::StructType(strct_t) => {
                                 let target_fun =
-                                    self.builder.build_struct_gep(target, 0, "").unwrap();
+                                     self.builder.build_struct_gep(target, 0, "").unwrap();
                                 let target_fun = self.builder.build_load(target_fun, "");
                                 let ty = self
                                     .type_resolver
@@ -551,8 +592,10 @@ impl<'ctx> CodeGen<'ctx> {
                                     .build_bitcast(target_fun, ty, "")
                                     .into_pointer_value();
                                 let target_fun: CallableValue = target_fun.try_into().unwrap();
+                                #[cfg(debug_assertions)]
+                                let _ = self.module.print_to_file("./debug.llvm");
                                 self.builder
-                                    .build_call(target_fun, &[target.into(), arg.into()], "")
+                                    .build_call(dbg!(target_fun), &[target.into(), dbg!(arg).into()], "")
                                     .as_any_value_enum()
                             }
                             AnyTypeEnum::PointerType(ptr) => {
@@ -652,7 +695,7 @@ impl<'ctx> CodeGen<'ctx> {
             TypedExpr::ValueRead(ident, _) => self
                 .locals
                 .get(&ident)
-                .map(|val| self.builder.build_load(*val, "").as_any_value_enum())
+                .map(|val| val.as_any_value_enum())
                 .or(self
                     .known_values
                     .get(&ident)
@@ -729,18 +772,18 @@ impl<'ctx> CodeGen<'ctx> {
             }
             TypedExpr::StructConstruction(con) => {
                 let target_t = self.ctx.get_struct_type(&con.ident).unwrap();
-                let out = self.builder.build_malloc(target_t, "").unwrap();
+                let out = self.builder.build_alloca(target_t, "");
 
                 let ResolvedTypeDeclaration::Struct(def) = self.known_types.get(&con.ident).unwrap().clone() else { unreachable!() };
                 let order = con.fields.into_iter().map(|(field, expr)| {
-                    return (
+                    (
                         expr,
                         def.fields
                             .iter()
                             .find_position(|it| &it.name == &field)
                             .unwrap()
                             .0,
-                    );
+                    )
                 });
                 for ((value, loc), offest) in order {
                     let target_gep = self
@@ -762,6 +805,34 @@ impl<'ctx> CodeGen<'ctx> {
                     self.builder.build_store(target_gep, result);
                 }
                 out.as_any_value_enum()
+            }
+            TypedExpr::MemeberRead(read) => {
+                let TypedMemberRead {
+                    target,
+                    member,
+                    offset,
+                    ty,
+                    loc,
+                } = read;
+                let target_result = self.compile_expr(*target);
+                if let Some(offset) = offset {
+                    #[cfg(debug_assertions)]
+                    let _ = self.module.print_to_file("./debug.llvm");
+                    let gep = match self.builder.build_struct_gep(
+                        dbg!(target_result).into_pointer_value(),
+                        offset as _,
+                        "",
+                    ) {
+                        Ok(it) => it,
+                        Err(()) => {
+                            let _ = self.module.print_to_file("./error.llvm");
+                            panic!("Failed somehow");
+                        }
+                    };
+                    self.builder.build_load(gep, "").as_any_value_enum()
+                } else {
+                    todo!("member functions")
+                }
             }
             TypedExpr::ArrayLiteral { .. } => todo!(),
             TypedExpr::ListLiteral { .. } => todo!(),
@@ -811,6 +882,7 @@ impl<'ctx> CodeGen<'ctx> {
         let size = 0;
         let Some(discope) = &self.difile else {unreachable!()};
         let difields = info.into_iter().map(|(it, _)| it).collect_vec();
+
         let di_struct = dibuilder.create_struct_type(
             discope.as_debug_info_scope(),
             &def.ident,
@@ -825,6 +897,11 @@ impl<'ctx> CodeGen<'ctx> {
             None,
             "",
         );
+        if let Some(di_placeholder) = self.ditypes.get(&def.ident) {
+            todo!("replace the placeholder somehow");
+        } else {
+            self.ditypes.insert(def.ident.clone(), di_struct.as_type());
+        }
         true
     }
     pub fn compile_decl(&mut self, decl: TypedDeclaration) -> Module<'ctx> {
@@ -866,6 +943,8 @@ impl<'ctx> CodeGen<'ctx> {
         if let Some(dibuilder) = &mut self.dibuilder {
             dibuilder.finalize()
         }
+        #[cfg(debug_assertions)]
+        let _ = self.module.print_to_file("./debug.llvm");
         self.module.clone()
     }
 
@@ -893,7 +972,6 @@ impl<'ctx> CodeGen<'ctx> {
         let TypedValueDeclaration {
             ident, args, ty, ..
         } = decl;
-        let ident = self.current_module.clone() + "$" + ident;
         let curry_placeholder = self
             .ctx
             .struct_type(
@@ -1077,21 +1155,23 @@ impl<'ctx> CodeGen<'ctx> {
         use crate::util::ExtraUtilFunctions;
 
         let main_name = ast.iter().find_map(|file| {
-            file.declarations
-                .iter()
-                .find(|decl| {
-                    if let TypedDeclaration::Value(decl) = decl {
-                        decl.ident == "main"
-                            && decl.ty
-                                == ResolvedType::Function {
-                                    arg: types::UNIT.boxed(),
-                                    returns: types::UNIT.boxed(),
-                                }
+            file.declarations.iter().find_map(|decl| {
+                if let TypedDeclaration::Value(decl) = decl {
+                    if (decl.ident.ends_with("::main")
+                        && decl.ty
+                            == ResolvedType::Function {
+                                arg: types::UNIT.boxed(),
+                                returns: types::UNIT.boxed(),
+                            })
+                    {
+                        Some(decl.ident.clone())
                     } else {
-                        false
+                        None
                     }
-                })
-                .map(|_| file.name.clone() + "$main")
+                } else {
+                    None
+                }
+            })
         });
 
         if is_debug {
@@ -1217,6 +1297,8 @@ impl<'ctx> CodeGen<'ctx> {
             self.difile = None
         }
 
+        #[cfg(debug_assertions)]
+        let _ = self.module.print_to_file("./debug.llvm");
         if !is_lib {
             if let Some(main_name) = main_name {
                 let entry = self.module.add_function(
@@ -1260,8 +1342,6 @@ impl<'ctx> CodeGen<'ctx> {
                     )
                     .into_pointer_value();
                 let main: CallableValue = main.try_into().unwrap();
-                #[cfg(debug_assertions)]
-                let _ = self.module.print_to_file("./debug.llvm");
                 self.builder.build_call(
                     main,
                     &[

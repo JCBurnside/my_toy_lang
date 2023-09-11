@@ -64,6 +64,10 @@ where
     }
 
     pub fn has_next(&mut self) -> bool {
+        let _ = self
+            .stream
+            .peeking_take_while(|(it, _)| it == &Token::NewLine)
+            .collect::<Vec<_>>();
         self.stream
             .peek()
             .map_or(false, |(token, _)| !token.is_eof())

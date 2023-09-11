@@ -1,11 +1,4 @@
-let use_fn fun a : (int32 -> int32) -> int32 -> int32 =
-    print_str "merp\n"
-    return fun a
-
-let id a : int32 -> int32 = a
-
-let three_arg a b c : int32 -> int32 -> int32 -> int32 =
-    return 0
+for<T> let id a : T -> T = a
 
 type Concrete = {
     a : int32
@@ -15,11 +8,10 @@ for<T> type Generic = {
     a : T
 }
 
-let user_type_fun a : Generic<int32> -> Concrete =
-    return Concrete { a:0 }
+let takes_fn fun : (int32 -> int32) -> int32 = fun 3
 
 let main _ : () -> () = 
-    let merp : int32 -> int32 = use_fn id
-    merp 3
+    let test : Concrete = Concrete { a:0 }
+    id test.a
     print_str "asdf"
     return ()
