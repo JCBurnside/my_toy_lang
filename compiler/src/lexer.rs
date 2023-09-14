@@ -218,6 +218,72 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     (Token::For, (self.curr_line, self.curr_col))
                 }
 
+                'm' if self
+                    .source_stream
+                    .clone()
+                    .take_while(|c| c.is_alphabetic())
+                    .collect::<String>()
+                    == "atch" =>
+                {
+                    for _ in 0..4 {
+                        let _ = self.source_stream.next();
+                    }
+                    self.curr_col += 4;
+                    (Token::Match,(self.curr_line,self.curr_col))
+                },
+
+                'w' if self
+                    .source_stream
+                    .clone()
+                    .take_while(|c| c.is_alphabetic())
+                    .collect::<String>()
+                    == "here" =>
+                {
+                    for _ in 0..4 {
+                        let _ = self.source_stream.next();
+                    }
+                    self.curr_col += 4;
+                    (Token::Where,(self.curr_line,self.curr_col))
+                },
+
+                'i' if self
+                    .source_stream
+                    .peek()
+                    == Some(&'f') => 
+                {
+                    let _ = self.source_stream.next();
+                    self.curr_col +=1;
+                    (Token::If,(self.curr_line,self.curr_col))
+                }
+
+                't' if self
+                    .source_stream
+                    .clone()
+                    .take_while(|c| c.is_alphabetic())
+                    .collect::<String>()
+                    == "hen" => 
+                {
+                    let _ = self.source_stream.next();
+                    let _ = self.source_stream.next();
+                    let _ = self.source_stream.next();
+                    self.curr_col += 3;
+                    (Token::Then,(self.curr_line,self.curr_col))
+                },
+
+                'e' if self
+                    .source_stream
+                    .clone()
+                    .take_while(|c| c.is_alphabetic())
+                    .collect::<String>()
+                    == "lse" =>
+                {
+                    let _ = self.source_stream.next();
+                    let _ = self.source_stream.next();
+                    let _ = self.source_stream.next();
+                    self.curr_col += 3;
+                    (Token::Else,(self.curr_line,self.curr_col))
+                },
+                
                 'l' if self
                     .source_stream
                     .clone()
@@ -514,6 +580,27 @@ mod tests {
             [Token::Comma, Token::EoF],
             "comma"
         );
+
+        assert_eq!(
+            TokenStream::from_source("match").map(|(a,_)| a).collect_vec(),
+            [Token::Match, Token::EoF],
+            "match"
+        );
+        assert_eq!(
+            TokenStream::from_source("if").map(|(a,_)| a).collect_vec(),
+            [Token::If, Token::EoF],
+            "if"
+        );
+        assert_eq!(
+            TokenStream::from_source("then").map(|(a,_)| a).collect_vec(),
+            [Token::Then, Token::EoF],
+            "then"
+        );
+        assert_eq!(
+            TokenStream::from_source("else").map(|(a,_)| a).collect_vec(),
+            [Token::Else, Token::EoF],
+            "else"
+        );
     }
 
     #[test]
@@ -699,5 +786,53 @@ enum Bar =
             EoF
             ]
         )
+    }
+
+    #[test]
+    fn control_flow() {
+        use Token::*;
+        const SRC_MATCH : &'static str = r#"
+match x where
+| Foo::Y bar -> ()
+| Foo::Z { a, b } -> ()
+"#;
+        assert_eq!(
+            TokenStream::from_source(SRC_MATCH).map(|(a,_)| a).collect_vec(),
+            [
+                NewLine,
+                Match, Ident("x".to_string()), Where, NewLine,
+                Op("|".to_string()), Ident("Foo".to_string()), Colon,Colon,Ident("Y".to_string()), Ident("bar".to_string()), Arrow, GroupOpen,GroupClose,NewLine,
+                Op("|".to_string()), Ident("Foo".to_string()), Colon,Colon,Ident("Z".to_string()), CurlOpen, Ident("a".to_string()), Comma, Ident("b".to_string()),CurlClose, Arrow,GroupOpen,GroupClose,NewLine,
+                EoF
+            ],
+            "Match"
+        );
+
+        const SRC_IF : &'static str = r#"
+if cond then
+    a
+else
+    b
+"#;     assert_eq!(
+            TokenStream::from_source(SRC_IF).map(|(a,_)| a).collect_vec(),
+            [
+                NewLine,
+                If, Ident("cond".to_string()), Then, NewLine,
+                    BeginBlock, 
+                    Ident("a".to_string()), NewLine,
+                    EndBlock,
+                Else,NewLine,
+                    BeginBlock,
+                    Ident("b".to_string()), NewLine,
+                EoF
+            ],
+            "If then else multiline"
+        );
+        assert_eq!(
+            TokenStream::from_source("if cond then a else b").map(|(a,_)| a).collect_vec(),
+            [
+                If, Ident("cond".to_string()), Then, Ident("a".to_string()), Else, Ident("b".to_string()), EoF
+            ]
+        );
     }
 }

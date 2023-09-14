@@ -2148,7 +2148,7 @@ let main _ : int32 -> int32 =
                     TypedStatement::FnCall(TypedFnCall {
                         loc: (5, 5),
                         value: TypedExpr::ValueRead(
-                            "test_int32".to_string(),
+                            "test<int32>".to_string(),
                             ResolvedType::Function {
                                 arg: types::INT32.boxed(),
                                 returns: types::INT32.boxed()
@@ -2187,7 +2187,7 @@ let main _ : int32 -> int32 =
             &TypedDeclaration::Value(TypedValueDeclaration {
                 loc: (1, 12),
                 is_op: false,
-                ident: "test_int32".to_string(),
+                ident: "test<int32>".to_string(),
                 args: vec![ArgDeclation {
                     ident: "a".to_string(),
                     loc: (1, 17)

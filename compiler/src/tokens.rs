@@ -13,7 +13,16 @@ pub enum Token {
     For, // used for generic declaration and maybe composition in a later version
     Type,
     Enum,
-    // Fn, //to be added latter to distinguish between value and function with 0 args
+    If,
+    Then,
+    Else,
+
+    Match,
+
+    /// will be used for both pattern match with (Match)[Token::Match] and used in restrictions
+    Where,
+
+    // Fn, //to be added latter to distinguish between value and function with 0 args.  reality will be syntax sugar for functions with auto unit args
 
     //literals
     Integer(bool, String),
