@@ -269,7 +269,7 @@ impl ResolvedType {
                 *name = new_name;
                 *generics = Vec::new();
             }
-            ResolvedType::Error => todo!(),
+            ResolvedType::Error => (),
         }
     }
 
@@ -296,6 +296,15 @@ impl ResolvedType {
                 returns: returns.replace(nice_name, actual).boxed(),
             },
             _ => self.clone(),
+        }
+    }
+
+    pub(crate) fn remove_args(&self,arg:usize) -> Self {
+        if arg == 0 {
+            self.clone()
+        } else {
+            let Self::Function { returns, .. } = self else { unreachable!() };
+            returns.remove_args(arg-1)
         }
     }
 }
@@ -486,7 +495,7 @@ impl<'ctx> TypeResolver<'ctx> {
         if self.has_type(&ty) {
             return;
         }
-        match &ty {
+        match dbg!(&ty) {
             ResolvedType::Ref { ref underlining } | ResolvedType::Pointer { ref underlining } => {
                 if let ResolvedType::Function { .. } = underlining.as_ref() {
                     let result = self
@@ -603,6 +612,16 @@ impl<'ctx> TypeResolver<'ctx> {
                 .ctx
                 .void_type()
                 .fn_type(&[curry_holder.into(), arg.into()], false);
+        }
+
+        if returns.is_user() {
+            return self.ctx
+                .void_type()
+                .fn_type(&[
+                    curry_holder.into(),
+                    self.resolve_type_as_basic(ResolvedType::Pointer { underlining: returns.clone() }).into(),
+                    arg.into()
+                ], false);
         }
         let rt = if returns.is_function() {
             curry_holder.as_basic_type_enum()

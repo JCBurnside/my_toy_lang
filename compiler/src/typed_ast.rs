@@ -84,8 +84,6 @@ impl TypedModuleDeclaration {
         );
         let mut context = LoweringContext {
             globals: fwd_decl,
-            locals: HashMap::new(),
-            curried_locals: HashMap::new(),
             generated_generics: HashMap::new(),
             functions: HashMap::new(),
             args: Vec::new(),
@@ -172,15 +170,6 @@ pub enum ResolvedTypeDeclaration {
     Struct(StructDefinition),
 }
 impl ResolvedTypeDeclaration {
-    pub(crate) fn get_depends_on(&self) -> Vec<ResolvedType> {
-        match self {
-            ResolvedTypeDeclaration::Struct(def) if def.generics.is_empty() => {
-                def.fields.iter().map(|field| field.ty.clone()).collect()
-            }
-            _ => Vec::new(),
-        }
-    }
-
     fn try_from(
         origin: ast::TypeDefinition,
         known_types: &HashMap<String, ResolvedType>,
@@ -251,7 +240,7 @@ pub struct StructDefinition {
 impl StructDefinition {
     pub(crate) fn try_from(
         data: ast::StructDefinition,
-        known_types: &HashMap<String, ResolvedType>,
+        _known_types: &HashMap<String, ResolvedType>,
     ) -> Result<Self, TypingError> {
         let ast::StructDefinition {
             ident,
@@ -429,7 +418,7 @@ impl TypedValueType {
                     match TypedStatement::try_from(stmnt, &known_values, known_types) {
                         Ok(stmnt) => {
                             if let TypedStatement::Declaration(data) = &stmnt {
-                                let mut e = known_values
+                                let _ = known_values
                                     .entry(data.ident.clone())
                                     .and_modify(|it| {
                                         *it = data.ty.clone();
@@ -543,12 +532,17 @@ impl TypedStatement {
 
     fn lower_generics(&mut self, context: &mut LoweringContext) {
         match self {
-            Self::Declaration(decl) => match &mut decl.value {
-                TypedValueType::Expr(expr) => expr.lower_generics(context),
-                TypedValueType::Function(_) => {
-                    todo!("how to handle this one :/ function inside function");
+            Self::Declaration(decl) =>{
+                match &mut decl.value {
+                    TypedValueType::Expr(expr) => { 
+                        expr.lower_generics(context);
+                        decl.ty = expr.get_ty();
+                    },
+                    TypedValueType::Function(_) => {
+                        todo!("how to handle this one :/ function inside function");
+                    }
+                    TypedValueType::Err => (),
                 }
-                TypedValueType::Err => (),
             },
             Self::Return(expr, _) => expr.lower_generics(context),
             Self::FnCall(call) => call.lower_generics(context),
@@ -683,6 +677,7 @@ impl TypedFnCall {
             _ => unreachable!(),
         };
         *rt = *returns;
+        rt.lower_generics(context);
     }
 }
 
@@ -762,7 +757,11 @@ impl TypedStructConstruction {
     }
 
     fn lower_generics(&mut self, context: &mut LoweringContext) {
-        // TODO
+        if !self.generics.is_empty() {
+            self.ident = format!("{}<{}>",self.ident,self.generics.iter().map(|it|it.to_string()).join(","));
+            self.generics.clear();
+        }
+        self.fields.values_mut().for_each(|(v,_)| v.lower_generics(context))
     }
 }
 
@@ -844,7 +843,7 @@ impl TypedExpr {
             Expr::StringLiteral(value) => Ok(Self::StringLiteral(value)),
             Expr::CharLiteral(value) => Ok(Self::CharLiteral(value)),
             Expr::UnitLiteral => Ok(Self::UnitLiteral),
-            Expr::Compose { lhs, rhs } => todo!(),
+            Expr::Compose { .. } => todo!(),
             Expr::BinaryOpCall(data) if data.operator == "." => Ok(Self::MemeberRead(
                 TypedMemberRead::try_from(data, known_values, known_types, already_processed_args)?,
             )),
@@ -927,37 +926,13 @@ impl TypedExpr {
                 underlining: contents.first().unwrap().get_ty().boxed(),
                 size: contents.len(),
             },
-            Self::ListLiteral { contents } => todo!(),
-            Self::TupleLiteral { contents } => todo!(),
+            Self::ListLiteral { .. } | Self::TupleLiteral { .. } => todo!(),
             Self::ErrorNode => types::ERROR,
             Self::StructConstruction(strct) => ResolvedType::User {
                 name: strct.ident.clone(),
                 generics: strct.generics.clone(),
             },
             Self::MemeberRead(member_read) => member_read.get_ty(),
-        }
-    }
-
-    fn collect_args(
-        &self,
-        known_values: &HashMap<String, TypedValueDeclaration>,
-    ) -> Vec<ResolvedType> {
-        if let Self::FnCall(TypedFnCall { value, arg_t, .. }) = self {
-            let mut args = value.collect_args(known_values);
-            args.push(arg_t.clone());
-            args
-        } else if let Self::ValueRead(ident, _) = self {
-            match known_values.get(ident) {
-                Some(decl) => match &decl.value {
-                    TypedValueType::Expr(expr) if matches!(expr, TypedExpr::FnCall(_)) => {
-                        expr.collect_args(known_values)
-                    }
-                    _ => vec![],
-                },
-                None => vec![],
-            }
-        } else {
-            vec![]
         }
     }
 
@@ -1021,13 +996,15 @@ impl TypedExpr {
             Self::FnCall(data) => {
                 data.lower_generics(context);
             }
-            Self::ValueRead(ident, ty) if ty.is_function() && ty.is_generic() => {
+            Self::ValueRead(ident, ty) if ty.is_function() => {
+                let is_generic = ty.is_generic();
+                ty.lower_generics(context);
+                if!is_generic {return;}
                 let args = context.args.iter().cloned().collect();
                 context.args = Vec::new(); //moving the arg count out due to this is the value of the function call
                 let (fun_t, mut replaced) = map_types_to_args(ty.clone(), args);
                 replaced.dedup_by_key(|it| it.0.clone()); // should do nothing but I am being overly cautious
-                let new_name =
-                    ident.clone() + "_" + &replaced.iter().map(|(_, ty)| ty.to_string()).join("_");
+                let new_name = format!("{}<{}>",ident,replaced.iter().map(|(_,it)| it.to_string()).join(","));
                 if !context.generated_generics.contains_key(&new_name) {
                     match context.globals.get(ident) {
                         Some(original) => {
@@ -1057,8 +1034,8 @@ impl TypedExpr {
             | Self::UnitLiteral => (),
             Self::StructConstruction(strct) => strct.lower_generics(context),
             Self::BinaryOpCall(data) => data.lower_generics(context),
-            Self::UnaryOpCall(data) => todo!("unary op type lowering"),
-            Self::ValueRead(_, _) => (),
+            Self::UnaryOpCall(_data) => todo!("unary op type lowering"),
+            Self::ValueRead(_, ty) => ty.lower_generics(context),
             Self::ErrorNode => (),
         }
     }
@@ -1083,10 +1060,12 @@ impl TypedMemberRead {
         let ast::Expr::ValueRead(member) = *rhs else { return Err(TypingError::MemberMustBeIdent) };
         let value = TypedExpr::try_from(*lhs, known_values, known_types, already_processed_args)?;
         let ty = value.get_ty();
+        
         if ty == ResolvedType::Error {
             return Err(TypingError::UnknownType);
         }
-        if ty.is_generic() {
+        let ResolvedType::User { generics, .. } = ty.clone() else { unreachable!() };
+        if !generics.is_empty() {
             // we will have to do checking after lowering.  will do as part of lowering.
             Ok(Self {
                 target: value.boxed(),
@@ -1127,11 +1106,15 @@ impl TypedMemberRead {
     }
 
     fn lower_generics(&mut self, context: &mut LoweringContext) {
-        if !self.target.get_ty().is_generic() {
+        if let ResolvedType::User { generics, .. } = self.target.get_ty() {
+            if generics.is_empty() {
+                return;
+            }
+        } else {
             return;
         }
         self.target.lower_generics(context);
-        let Some(strct) = context.globals.get(&self.target.get_ty().to_string()) else {
+        let Some(strct) = context.generated_generics.get(&dbg!(self.target.get_ty().to_string())) else {
             self.ty = ResolvedType::Error;
             return;
         };
@@ -1164,8 +1147,6 @@ impl TypedMemberRead {
 #[derive(Clone)]
 pub(crate) struct LoweringContext {
     pub(crate) globals: HashMap<String, TypedDeclaration>,
-    pub(crate) locals: HashMap<String, TypedValueDeclaration>,
-    pub(crate) curried_locals: HashMap<String, TypedExpr>,
     pub(crate) generated_generics: HashMap<String, TypedDeclaration>,
     pub(crate) functions: HashMap<String, ResolvedType>,
     pub(crate) args: Vec<ResolvedType>,
@@ -1257,28 +1238,17 @@ pub struct TypedBinaryOpCall {
 
 impl TypedBinaryOpCall {
     fn lower_generics(&mut self, context: &mut LoweringContext) {
-        let Self {
-            lhs,
-            rhs,
-            operator,
-            rt,
-            ..
-        } = self;
+        let Self { lhs, rhs, .. } = self;
         let mut old_args = Vec::new();
         std::mem::swap(&mut context.args, &mut old_args);
         lhs.lower_generics(context);
         rhs.lower_generics(context);
         self.reeval_rt();
+        std::mem::swap(&mut context.args, &mut old_args);
     }
 
     fn replace_type(&mut self, name: &str, new_ty: &ResolvedType) {
-        let Self {
-            lhs,
-            rhs,
-            operator,
-            rt,
-            ..
-        } = self;
+        let Self { lhs, rhs, .. } = self;
         lhs.replace_type(name, new_ty);
         rhs.replace_type(name, new_ty);
         self.reeval_rt();
@@ -1348,7 +1318,7 @@ impl TypedBinaryOpCall {
                         (_, rhs) if rhs.is_float() => rhs,
                         (lhs, rhs) => {
                             let ResolvedType::Int { signed : lhs_signed, width : lhs_w } = lhs else { unreachable!() };
-                            let ResolvedType::Int { signed : rhs_signed, width : rhs_w } = lhs else { unreachable!() };
+                            let ResolvedType::Int { signed : rhs_signed, width : rhs_w } = rhs else { unreachable!() };
                             let max = lhs_w.max(rhs_w);
                             ResolvedType::Float {
                                 width: match max {
@@ -1464,7 +1434,7 @@ impl TypedBinaryOpCall {
                             (_, rhs) if rhs.is_float() => rhs,
                             (lhs, rhs) => {
                                 let ResolvedType::Int { signed : lhs_signed, width : lhs_w } = lhs else { unreachable!() };
-                                let ResolvedType::Int { signed : rhs_signed, width : rhs_w } = lhs else { unreachable!() };
+                                let ResolvedType::Int { signed : rhs_signed, width : rhs_w } = rhs else { unreachable!() };
                                 let max = lhs_w.max(rhs_w);
                                 ResolvedType::Float {
                                     width: match max {
@@ -1526,7 +1496,7 @@ pub enum TypingError {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
 
     use super::TypedExpr;
     use crate::ast::ArgDeclation;
@@ -1549,16 +1519,25 @@ mod tests {
     #[test]
     #[ignore = "for debugging only"]
     fn debugging() {
-        const SRC: &'static str = r#"for<T> type Generic = {
+        const SRC: &'static str = r#"
+for<T> type Generic = {
     a : T
 }
 
-let foo a : Generic<int32> -> int32 = a.a
+for<T> let id a : T -> T = a
+
+let new_generic a : int32 -> Generic<int32> = Generic<int32> {a:a}
+
+let main _ : () -> () =
+    let r : Generic<int32> = new_generic 3
+    id r.a
 "#;
         let parser = Parser::from_source(SRC);
         let mut module = parser.module("foo".to_string());
         module.canonialize(vec!["P".to_string()]);
-        let module = TypedModuleDeclaration::from(module, &HashMap::new());
+        let mut module = TypedModuleDeclaration::from(module, &HashMap::new());
+        module.lower_generics(&HashMap::new());
+        println!("{:?}",module)
     }
 
     #[test]
@@ -2007,8 +1986,8 @@ let main _ : () -> () =
         let parser = Parser::from_source(
             r"
 for<T,U> type Tuple = {
-    first : T
-    second : U
+    first : T,
+    second : U,
 }
 
 let first a : Tuple<int32,float64> -> int32 =
@@ -2018,7 +1997,7 @@ let first a : Tuple<int32,float64> -> int32 =
 
         let module = parser.module("test.fb".to_string());
         let mut module = TypedModuleDeclaration::from(module, &HashMap::new());
-        let [strct, _] = &module.declarations[..] else { unreachable!() };
+        let [strct, _] = dbg!(&module.declarations[..]) else { unreachable!() };
         assert_eq!(
             strct,
             &TypedDeclaration::TypeDefinition(crate::typed_ast::ResolvedTypeDeclaration::Struct(

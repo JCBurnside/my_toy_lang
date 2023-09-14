@@ -3,7 +3,7 @@ use inkwell::{
     module::Module,
     types::{BasicType, BasicTypeEnum},
     values::FunctionValue,
-    AddressSpace, IntPredicate,
+    AddressSpace,
 };
 
 #[repr(C)]

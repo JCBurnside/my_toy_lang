@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    num::NonZeroU8,
-};
+use std::{collections::HashMap, num::NonZeroU8};
 
 use itertools::Itertools;
 
@@ -341,9 +338,9 @@ impl Expr {
             Expr::BinaryOpCall(bin) => bin.replace(nice_name, actual),
             Expr::UnaryOpCall(_) => todo!("unary ops are not implemented yet"),
             Expr::FnCall(call) => call.replace(nice_name, actual),
-            Expr::ListLiteral { contents, loc }
-            | Expr::TupleLiteral { contents, loc }
-            | Expr::ArrayLiteral { contents, loc } => contents
+            Expr::ListLiteral { contents, .. }
+            | Expr::TupleLiteral { contents, .. }
+            | Expr::ArrayLiteral { contents, .. } => contents
                 .iter_mut()
                 .for_each(|it| it.replace(nice_name, actual)),
             Expr::StructConstruction(con) => con.replace(nice_name, actual),

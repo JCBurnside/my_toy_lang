@@ -13,7 +13,7 @@ pub mod types;
 mod util;
 
 use code_gen::CodeGen;
-use typed_ast::{TypedDeclaration, TypedModuleDeclaration};
+use typed_ast::{TypedDeclaration, TypedModuleDeclaration, ResolvedTypeDeclaration};
 // use code_gen::CodeGen;
 use inkwell::{
     module::Module,
@@ -80,8 +80,15 @@ pub fn from_file<'ctx>(
     ast.lower_generics(&HashMap::new());
     ast.declarations.retain(|it| match it {
         TypedDeclaration::Value(it) => it.generictypes.is_empty(),
+        TypedDeclaration::TypeDefinition(it) => match it {
+            ResolvedTypeDeclaration::Struct(strct) => strct.generics.is_empty(),
+            _ => true
+        }
         _ => true,
     });
+
+
+    println!("{:?}",ast);
 
     let module = code_gen.compile_program(vec![ast], false, is_debug);
     Ok(module)
@@ -93,7 +100,7 @@ mod tests {
 
     use inkwell::{
         context::Context,
-        targets::{CodeModel, InitializationConfig, Target, TargetMachine, TargetTriple},
+        targets::{CodeModel, InitializationConfig, Target, TargetMachine},
     };
     use multimap::MultiMap;
 

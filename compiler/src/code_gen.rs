@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::iter::once;
-use std::process::Output;
 
+use inkwell::attributes::Attribute;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::debug_info::{
@@ -11,7 +11,7 @@ use inkwell::debug_info::{
 };
 use inkwell::module::Module;
 use inkwell::targets::TargetData;
-use inkwell::types::{AnyTypeEnum, BasicType, BasicTypeEnum};
+use inkwell::types::{AnyTypeEnum, BasicType};
 use inkwell::values::{
     AnyValue, AnyValueEnum, BasicValue, BasicValueEnum, CallableValue, FunctionValue, GlobalValue,
     PointerValue,
@@ -64,7 +64,7 @@ impl<'ctx> CodeGen<'ctx> {
         let builder = ctx.create_builder();
         let known_functions = seed_functions
             .into_iter()
-            .map(|(name, ty)| {
+            .map(|(name, _)| {
                 let ty = module.get_global(&name).unwrap_or_else(|| {
                     module.add_global(
                         ctx.struct_type(
@@ -137,12 +137,12 @@ impl<'ctx> CodeGen<'ctx> {
                     .collect_vec();
                 dibuilder.create_subroutine_type(
                     *difile,
-                    if rt.is_void_or_unit() {
+                    dbg!(if rt.is_void_or_unit() {
                         None
                     } else {
                         Some(rtdi)
-                    },
-                    &args,
+                    }),
+                    dbg!(&args),
                     DIFlags::PUBLIC,
                 )
             };
@@ -186,7 +186,7 @@ impl<'ctx> CodeGen<'ctx> {
                     .as_basic_type_enum(),
             );
             let curried_args = curried_args.into_iter().map(|it| it.into()).collect_vec();
-            let first_arg = v.get_first_param().unwrap().into_pointer_value();
+            let first_arg =  v.get_first_param().unwrap().into_pointer_value();
             let actual_ty = self
                 .ctx
                 .struct_type(&curried_args, false)
@@ -282,13 +282,22 @@ impl<'ctx> CodeGen<'ctx> {
         match decl.value {
             TypedValueType::Expr(expr) => {
                 let value = self.compile_expr(expr);
-                let value = if value.is_pointer_value() {
-                    self.builder.build_load(value.into_pointer_value(),"")
+                let value : BasicValueEnum<'ctx> = value.try_into().unwrap();
+                if decl.ty.remove_args(decl.args.len()).is_user() {
+                    let sret = v.get_nth_param(1).unwrap().into_pointer_value();
+                    let value = self.builder.build_load(value.into_pointer_value(),"");
+                    #[cfg(debug_assertions)]
+                    let _ = self.module.print_to_file("./debug.llvm");
+                    self.builder.build_store(dbg!(sret),dbg!(value));
+                    self.builder.build_return(None);
                 } else {
-                    value.try_into().unwrap()
-                };
-                self.builder
-                    .build_return(Some(&value));
+                    let value = if value.is_pointer_value() {
+                        self.builder.build_load(value.into_pointer_value(),"")
+                    } else {
+                        value
+                    };
+                    self.builder.build_return(Some(&value));
+                }
             }
             TypedValueType::Function(body) => {
                 for expr in body {
@@ -319,25 +328,21 @@ impl<'ctx> CodeGen<'ctx> {
                     self.builder.build_return(None);
                 } else {
                     if expr.get_ty().is_user() {
-                        let target_t = self
-                            .ctx
-                            .get_struct_type(&expr.get_ty().to_string())
-                            .unwrap();
-                        let out = self.builder.build_malloc(target_t, "ret").unwrap();
+
                         let sub = self.compile_expr(expr).into_pointer_value();
                         let sub = self.builder.build_load(sub, "");
+                        let out = self.builder.get_insert_block().unwrap().get_parent().unwrap().get_nth_param(1).unwrap().into_pointer_value();
                         self.builder
                             .build_store::<BasicValueEnum<'ctx>>(out, sub.try_into().unwrap());
-                        self.builder.build_return(Some(&out));
+                        self.builder.build_return(None);
                     } else {
                         let sub = self.compile_expr(expr);
                         let sub = if sub.is_pointer_value() {
-                            self.builder.build_load(sub.into_pointer_value(),"")
+                            self.builder.build_load(sub.into_pointer_value(), "")
                         } else {
                             sub.try_into().unwrap()
                         };
-                        self.builder
-                            .build_return(Some(&sub));
+                        self.builder.build_return(Some(&sub));
                     }
                 }
             }
@@ -365,13 +370,13 @@ impl<'ctx> CodeGen<'ctx> {
                 ..
             }) => {
                 if let TypedValueType::Expr(expr) = value {
-                    let rty = self
-                        .type_resolver
-                        .resolve_type_as_basic(ty.clone());
+                    let rty = self.type_resolver.resolve_type_as_basic(ty.clone());
                     let pvalue = self.builder.build_alloca(rty, &ident);
                     let result = self.compile_expr(expr);
-                    let result = if ty.is_user() {
-                        self.builder.build_load(result.into_pointer_value(),"").as_any_value_enum()
+                    let result = if ty.is_user() && result.is_pointer_value() {
+                        self.builder
+                            .build_load(result.into_pointer_value(), "")
+                            .as_any_value_enum()
                     } else {
                         result
                     };
@@ -559,7 +564,14 @@ impl<'ctx> CodeGen<'ctx> {
                 let arg_t = self.type_resolver.resolve_arg_type(&arg_t);
                 let arg = self.compile_expr(*arg);
                 let arg: BasicValueEnum = arg.try_into().unwrap();
-                let arg = if arg.is_pointer_value() && !arg.into_pointer_value().get_type().get_element_type().is_struct_type() {//there has to be a better way to do this.
+                let arg = if arg.is_pointer_value()
+                    && !arg
+                        .into_pointer_value()
+                        .get_type()
+                        .get_element_type()
+                        .is_struct_type()
+                {
+                    //there has to be a better way to do this.
                     self.builder.build_load(arg.into_pointer_value(), "")
                 } else {
                     arg
@@ -579,9 +591,9 @@ impl<'ctx> CodeGen<'ctx> {
                 match value {
                     AnyValueEnum::PointerValue(target) => {
                         match target.get_type().get_element_type() {
-                            AnyTypeEnum::StructType(strct_t) => {
+                            AnyTypeEnum::StructType(_) => {
                                 let target_fun =
-                                     self.builder.build_struct_gep(target, 0, "").unwrap();
+                                    self.builder.build_struct_gep(target, 0, "").unwrap();
                                 let target_fun = self.builder.build_load(target_fun, "");
                                 let ty = self
                                     .type_resolver
@@ -592,11 +604,15 @@ impl<'ctx> CodeGen<'ctx> {
                                     .build_bitcast(target_fun, ty, "")
                                     .into_pointer_value();
                                 let target_fun: CallableValue = target_fun.try_into().unwrap();
-                                #[cfg(debug_assertions)]
-                                let _ = self.module.print_to_file("./debug.llvm");
-                                self.builder
-                                    .build_call(dbg!(target_fun), &[target.into(), dbg!(arg).into()], "")
+                                if rt.is_user() {
+                                    let result = self.builder.build_alloca(self.type_resolver.resolve_type_as_basic(rt), "");
+                                    self.builder.build_call(dbg!(target_fun), &[target.into(),result.into(),arg.into()], "");
+                                    result.as_any_value_enum()
+                                } else {
+                                    self.builder
+                                    .build_call(target_fun, &[target.into(), arg.into()], "")
                                     .as_any_value_enum()
+                                }
                             }
                             AnyTypeEnum::PointerType(ptr) => {
                                 if !ptr.get_element_type().is_struct_type() {
@@ -771,7 +787,7 @@ impl<'ctx> CodeGen<'ctx> {
                 v.as_any_value_enum()
             }
             TypedExpr::StructConstruction(con) => {
-                let target_t = self.ctx.get_struct_type(&con.ident).unwrap();
+                let target_t = self.ctx.get_struct_type(dbg!(&con.ident)).unwrap();
                 let out = self.builder.build_alloca(target_t, "");
 
                 let ResolvedTypeDeclaration::Struct(def) = self.known_types.get(&con.ident).unwrap().clone() else { unreachable!() };
@@ -802,11 +818,17 @@ impl<'ctx> CodeGen<'ctx> {
                         }
                     }
                     let result = convert_to_basic_value(self.compile_expr(value));
-                    self.builder.build_store(target_gep, result);
+                    let result = if result.is_pointer_value() && !result.get_type().into_pointer_type().get_element_type().is_struct_type() {
+                        self.builder.build_load(result.into_pointer_value(),"")
+                    } else {
+                        result
+                    };
+                    self.builder.build_store(dbg!(target_gep), dbg!(result));
                 }
                 out.as_any_value_enum()
             }
             TypedExpr::MemeberRead(read) => {
+                #[allow(unused)] //all fields will be needed when member functions are added
                 let TypedMemberRead {
                     target,
                     member,
@@ -816,19 +838,10 @@ impl<'ctx> CodeGen<'ctx> {
                 } = read;
                 let target_result = self.compile_expr(*target);
                 if let Some(offset) = offset {
-                    #[cfg(debug_assertions)]
-                    let _ = self.module.print_to_file("./debug.llvm");
-                    let gep = match self.builder.build_struct_gep(
-                        dbg!(target_result).into_pointer_value(),
-                        offset as _,
-                        "",
-                    ) {
-                        Ok(it) => it,
-                        Err(()) => {
-                            let _ = self.module.print_to_file("./error.llvm");
-                            panic!("Failed somehow");
-                        }
-                    };
+                    let gep = self
+                        .builder
+                        .build_struct_gep((target_result).into_pointer_value(), offset as _, "")
+                        .unwrap();
                     self.builder.build_load(gep, "").as_any_value_enum()
                 } else {
                     todo!("member functions")
@@ -848,10 +861,6 @@ impl<'ctx> CodeGen<'ctx> {
             .fields
             .iter()
             .map(|field| (field.name.clone(), field.ty.clone(), field.loc))
-            .collect_vec();
-        let fields_no_name = fields
-            .iter()
-            .map(|(_, it, _)| self.type_resolver.resolve_type_as_basic(it.clone()))
             .collect_vec();
         if fields
             .iter()
@@ -1009,18 +1018,24 @@ impl<'ctx> CodeGen<'ctx> {
             let arg_t = self.type_resolver.resolve_type_as_basic(*arg_t);
             rt.fn_type(&[curry_placeholder.into(), arg_t.into()], false)
         } else {
-            let rt = if rt.is_user() {
-                self.type_resolver
-                    .resolve_type_as_basic(*rt)
-                    .ptr_type(AddressSpace::default())
-                    .as_basic_type_enum()
-            } else {
-                self.type_resolver.resolve_type_as_basic(*rt)
-            };
             let arg_t = self.type_resolver.resolve_type_as_basic(*arg_t);
-            rt.fn_type(&[curry_placeholder.into(), arg_t.into()], false)
+            if rt.is_user() {
+                let rt = self.type_resolver
+                    .resolve_type_as_basic(rt.as_ref().clone())
+                    .ptr_type(AddressSpace::default())
+                    .as_basic_type_enum();
+                self.ctx.void_type().fn_type(&[curry_placeholder.into(),rt.into(),arg_t.into()], false)
+            } else {
+                let rt = self.type_resolver.resolve_type_as_basic(rt.as_ref().clone());
+                rt.fn_type(&[curry_placeholder.into(), arg_t.into()], false)
+            }
         };
         let v = self.module.add_function(&ident, fun_t, None);
+        if rt.is_user() {
+            let sret_id = Attribute::get_named_enum_kind_id("sret");
+            let attr = self.ctx.create_type_attribute(sret_id, self.type_resolver.resolve_type_as_any(*rt));
+            v.add_attribute(inkwell::attributes::AttributeLoc::Param(1), attr);
+        }
         curried_args.insert(
             0,
             self.ctx.i8_type().ptr_type(AddressSpace::default()).into(),

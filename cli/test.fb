@@ -1,17 +1,12 @@
 for<T> let id a : T -> T = a
 
-type Concrete = {
-    a : int32
-}
-
 for<T> type Generic = {
     a : T
 }
 
-let takes_fn fun : (int32 -> int32) -> int32 = fun 3
+let new_generic a : int32 -> Generic<int32> = Generic<int32> {a:a} 
 
 let main _ : () -> () = 
-    let test : Concrete = Concrete { a:0 }
-    id test.a
-    print_str "asdf"
+    let r : Generic<int32> = new_generic 3
+    id r.a
     return ()

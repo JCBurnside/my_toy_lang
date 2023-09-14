@@ -48,12 +48,6 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
             // return self.lex()
         }
 
-        if self.source_stream.peek() == Some(&',') {
-            self.source_stream.next();
-            self.curr_col += 1;
-            return self.lex();
-        }
-
         let (ws, count) = self
             .source_stream
             .peeking_take_while(|c| c != &'\n' && c.is_ascii_whitespace())
@@ -372,12 +366,36 @@ mod tests {
             .map(|(a, _)| a)
             .collect_vec(),
             [
-                For, Op("<".to_owned()), Ident("T".to_owned()), Ident("U".to_owned()), Op(">".to_owned()), Let, Ident("foo".to_owned()), Ident("bar".to_owned()), Ident("baz".to_owned()), Colon, Ident("T".to_owned()), Arrow, Ident("U".to_owned()), Arrow, Ident("int8".to_owned()), Op("=".to_owned()), NewLine,
+                For, Op("<".to_owned()), Ident("T".to_owned()), Comma, Ident("U".to_owned()), Op(">".to_owned()), Let, Ident("foo".to_owned()), Ident("bar".to_owned()), Ident("baz".to_owned()), Colon, Ident("T".to_owned()), Arrow, Ident("U".to_owned()), Arrow, Ident("int8".to_owned()), Op("=".to_owned()), NewLine,
                 BeginBlock,
                     Ident("bar".to_owned()), Op("+".to_owned()), Ident("baz".to_owned()), NewLine,
                 EoF
             ]
         )
+    }
+
+    #[test]
+    fn complex_type() {
+        use Token::*;
+        assert_eq!(
+            TokenStream::from_source("Foo<Bar<int32->(),int32>>")
+                .map(|(a, _)| a)
+                .collect_vec(),
+            [
+                Ident("Foo".to_string()),
+                Op("<".to_string()),
+                Ident("Bar".to_string()),
+                Op("<".to_string()),
+                Ident("int32".to_string()),
+                Arrow,
+                GroupOpen,
+                GroupClose,
+                Comma,
+                Ident("int32".to_string()),
+                Op(">>".to_string()),
+                EoF
+            ]
+        );
     }
 
     #[test]
@@ -490,6 +508,11 @@ mod tests {
             TokenStream::from_source("}").map(|(a, _)| a).collect_vec(),
             [Token::CurlClose, Token::EoF],
             "Close Curl"
+        );
+        assert_eq!(
+            TokenStream::from_source(",").map(|(a, _)| a).collect_vec(),
+            [Token::Comma, Token::EoF],
+            "comma"
         );
     }
 
