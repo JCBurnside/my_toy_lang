@@ -77,6 +77,7 @@ impl FloatWidth {
 
 #[derive(Hash, PartialEq, Eq, Clone, Debug)]
 pub enum ResolvedType {
+    Bool,
     Int {
         signed: bool,
         width: IntWidth,
@@ -228,7 +229,8 @@ impl ResolvedType {
 
     pub(crate) fn lower_generics(&mut self, context: &mut typed_ast::LoweringContext) {
         match self {
-            ResolvedType::Int { .. }
+            ResolvedType::Bool
+            | ResolvedType::Int { .. }
             | ResolvedType::Float { .. }
             | ResolvedType::Char
             | ResolvedType::Str
@@ -299,12 +301,12 @@ impl ResolvedType {
         }
     }
 
-    pub(crate) fn remove_args(&self,arg:usize) -> Self {
+    pub(crate) fn remove_args(&self, arg: usize) -> Self {
         if arg == 0 {
             self.clone()
         } else {
             let Self::Function { returns, .. } = self else { unreachable!() };
-            returns.remove_args(arg-1)
+            returns.remove_args(arg - 1)
         }
     }
 }
@@ -312,6 +314,7 @@ impl ResolvedType {
 impl ToString for ResolvedType {
     fn to_string(&self) -> String {
         match self {
+            ResolvedType::Bool => "bool".to_string(),
             ResolvedType::Alias { actual } => actual.to_string(),
             ResolvedType::Char => "char".to_string(),
             ResolvedType::Float { width } => "float".to_string() + &width.to_string(),
@@ -365,6 +368,7 @@ impl ToString for ResolvedType {
 #[allow(unused)]
 mod consts {
     use super::*;
+    pub const BOOL: ResolvedType = ResolvedType::Bool;
     pub const ERROR: ResolvedType = ResolvedType::Error;
     pub const INT8: ResolvedType = ResolvedType::Int {
         signed: true,
@@ -495,7 +499,7 @@ impl<'ctx> TypeResolver<'ctx> {
         if self.has_type(&ty) {
             return;
         }
-        match dbg!(&ty) {
+        match &ty {
             ResolvedType::Ref { ref underlining } | ResolvedType::Pointer { ref underlining } => {
                 if let ResolvedType::Function { .. } = underlining.as_ref() {
                     let result = self
@@ -561,6 +565,10 @@ impl<'ctx> TypeResolver<'ctx> {
                     }
                 }
             }
+            ResolvedType::Bool => {
+                self.known
+                    .insert(BOOL, self.ctx.bool_type().as_any_type_enum());
+            }
             // ResolvedType::ForwardUser { name } => todo!(),
             ResolvedType::Alias { actual } => self.resolve_type(actual.as_ref().clone()),
             ResolvedType::Unit => (),
@@ -615,13 +623,17 @@ impl<'ctx> TypeResolver<'ctx> {
         }
 
         if returns.is_user() {
-            return self.ctx
-                .void_type()
-                .fn_type(&[
+            return self.ctx.void_type().fn_type(
+                &[
                     curry_holder.into(),
-                    self.resolve_type_as_basic(ResolvedType::Pointer { underlining: returns.clone() }).into(),
-                    arg.into()
-                ], false);
+                    self.resolve_type_as_basic(ResolvedType::Pointer {
+                        underlining: returns.clone(),
+                    })
+                    .into(),
+                    arg.into(),
+                ],
+                false,
+            );
         }
         let rt = if returns.is_function() {
             curry_holder.as_basic_type_enum()

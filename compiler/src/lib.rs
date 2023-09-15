@@ -13,7 +13,7 @@ pub mod types;
 mod util;
 
 use code_gen::CodeGen;
-use typed_ast::{TypedDeclaration, TypedModuleDeclaration, ResolvedTypeDeclaration};
+use typed_ast::{ResolvedTypeDeclaration, TypedDeclaration, TypedModuleDeclaration};
 // use code_gen::CodeGen;
 use inkwell::{
     module::Module,
@@ -82,13 +82,12 @@ pub fn from_file<'ctx>(
         TypedDeclaration::Value(it) => it.generictypes.is_empty(),
         TypedDeclaration::TypeDefinition(it) => match it {
             ResolvedTypeDeclaration::Struct(strct) => strct.generics.is_empty(),
-            _ => true
-        }
+            _ => true,
+        },
         _ => true,
     });
 
-
-    println!("{:?}",ast);
+    println!("{:?}", ast);
 
     let module = code_gen.compile_program(vec![ast], false, is_debug);
     Ok(module)

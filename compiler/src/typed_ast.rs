@@ -489,19 +489,11 @@ pub enum TypedStatement {
     Return(TypedExpr, crate::Location),
     FnCall(TypedFnCall),
     Pipe(TypedPipe),
+    IfBranching(TypedIfBranching),
     Error,
 }
 
 impl TypedStatement {
-    fn replace_types(&mut self, replaced: &[(String, ResolvedType)]) {
-        match self {
-            Self::Declaration(data) => data.replace_types(replaced),
-            Self::FnCall(data) => data.replace_types(replaced),
-            Self::Return(data, _) => data.replace_types(replaced),
-            _ => (),
-        }
-    }
-
     pub(crate) fn try_from(
         statement: ast::Statement,
         known_values: &HashMap<String, ResolvedType>,
@@ -527,26 +519,42 @@ impl TypedStatement {
                 known_types,
             )?)),
             ast::Statement::Pipe(_) => todo!(),
+            ast::Statement::IfStatement(ifstmnt) => Ok(Self::IfBranching(
+                TypedIfBranching::try_from(ifstmnt, known_values, known_types),
+            )),
+            ast::Statement::Error => Ok(Self::Error),
         }
+    }
+    fn replace_types(&mut self, replaced: &[(String, ResolvedType)]) {
+        match self {
+            Self::Declaration(data) => data.replace_types(replaced),
+            Self::FnCall(data) => data.replace_types(replaced),
+            Self::Return(data, _) => data.replace_types(replaced),
+            Self::IfBranching(data) => data.replace_types(replaced),
+            _ => (),
+        }
+    }
+
+    fn replace_type(&mut self, name: &str, new_ty: &ResolvedType) {
+        self.replace_types(&[(name.to_string(), new_ty.clone())])
     }
 
     fn lower_generics(&mut self, context: &mut LoweringContext) {
         match self {
-            Self::Declaration(decl) =>{
-                match &mut decl.value {
-                    TypedValueType::Expr(expr) => { 
-                        expr.lower_generics(context);
-                        decl.ty = expr.get_ty();
-                    },
-                    TypedValueType::Function(_) => {
-                        todo!("how to handle this one :/ function inside function");
-                    }
-                    TypedValueType::Err => (),
+            Self::Declaration(decl) => match &mut decl.value {
+                TypedValueType::Expr(expr) => {
+                    expr.lower_generics(context);
+                    decl.ty = expr.get_ty();
                 }
+                TypedValueType::Function(_) => {
+                    todo!("how to handle this one :/ function inside function");
+                }
+                TypedValueType::Err => (),
             },
             Self::Return(expr, _) => expr.lower_generics(context),
             Self::FnCall(call) => call.lower_generics(context),
             Self::Pipe(_) => todo!(),
+            Self::IfBranching(ifstmnt) => ifstmnt.lower_generics(context),
             Self::Error => todo!(),
         }
     }
@@ -557,7 +565,181 @@ impl TypedStatement {
             Self::Return(expr, _) => expr.get_ty(),
             Self::FnCall(call) => call.rt.clone(),
             Self::Pipe(_) => todo!(),
+            Self::IfBranching(_) => todo!(),
             Self::Error => todo!(),
+        }
+    }
+}
+
+#[derive(PartialEq, Debug, Clone)]
+pub struct TypedIfBranching {
+    cond: Box<TypedExpr>,
+    true_branch: Vec<TypedStatement>,
+    else_ifs: Vec<(Box<TypedExpr>, Vec<TypedStatement>)>,
+    else_branch: Vec<TypedStatement>,
+}
+
+impl TypedIfBranching {
+    fn try_from(
+        value: ast::IfBranching,
+        known_values: &HashMap<String, ResolvedType>,
+        known_types: &HashMap<String, ast::TypeDefinition>,
+    ) -> Self {
+        let ast::IfBranching {
+            cond,
+            true_branch,
+            else_ifs,
+            else_branch,
+        } = value;
+        let cond = match TypedExpr::try_from(*cond, known_values, known_types, Vec::new()) {
+            Ok(cond) if cond.get_ty() == ResolvedType::Bool => cond,
+            Ok(cond) => {
+                let loc = cond.get_loc();
+                println!(
+                    "condition must be a boolean expresion but got:{} at line:{}, col:{}",
+                    cond.get_ty().to_string(),loc.0, loc.1
+                );
+                TypedExpr::ErrorNode
+            }
+            Err(e) => {
+                println!("{e:?}");
+                TypedExpr::ErrorNode
+            }
+        }
+        .boxed();
+
+        let true_branch = {
+            let mut output = Vec::with_capacity(true_branch.len());
+            let mut known_values = known_values.clone();
+            for stmnt in true_branch {
+                match TypedStatement::try_from(stmnt, &known_values, known_types) {
+                    Ok(stmnt) => {
+                        if let TypedStatement::Declaration(data) = &stmnt {
+                            let _ = known_values
+                                .entry(data.ident.clone())
+                                .and_modify(|it| {
+                                    *it = data.ty.clone();
+                                })
+                                .or_insert(data.ty.clone());
+                        }
+                        output.push(stmnt);
+                    }
+                    Err(e) => {
+                        println!("{:?}", e);
+                        output.push(TypedStatement::Error);
+                    }
+                }
+            }
+            output
+        };
+
+        let else_ifs = else_ifs
+            .into_iter()
+            .map(|(cond, stmnts)| {
+                let cond = match TypedExpr::try_from(*cond, known_values, known_types, Vec::new()) {
+                    Ok(cond) if cond.get_ty() == ResolvedType::Bool => cond,
+                    Ok(cond) => {
+                        let loc = cond.get_loc();
+                        println!(
+                            "condition must be a boolean expresion at line:{}, col:{}",
+                            loc.0, loc.1
+                        );
+                        TypedExpr::ErrorNode
+                    }
+                    Err(e) => {
+                        println!("{e:?}");
+                        TypedExpr::ErrorNode
+                    }
+                };
+                let mut block_known_values = known_values.clone();
+                let block = {
+                    let mut block = Vec::new();
+                    for stmnt in stmnts {
+                        match TypedStatement::try_from(stmnt, &block_known_values, known_types) {
+                            Ok(stmnt) => {
+                                if let TypedStatement::Declaration(data) = &stmnt {
+                                    let _ = block_known_values
+                                        .entry(data.ident.clone())
+                                        .and_modify(|it| {
+                                            *it = data.ty.clone();
+                                        })
+                                        .or_insert(data.ty.clone());
+                                }
+                                block.push(stmnt);
+                            }
+                            Err(e) => {
+                                println!("{:?}", e);
+                                block.push(TypedStatement::Error);
+                            }
+                        }
+                    }
+                    block
+                };
+                (cond.boxed(), block)
+            })
+            .collect();
+
+        let else_branch = {
+            let mut else_block_known_values = known_values.clone();
+            let mut block = Vec::new();
+            for stmnt in else_branch {
+                match TypedStatement::try_from(stmnt, &else_block_known_values, known_types) {
+                    Ok(stmnt) => {
+                        if let TypedStatement::Declaration(data) = &stmnt {
+                            let _ = else_block_known_values
+                                .entry(data.ident.clone())
+                                .and_modify(|it| {
+                                    *it = data.ty.clone();
+                                })
+                                .or_insert(data.ty.clone());
+                        }
+                        block.push(stmnt);
+                    }
+                    Err(e) => {
+                        println!("{:?}", e);
+                        block.push(TypedStatement::Error);
+                    }
+                }
+            }
+            block
+        };
+
+        Self {
+            cond,
+            true_branch,
+            else_ifs,
+            else_branch,
+        }
+    }
+
+    fn lower_generics(&mut self, context: &mut LoweringContext) {
+        self.cond.lower_generics(context);
+        for (cond, block) in &mut self.else_ifs {
+            cond.lower_generics(context);
+            block
+                .iter_mut()
+                .for_each(|stmnt| stmnt.lower_generics(context));
+        }
+        self.else_branch
+            .iter_mut()
+            .for_each(|stmnt| stmnt.lower_generics(context));
+    }
+
+    fn replace_types(&mut self, replaced: &[(String, ResolvedType)]) {
+        for (name, new_ty) in replaced {
+            self.cond.replace_type(name, new_ty);
+            self.true_branch
+                .iter_mut()
+                .for_each(|it| it.replace_type(name, new_ty));
+            for (cond, block) in &mut self.else_ifs {
+                cond.replace_type(name, new_ty);
+                block
+                    .iter_mut()
+                    .for_each(|it| it.replace_type(name, new_ty));
+            }
+            self.else_branch
+                .iter_mut()
+                .for_each(|it| it.replace_type(name, new_ty));
         }
     }
 }
@@ -569,7 +751,7 @@ pub struct TypedPipe {
     pub(crate) lhs: Box<TypedExpr>,
     /// THIS HAS A RESTRICTION OF MUST RETURN A FUNCTION
     pub(crate) rhs: Box<TypedExpr>,
-    /// should match the final return type as [`rhs`]
+    /// should match the final return type as [`TypedPipe::rhs`]
     pub(crate) rt: ResolvedType,
 }
 
@@ -758,10 +940,16 @@ impl TypedStructConstruction {
 
     fn lower_generics(&mut self, context: &mut LoweringContext) {
         if !self.generics.is_empty() {
-            self.ident = format!("{}<{}>",self.ident,self.generics.iter().map(|it|it.to_string()).join(","));
+            self.ident = format!(
+                "{}<{}>",
+                self.ident,
+                self.generics.iter().map(|it| it.to_string()).join(",")
+            );
             self.generics.clear();
         }
-        self.fields.values_mut().for_each(|(v,_)| v.lower_generics(context))
+        self.fields
+            .values_mut()
+            .for_each(|(v, _)| v.lower_generics(context))
     }
 }
 
@@ -795,7 +983,7 @@ pub enum TypedExpr {
     FnCall(TypedFnCall),
     /// basically an ident on it's own
     /// (ident,type)
-    ValueRead(String, ResolvedType),
+    ValueRead(String, ResolvedType, crate::Location),
     /// NOT IMPLEMENTED YET
     /// defined like [ expr, expr, expr, ... ]
     /// type [T;N]
@@ -817,6 +1005,8 @@ pub enum TypedExpr {
     },
 
     StructConstruction(TypedStructConstruction),
+
+    IfExpr(TypedIfExpr),
 
     // This is used to allow to continue type checking.  should never naturally generate.
     ErrorNode,
@@ -858,12 +1048,12 @@ impl TypedExpr {
                 known_values,
                 known_types,
             )?)),
-            Expr::ValueRead(value) => {
+            Expr::ValueRead(value,loc) => {
                 if !known_values.contains_key(&value) {
                     Err(TypingError::UnknownType)
                 } else {
                     let ty = known_values[&value].clone();
-                    Ok(Self::ValueRead(value, ty))
+                    Ok(Self::ValueRead(value, ty, loc))
                 }
             }
             Expr::ArrayLiteral { contents, .. } => {
@@ -902,7 +1092,33 @@ impl TypedExpr {
             Expr::StructConstruction(strct) => Ok(Self::StructConstruction(
                 TypedStructConstruction::from(strct, known_values, known_types)?,
             )),
+            Expr::If(ifexpr) => Ok(Self::IfExpr(TypedIfExpr::from(
+                ifexpr,
+                known_values,
+                known_types,
+            ))),
             Expr::Error => Ok(Self::ErrorNode),
+        }
+    }
+
+    pub(crate) fn get_loc(&self) -> crate::Location {
+        match self {
+            Self::IntegerLiteral { value, size } => todo!(),
+            Self::FloatLiteral { value, size } => todo!(),
+            Self::StringLiteral(_) => todo!(),
+            Self::CharLiteral(_) => todo!(),
+            Self::UnitLiteral => todo!(),
+            Self::BinaryOpCall(bin) => bin.loc,
+            Self::MemeberRead(read) => read.loc,
+            Self::UnaryOpCall(_) => todo!(),
+            Self::FnCall(call) => call.loc,
+            Self::ValueRead(_, _, loc) => *loc,
+            Self::ArrayLiteral { contents } => todo!(),
+            Self::ListLiteral { contents } => todo!(),
+            Self::TupleLiteral { contents } => todo!(),
+            Self::StructConstruction(con) => con.loc,
+            Self::IfExpr(ifexpr) => ifexpr.loc,
+            Self::ErrorNode => todo!(),
         }
     }
 
@@ -921,7 +1137,7 @@ impl TypedExpr {
             Self::BinaryOpCall(data) => data.rt.clone(),
             Self::UnaryOpCall(data) => data.rt.clone(),
             Self::FnCall(data) => data.rt.clone(),
-            Self::ValueRead(_, ty) => ty.clone(),
+            Self::ValueRead(_, ty, _) => ty.clone(),
             Self::ArrayLiteral { contents } => ResolvedType::Array {
                 underlining: contents.first().unwrap().get_ty().boxed(),
                 size: contents.len(),
@@ -932,6 +1148,19 @@ impl TypedExpr {
                 name: strct.ident.clone(),
                 generics: strct.generics.clone(),
             },
+            Self::IfExpr(ifexpr) => {
+                let expected_ty = ifexpr.true_branch.1.get_ty();
+                for (_, _, returned) in &ifexpr.else_ifs {
+                    if expected_ty != returned.get_ty() {
+                        return ResolvedType::Error;
+                    }
+                }
+                if ifexpr.else_branch.1.get_ty() != expected_ty {
+                    ResolvedType::Error
+                } else {
+                    expected_ty
+                }
+            }
             Self::MemeberRead(member_read) => member_read.get_ty(),
         }
     }
@@ -941,7 +1170,7 @@ impl TypedExpr {
             Self::BinaryOpCall(data) => data.replace_type(name, new_ty),
             Self::UnaryOpCall(_) => todo!(),
             Self::FnCall(data) => data.replace_type(name, new_ty),
-            Self::ValueRead(_, ty) => *ty = ty.replace_generic(name, new_ty.clone()),
+            Self::ValueRead(_, ty, _) => *ty = ty.replace_generic(name, new_ty.clone()),
             Self::ArrayLiteral { contents } => contents
                 .iter_mut()
                 .for_each(|it| it.replace_type(name, new_ty)),
@@ -951,6 +1180,10 @@ impl TypedExpr {
             Self::TupleLiteral { contents } => contents
                 .iter_mut()
                 .for_each(|it| it.replace_type(name, new_ty)),
+
+            Self::IfExpr(ifexpr) => {
+                ifexpr.replace_type(name, new_ty);
+            }
             _ => (),
         }
     }
@@ -996,15 +1229,21 @@ impl TypedExpr {
             Self::FnCall(data) => {
                 data.lower_generics(context);
             }
-            Self::ValueRead(ident, ty) if ty.is_function() => {
+            Self::ValueRead(ident, ty, _) if ty.is_function() => {
                 let is_generic = ty.is_generic();
                 ty.lower_generics(context);
-                if!is_generic {return;}
+                if !is_generic {
+                    return;
+                }
                 let args = context.args.iter().cloned().collect();
                 context.args = Vec::new(); //moving the arg count out due to this is the value of the function call
                 let (fun_t, mut replaced) = map_types_to_args(ty.clone(), args);
                 replaced.dedup_by_key(|it| it.0.clone()); // should do nothing but I am being overly cautious
-                let new_name = format!("{}<{}>",ident,replaced.iter().map(|(_,it)| it.to_string()).join(","));
+                let new_name = format!(
+                    "{}<{}>",
+                    ident,
+                    replaced.iter().map(|(_, it)| it.to_string()).join(",")
+                );
                 if !context.generated_generics.contains_key(&new_name) {
                     match context.globals.get(ident) {
                         Some(original) => {
@@ -1035,9 +1274,244 @@ impl TypedExpr {
             Self::StructConstruction(strct) => strct.lower_generics(context),
             Self::BinaryOpCall(data) => data.lower_generics(context),
             Self::UnaryOpCall(_data) => todo!("unary op type lowering"),
-            Self::ValueRead(_, ty) => ty.lower_generics(context),
+            Self::ValueRead(_, ty, _) => ty.lower_generics(context),
+            Self::IfExpr(data) => data.lower_generics(context),
             Self::ErrorNode => (),
         }
+    }
+}
+
+#[derive(PartialEq, Debug, Clone)]
+pub struct TypedIfExpr {
+    cond: Box<TypedExpr>,
+    true_branch: (Vec<TypedStatement>, Box<TypedExpr>),
+    else_ifs: Vec<(Box<TypedExpr>, Vec<TypedStatement>, Box<TypedExpr>)>,
+    else_branch: (Vec<TypedStatement>, Box<TypedExpr>),
+    loc: crate::Location,
+}
+
+impl TypedIfExpr {
+    pub(crate) fn from(
+        value: ast::IfExpr,
+        known_values: &HashMap<String, ResolvedType>,
+        known_types: &HashMap<String, ast::TypeDefinition>,
+    ) -> Self {
+        let ast::IfExpr {
+            cond,
+            true_branch,
+            else_ifs,
+            else_branch,
+            loc,
+        } = value;
+        let cond = match TypedExpr::try_from(*cond, known_values, known_types, Vec::new()) {
+            Ok(cond) if cond.get_ty() == ResolvedType::Bool => cond,
+            Ok(cond) => {
+                let loc = cond.get_loc();
+                println!(
+                    "condition must be a boolean but got:{} \nexpresion at line:{}, col:{}",
+                    cond.get_ty().to_string(),loc.0, loc.1
+                );
+                TypedExpr::ErrorNode
+            }
+            Err(e) => {
+                println!("{e:?}");
+                TypedExpr::ErrorNode
+            }
+        }
+        .boxed();
+
+        let mut true_block_known_values = known_values.clone();
+        let true_branch_block = {
+            let mut block = Vec::new();
+            for stmnt in true_branch.0 {
+                match TypedStatement::try_from(stmnt, &true_block_known_values, known_types) {
+                    Ok(stmnt) => {
+                        if let TypedStatement::Declaration(data) = &stmnt {
+                            let _ = true_block_known_values
+                                .entry(data.ident.clone())
+                                .and_modify(|it| {
+                                    *it = data.ty.clone();
+                                })
+                                .or_insert(data.ty.clone());
+                        }
+                        block.push(stmnt);
+                    }
+                    Err(e) => {
+                        println!("{:?}", e);
+                        block.push(TypedStatement::Error);
+                    }
+                }
+            }
+            block
+        };
+        let mut expected_ty = ResolvedType::Error;
+        let true_branch_ret = match TypedExpr::try_from(
+            *true_branch.1,
+            &true_block_known_values,
+            known_types,
+            Vec::new(),
+        ) {
+            Ok(ret) => {
+                expected_ty = ret.get_ty();
+                ret
+            }
+            Err(e) => {
+                println!("{e:?}");
+                TypedExpr::ErrorNode
+            }
+        };
+
+        let else_ifs = else_ifs.into_iter().map(|(cond, stmnts,ret)| {
+            let cond = match TypedExpr::try_from(*cond, known_values, known_types, Vec::new()){
+                Ok(cond) if cond.get_ty() == ResolvedType::Bool => cond,
+                Ok(cond) => {
+                    let loc = cond.get_loc();
+                    println!("condition must be a boolean expresion at line:{}, col:{}", loc.0, loc.1);
+                    TypedExpr::ErrorNode
+                },
+                Err(e) => {
+                    println!("{e:?}");
+                    TypedExpr::ErrorNode
+                }
+            };
+            let mut block_known_values = known_values.clone();
+            let block = {
+                let mut block = Vec::new();
+                for stmnt in stmnts {
+                    match TypedStatement::try_from(stmnt, &block_known_values, known_types) {
+                        Ok(stmnt) => {
+                            if let TypedStatement::Declaration(data) = &stmnt {
+                                let _ = block_known_values
+                                    .entry(data.ident.clone())
+                                    .and_modify(|it| {
+                                        *it = data.ty.clone();
+                                    })
+                                    .or_insert(data.ty.clone());
+                            }
+                            block.push(stmnt);
+                        }
+                        Err(e) => {
+                            println!("{:?}", e);
+                            block.push(TypedStatement::Error);
+                        }
+                    }
+                }
+                block
+            };
+            let ret = match TypedExpr::try_from(*ret, &block_known_values, known_types,Vec::new()){
+                Ok(ret) => {
+                    if expected_ty == ResolvedType::Error {
+                        expected_ty = ret.get_ty();
+                    } else if ret.get_ty() != expected_ty {
+                        let loc = ret.get_loc();
+                        println!(
+                            "all branches of an if expression must match in return type.\n  expected: {},\n actual: {} \n at line:{}, col :{}",
+                            expected_ty.to_string(),
+                            ret.get_ty().to_string(),
+                            loc.0,
+                            loc.1
+                        );
+                    }
+                    ret
+                },
+                Err(e) => {
+                    println!("{e:?}");
+                    TypedExpr::ErrorNode
+                }
+            };
+
+            (cond.boxed(),block,ret.boxed())
+        }).collect();
+
+        let mut else_block_known_values = known_values.clone();
+        let else_branch_block = {
+            let mut block = Vec::new();
+            for stmnt in else_branch.0 {
+                match TypedStatement::try_from(stmnt, &else_block_known_values, known_types) {
+                    Ok(stmnt) => {
+                        if let TypedStatement::Declaration(data) = &stmnt {
+                            let _ = else_block_known_values
+                                .entry(data.ident.clone())
+                                .and_modify(|it| {
+                                    *it = data.ty.clone();
+                                })
+                                .or_insert(data.ty.clone());
+                        }
+                        block.push(stmnt);
+                    }
+                    Err(e) => {
+                        println!("{:?}", e);
+                        block.push(TypedStatement::Error);
+                    }
+                }
+            }
+            block
+        };
+        let else_branch_ret = match TypedExpr::try_from(
+            *else_branch.1,
+            &else_block_known_values,
+            known_types,
+            Vec::new(),
+        ) {
+            Ok(ret) => {
+                if expected_ty == ResolvedType::Error {
+                    //hopefully this only happens if there is only if/else and the if branch doesn't have a valid expression
+                    expected_ty = ret.get_ty();
+                    // not sure what to report here tbh.
+                } else if ret.get_ty() != expected_ty {
+                    let loc = ret.get_loc();
+                    println!(
+                        "all branches of an if expression must match in return type.\n  expected: {},\n actual: {} \n at line:{}, col :{}",
+                        expected_ty.to_string(),
+                        ret.get_ty().to_string(),
+                        loc.0,
+                        loc.1
+                    );
+                }
+                ret
+            }
+            Err(e) => {
+                println!("{e:?}");
+                TypedExpr::ErrorNode
+            }
+        };
+        Self {
+            cond,
+            true_branch: (true_branch_block, true_branch_ret.boxed()),
+            else_ifs,
+            else_branch: (else_branch_block, else_branch_ret.boxed()),
+            loc,
+        }
+    }
+
+    fn replace_type(&mut self, name: &str, new_ty: &ResolvedType) {
+        self.cond.replace_type(name, new_ty);
+        for (cond, block, ret) in &mut self.else_ifs {
+            cond.replace_type(name, new_ty);
+            block
+                .iter_mut()
+                .for_each(|it| it.replace_type(name, new_ty));
+            ret.replace_type(name, new_ty);
+        }
+        self.else_branch
+            .0
+            .iter_mut()
+            .for_each(|it| it.replace_type(name, new_ty));
+        self.else_branch.1.replace_type(name, new_ty);
+    }
+
+    fn lower_generics(&mut self, context: &mut LoweringContext) {
+        self.cond.lower_generics(context);
+        for (cond, block, ret) in &mut self.else_ifs {
+            cond.lower_generics(context);
+            block.iter_mut().for_each(|it| it.lower_generics(context));
+            ret.lower_generics(context);
+        }
+        self.else_branch
+            .0
+            .iter_mut()
+            .for_each(|it| it.lower_generics(context));
+        self.else_branch.1.lower_generics(context);
     }
 }
 
@@ -1057,10 +1531,10 @@ impl TypedMemberRead {
         already_processed_args: Vec<ResolvedType>,
     ) -> Result<Self, TypingError> {
         let ast::BinaryOpCall { loc, lhs, rhs, .. } = value;
-        let ast::Expr::ValueRead(member) = *rhs else { return Err(TypingError::MemberMustBeIdent) };
+        let ast::Expr::ValueRead(member, _) = *rhs else { return Err(TypingError::MemberMustBeIdent) };
         let value = TypedExpr::try_from(*lhs, known_values, known_types, already_processed_args)?;
         let ty = value.get_ty();
-        
+
         if ty == ResolvedType::Error {
             return Err(TypingError::UnknownType);
         }
@@ -1114,7 +1588,7 @@ impl TypedMemberRead {
             return;
         }
         self.target.lower_generics(context);
-        let Some(strct) = context.generated_generics.get(&dbg!(self.target.get_ty().to_string())) else {
+        let Some(strct) = context.generated_generics.get(&(self.target.get_ty().to_string())) else {
             self.ty = ResolvedType::Error;
             return;
         };
@@ -1502,8 +1976,8 @@ mod tests {
     use crate::ast::ArgDeclation;
     use crate::parser::Parser;
     use crate::typed_ast::{
-        ResolvedTypeDeclaration, StructDefinition, TypedDeclaration, TypedFnCall,
-        TypedModuleDeclaration, TypedStatement, TypedValueDeclaration, TypedValueType,
+        ResolvedTypeDeclaration, StructDefinition, TypedDeclaration, TypedFnCall, TypedIfExpr,
+        TypedModuleDeclaration, TypedStatement, TypedValueDeclaration, TypedValueType, TypedIfBranching,
     };
     use crate::types::{self, ResolvedType};
     use crate::util::ExtraUtilFunctions;
@@ -1537,7 +2011,7 @@ let main _ : () -> () =
         module.canonialize(vec!["P".to_string()]);
         let mut module = TypedModuleDeclaration::from(module, &HashMap::new());
         module.lower_generics(&HashMap::new());
-        println!("{:?}",module)
+        println!("{:?}", module)
     }
 
     #[test]
@@ -1658,13 +2132,13 @@ let main _ : () -> () =
 
         assert_eq!(
             TypedExpr::try_from(
-                Expr::ValueRead("bar".to_string()),
+                Expr::ValueRead("bar".to_string(),(0,0)),
                 &PREDEFINED_VALUES,
                 &HashMap::new(),
                 Vec::new()
             )
             .expect(""),
-            TypedExpr::ValueRead("bar".to_string(), types::INT32),
+            TypedExpr::ValueRead("bar".to_string(), types::INT32,(0,0)),
             "reading a value"
         );
 
@@ -1672,8 +2146,8 @@ let main _ : () -> () =
             TypedExpr::try_from(
                 Expr::FnCall(ast::FnCall {
                     loc: (0, 0),
-                    value: Expr::ValueRead("foo".to_string()).boxed(),
-                    arg: Some(Expr::ValueRead("bar".to_string()).boxed()),
+                    value: Expr::ValueRead("foo".to_string(),(0,0)).boxed(),
+                    arg: Some(Expr::ValueRead("bar".to_string(),(0,0)).boxed()),
                 }),
                 &PREDEFINED_VALUES,
                 &HashMap::new(),
@@ -1687,10 +2161,11 @@ let main _ : () -> () =
                     ResolvedType::Function {
                         arg: types::INT32.boxed(),
                         returns: types::INT32.boxed()
-                    }
+                    },
+                    (0,0)
                 )
                 .boxed(),
-                arg: Some(TypedExpr::ValueRead("bar".to_string(), types::INT32).boxed()),
+                arg: Some(TypedExpr::ValueRead("bar".to_string(), types::INT32, (0,0)).boxed()),
                 arg_t: types::INT32,
                 rt: types::INT32
             }),
@@ -1783,13 +2258,13 @@ let main _ : () -> () =
 
         assert_eq!(
             TypedStatement::try_from(
-                Statement::Return(ast::Expr::ValueRead("bar".to_string()), (0, 0)),
+                Statement::Return(ast::Expr::ValueRead("bar".to_string(),(0,0)), (0, 0)),
                 &PREDEFINED_VALUES,
                 &HashMap::new(),
             )
             .expect(""),
             TypedStatement::Return(
-                TypedExpr::ValueRead("bar".to_string(), types::INT32),
+                TypedExpr::ValueRead("bar".to_string(), types::INT32, (0,0)),
                 (0, 0)
             ),
             "return"
@@ -1799,8 +2274,8 @@ let main _ : () -> () =
             TypedStatement::try_from(
                 Statement::FnCall(ast::FnCall {
                     loc: (0, 0),
-                    value: ast::Expr::ValueRead("foo".to_string()).boxed(),
-                    arg: Some(ast::Expr::ValueRead("bar".to_string()).boxed()),
+                    value: ast::Expr::ValueRead("foo".to_string(),(0,0)).boxed(),
+                    arg: Some(ast::Expr::ValueRead("bar".to_string(),(0,0)).boxed()),
                 }),
                 &PREDEFINED_VALUES,
                 &HashMap::new(),
@@ -1813,10 +2288,11 @@ let main _ : () -> () =
                     ResolvedType::Function {
                         arg: types::INT32.boxed(),
                         returns: types::INT32.boxed()
-                    }
+                    },
+                    (0,0)
                 )
                 .boxed(),
-                arg: Some(TypedExpr::ValueRead("bar".to_string(), types::INT32).boxed()),
+                arg: Some(TypedExpr::ValueRead("bar".to_string(), types::INT32,(0,0)).boxed()),
                 arg_t: types::INT32,
                 rt: types::INT32
             }),
@@ -1901,7 +2377,6 @@ let main _ : () -> () =
         let module = super::TypedModuleDeclaration::from(module, &HashMap::new());
         let [generic, main] = &module.declarations[..] else { unreachable!() };
         assert_eq!(
-            generic,
             &TypedDeclaration::Value(TypedValueDeclaration {
                 loc: (1, 12),
                 is_op: false,
@@ -1914,8 +2389,9 @@ let main _ : () -> () =
                     "a".to_string(),
                     ResolvedType::Generic {
                         name: "T".to_string()
-                    }
-                ),),
+                    },
+                    (1,30)
+                )),
                 ty: ResolvedType::Function {
                     arg: ResolvedType::Generic {
                         name: "T".to_string()
@@ -1929,10 +2405,10 @@ let main _ : () -> () =
                 generictypes: vec!["T".to_string()],
                 is_curried: false,
             }),
+            generic,
             "generic"
         );
         assert_eq!(
-            main,
             &TypedDeclaration::Value(TypedValueDeclaration {
                 loc: (3, 5),
                 is_op: false,
@@ -1954,7 +2430,8 @@ let main _ : () -> () =
                                 name: "T".to_string()
                             }
                             .boxed()
-                        }
+                        },
+                        (4,5)
                     )
                     .boxed(),
                     arg: Some(
@@ -1976,6 +2453,7 @@ let main _ : () -> () =
                 generictypes: Vec::new(),
                 is_curried: false,
             }),
+            main,
             "main"
         )
     }
@@ -1997,7 +2475,7 @@ let first a : Tuple<int32,float64> -> int32 =
 
         let module = parser.module("test.fb".to_string());
         let mut module = TypedModuleDeclaration::from(module, &HashMap::new());
-        let [strct, _] = dbg!(&module.declarations[..]) else { unreachable!() };
+        let [strct, _] = &module.declarations[..] else { unreachable!() };
         assert_eq!(
             strct,
             &TypedDeclaration::TypeDefinition(crate::typed_ast::ResolvedTypeDeclaration::Struct(
@@ -2115,7 +2593,8 @@ let main _ : int32 -> int32 =
                         "a".to_string(),
                         ResolvedType::Generic {
                             name: "T".to_string()
-                        }
+                        },
+                        (2,12)
                     ),
                     (2, 5)
                 )]),
@@ -2152,7 +2631,8 @@ let main _ : int32 -> int32 =
                             ResolvedType::Function {
                                 arg: types::INT32.boxed(),
                                 returns: types::INT32.boxed()
-                            }
+                            },
+                            (5,5)
                         )
                         .boxed(),
                         arg: Some(
@@ -2193,7 +2673,7 @@ let main _ : int32 -> int32 =
                     loc: (1, 17)
                 }],
                 value: crate::typed_ast::TypedValueType::Function(vec![TypedStatement::Return(
-                    TypedExpr::ValueRead("a".to_string(), types::INT32),
+                    TypedExpr::ValueRead("a".to_string(), types::INT32,(2,12)),
                     (2, 5)
                 )]),
                 ty: ResolvedType::Function {
@@ -2204,6 +2684,148 @@ let main _ : int32 -> int32 =
                 is_curried: false,
             }),
             "this should be generated"
+        )
+    }
+
+    #[test]
+    fn control_flow() {
+        let parser = Parser::from_source(
+            r#"
+let expr_with_statement a : bool -> int32 = if a then
+        foo 3
+        0
+    else
+        foo 4
+        1
+
+let statement_with_else_if a b : bool -> bool -> int32 =
+    if a then
+        return 0
+    else if b then
+        return 1
+    else
+        return 2
+"#,
+        );
+        let mut module = parser.module("test".to_string());
+        module.canonialize(vec!["Tests".to_string()]);
+        let module = TypedModuleDeclaration::from(module, &PREDEFINED_VALUES);
+        let [expr,stmnt] = &module.declarations[..] else {unreachable!("more than two?") };
+        assert_eq!(
+            &TypedDeclaration::Value(TypedValueDeclaration {
+                loc: (1, 5),
+                is_op: false,
+                ident: "Tests::test::expr_with_statement".to_string(),
+                args: vec![crate::ast::ArgDeclation {
+                    loc: (1, 25),
+                    ident: "a".to_string()
+                }],
+                value: TypedValueType::Expr(TypedExpr::IfExpr(TypedIfExpr {
+                    cond: TypedExpr::ValueRead("a".to_string(), types::BOOL,(1,48)).boxed(),
+                    true_branch: (
+                        vec![
+                            TypedStatement::FnCall(TypedFnCall {
+                                loc: (2,9),
+                                value: TypedExpr::ValueRead(
+                                    "foo".to_string(), 
+                                    ResolvedType::Function { 
+                                        arg: types::INT32.boxed(),
+                                        returns: types::INT32.boxed()
+                                    },
+                                    (2,9)
+                                ).boxed(),
+                                arg: Some(TypedExpr::IntegerLiteral { value: "3".to_string(), size: types::IntWidth::ThirtyTwo }.boxed()),
+                                rt: types::INT32,
+                                arg_t: types::INT32,
+                            })
+                        ],
+                        TypedExpr::IntegerLiteral { value: "0".to_string(), size: types::IntWidth::ThirtyTwo }.boxed()
+                    ),
+                    else_ifs: Vec::new(),
+                    else_branch: (
+                        vec![
+                            TypedStatement::FnCall(TypedFnCall {
+                                loc: (5,9),
+                                value: TypedExpr::ValueRead(
+                                    "foo".to_string(), 
+                                    ResolvedType::Function { 
+                                        arg: types::INT32.boxed(),
+                                        returns: types::INT32.boxed()
+                                    },
+                                    (5,9)
+                                ).boxed(),
+                                arg: Some(TypedExpr::IntegerLiteral { value: "4".to_string(), size: types::IntWidth::ThirtyTwo }.boxed()),
+                                rt: types::INT32,
+                                arg_t: types::INT32,
+                            })
+                        ],
+                        TypedExpr::IntegerLiteral { value: "1".to_string(), size: types::IntWidth::ThirtyTwo }.boxed()
+                    ),
+                    loc: (1,46)
+                })),
+                ty: ResolvedType::Function { arg: types::BOOL.boxed(), returns: types::INT32.boxed() },
+                generictypes: Vec::new(),
+                is_curried: false,
+            }),
+            expr,
+            "expression if"
+        );
+        assert_eq!(
+            &TypedDeclaration::Value(TypedValueDeclaration {
+                loc: (8, 5),
+                is_op: false,
+                ident: "Tests::test::statement_with_else_if".to_string(),
+                args: vec![
+                    crate::ast::ArgDeclation {
+                        loc: (8, 28),
+                        ident: "a".to_string()
+                    },
+                    crate::ast::ArgDeclation {
+                        loc: (8, 30),
+                        ident: "b".to_string()
+                    },
+                ],
+                ty: ResolvedType::Function {
+                    arg: types::BOOL.boxed(),
+                    returns: ResolvedType::Function {
+                        arg: types::BOOL.boxed(),
+                        returns: types::INT32.boxed()
+                    }
+                    .boxed(),
+                },
+                value: TypedValueType::Function(vec![
+                    TypedStatement::IfBranching(TypedIfBranching {
+                    cond: TypedExpr::ValueRead("a".to_string(),types::BOOL,(9,8)).boxed(),
+                    true_branch: vec![TypedStatement::Return(
+                        TypedExpr::IntegerLiteral {
+                            value:"0".to_string(), 
+                            size: types::IntWidth::ThirtyTwo 
+                        },
+                        (10, 9)
+                    )],
+                    else_ifs: vec![(
+                        TypedExpr::ValueRead("b".to_string(),types::BOOL,(11,13)).boxed(),
+                        vec![TypedStatement::Return(
+                            TypedExpr::IntegerLiteral {
+                                value:"1".to_string(), 
+                                size: types::IntWidth::ThirtyTwo 
+                            },
+                            (12, 9)
+                        )]
+                    )],
+                    else_branch: vec![TypedStatement::Return(
+                        TypedExpr::IntegerLiteral {
+                            value:"2".to_string(), 
+                            size: types::IntWidth::ThirtyTwo 
+                        },
+                        (14, 9)
+                    )]
+                })]),
+                generictypes: Vec::new(),
+                is_curried : false,
+            }),
+            stmnt,
+            "statement if"
         )
     }
 }

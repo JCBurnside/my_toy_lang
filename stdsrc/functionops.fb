@@ -10,3 +10,6 @@ public let compose a b c = a c |> b
 
 public let >>> a b = compose a b
 
+public let curry_left fun a = fun a
+
+public let curry_right fun a b = fun b a

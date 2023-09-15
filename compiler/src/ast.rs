@@ -200,6 +200,8 @@ pub enum Statement {
     Return(Expr, crate::Location),
     FnCall(FnCall),
     Pipe(Pipe),
+    IfStatement(IfBranching),
+    Error,
 }
 impl Statement {
     fn replace(&mut self, nice_name: &str, actual: &str) {
@@ -208,7 +210,35 @@ impl Statement {
             Statement::Return(expr, _) => expr.replace(nice_name, actual),
             Statement::FnCall(fncall) => fncall.replace(nice_name, actual),
             Statement::Pipe(_) => todo!(),
+            Statement::IfStatement(ifbranches) => ifbranches.replace(nice_name, actual),
+            Statement::Error => (),
         }
+    }
+}
+
+#[derive(PartialEq, Eq, Debug)]
+pub struct IfBranching {
+    pub(crate) cond: Box<Expr>,
+    pub(crate) true_branch: Vec<Statement>,
+    pub(crate) else_ifs: Vec<(Box<Expr>, Vec<Statement>)>,
+    pub(crate) else_branch: Vec<Statement>,
+}
+
+impl IfBranching {
+    fn replace(&mut self, nice_name: &str, actual: &str) {
+        self.cond.replace(nice_name, actual);
+        self.true_branch
+            .iter_mut()
+            .for_each(|stmt| stmt.replace(nice_name, actual));
+        self.else_ifs.iter_mut().for_each(|(cond, block)| {
+            cond.replace(nice_name, actual);
+            block
+                .iter_mut()
+                .for_each(|stmnt| stmnt.replace(nice_name, actual));
+        });
+        self.else_branch
+            .iter_mut()
+            .for_each(|stmt| stmt.replace(nice_name, actual));
     }
 }
 
@@ -302,7 +332,7 @@ pub enum Expr {
     /// eg `foo bar` (composed of two [`ValueRead`]s in this example)
     FnCall(FnCall),
     /// basically an ident on it's own
-    ValueRead(String),
+    ValueRead(String,crate::Location),
 
     /// NOT IMPLEMENTED YET
     /// defined like [ expr, expr, expr, ... ]
@@ -328,11 +358,13 @@ pub enum Expr {
     },
 
     StructConstruction(StructConstruction),
+
+    If(IfExpr),
 }
 impl Expr {
     fn replace(&mut self, nice_name: &str, actual: &str) {
         match self {
-            Expr::ValueRead(read) if read == nice_name => {
+            Expr::ValueRead(read,_) if read == nice_name => {
                 *read = actual.to_string();
             }
             Expr::BinaryOpCall(bin) => bin.replace(nice_name, actual),
@@ -350,5 +382,37 @@ impl Expr {
             }
             _ => (),
         }
+    }
+}
+
+#[derive(PartialEq, Eq, Debug)]
+pub struct IfExpr {
+    pub(crate) cond: Box<Expr>,
+    pub(crate) true_branch: (Vec<Statement>, Box<Expr>),
+    pub(crate) else_ifs: Vec<(Box<Expr>, Vec<Statement>, Box<Expr>)>,
+    pub(crate) else_branch: (Vec<Statement>, Box<Expr>),
+    pub(crate) loc: crate::Location,
+}
+
+impl IfExpr {
+    fn replace(&mut self, nice_name: &str, actual: &str) {
+        self.cond.replace(nice_name, actual);
+        self.true_branch
+            .0
+            .iter_mut()
+            .for_each(|stmt| stmt.replace(nice_name, actual));
+        self.true_branch.1.replace(nice_name, actual);
+        self.else_ifs.iter_mut().for_each(|(cond, block, ret)| {
+            cond.replace(nice_name, actual);
+            block
+                .iter_mut()
+                .for_each(|stmnt| stmnt.replace(nice_name, actual));
+            ret.replace(nice_name, actual);
+        });
+        self.else_branch
+            .0
+            .iter_mut()
+            .for_each(|stmt| stmt.replace(nice_name, actual));
+        self.else_branch.1.replace(nice_name, actual);
     }
 }
