@@ -573,10 +573,10 @@ impl TypedStatement {
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct TypedIfBranching {
-    cond: Box<TypedExpr>,
-    true_branch: Vec<TypedStatement>,
-    else_ifs: Vec<(Box<TypedExpr>, Vec<TypedStatement>)>,
-    else_branch: Vec<TypedStatement>,
+    pub(crate) cond: Box<TypedExpr>,
+    pub(crate) true_branch: Vec<TypedStatement>,
+    pub(crate) else_ifs: Vec<(Box<TypedExpr>, Vec<TypedStatement>)>,
+    pub(crate) else_branch: Vec<TypedStatement>,
 }
 
 impl TypedIfBranching {
@@ -597,7 +597,9 @@ impl TypedIfBranching {
                 let loc = cond.get_loc();
                 println!(
                     "condition must be a boolean expresion but got:{} at line:{}, col:{}",
-                    cond.get_ty().to_string(),loc.0, loc.1
+                    cond.get_ty().to_string(),
+                    loc.0,
+                    loc.1
                 );
                 TypedExpr::ErrorNode
             }
@@ -1048,7 +1050,7 @@ impl TypedExpr {
                 known_values,
                 known_types,
             )?)),
-            Expr::ValueRead(value,loc) => {
+            Expr::ValueRead(value, loc) => {
                 if !known_values.contains_key(&value) {
                     Err(TypingError::UnknownType)
                 } else {
@@ -1309,7 +1311,9 @@ impl TypedIfExpr {
                 let loc = cond.get_loc();
                 println!(
                     "condition must be a boolean but got:{} \nexpresion at line:{}, col:{}",
-                    cond.get_ty().to_string(),loc.0, loc.1
+                    cond.get_ty().to_string(),
+                    loc.0,
+                    loc.1
                 );
                 TypedExpr::ErrorNode
             }
@@ -1976,8 +1980,8 @@ mod tests {
     use crate::ast::ArgDeclation;
     use crate::parser::Parser;
     use crate::typed_ast::{
-        ResolvedTypeDeclaration, StructDefinition, TypedDeclaration, TypedFnCall, TypedIfExpr,
-        TypedModuleDeclaration, TypedStatement, TypedValueDeclaration, TypedValueType, TypedIfBranching,
+        ResolvedTypeDeclaration, StructDefinition, TypedDeclaration, TypedFnCall, TypedIfBranching,
+        TypedIfExpr, TypedModuleDeclaration, TypedStatement, TypedValueDeclaration, TypedValueType,
     };
     use crate::types::{self, ResolvedType};
     use crate::util::ExtraUtilFunctions;
@@ -2132,13 +2136,13 @@ let main _ : () -> () =
 
         assert_eq!(
             TypedExpr::try_from(
-                Expr::ValueRead("bar".to_string(),(0,0)),
+                Expr::ValueRead("bar".to_string(), (0, 0)),
                 &PREDEFINED_VALUES,
                 &HashMap::new(),
                 Vec::new()
             )
             .expect(""),
-            TypedExpr::ValueRead("bar".to_string(), types::INT32,(0,0)),
+            TypedExpr::ValueRead("bar".to_string(), types::INT32, (0, 0)),
             "reading a value"
         );
 
@@ -2146,8 +2150,8 @@ let main _ : () -> () =
             TypedExpr::try_from(
                 Expr::FnCall(ast::FnCall {
                     loc: (0, 0),
-                    value: Expr::ValueRead("foo".to_string(),(0,0)).boxed(),
-                    arg: Some(Expr::ValueRead("bar".to_string(),(0,0)).boxed()),
+                    value: Expr::ValueRead("foo".to_string(), (0, 0)).boxed(),
+                    arg: Some(Expr::ValueRead("bar".to_string(), (0, 0)).boxed()),
                 }),
                 &PREDEFINED_VALUES,
                 &HashMap::new(),
@@ -2162,10 +2166,10 @@ let main _ : () -> () =
                         arg: types::INT32.boxed(),
                         returns: types::INT32.boxed()
                     },
-                    (0,0)
+                    (0, 0)
                 )
                 .boxed(),
-                arg: Some(TypedExpr::ValueRead("bar".to_string(), types::INT32, (0,0)).boxed()),
+                arg: Some(TypedExpr::ValueRead("bar".to_string(), types::INT32, (0, 0)).boxed()),
                 arg_t: types::INT32,
                 rt: types::INT32
             }),
@@ -2258,13 +2262,13 @@ let main _ : () -> () =
 
         assert_eq!(
             TypedStatement::try_from(
-                Statement::Return(ast::Expr::ValueRead("bar".to_string(),(0,0)), (0, 0)),
+                Statement::Return(ast::Expr::ValueRead("bar".to_string(), (0, 0)), (0, 0)),
                 &PREDEFINED_VALUES,
                 &HashMap::new(),
             )
             .expect(""),
             TypedStatement::Return(
-                TypedExpr::ValueRead("bar".to_string(), types::INT32, (0,0)),
+                TypedExpr::ValueRead("bar".to_string(), types::INT32, (0, 0)),
                 (0, 0)
             ),
             "return"
@@ -2274,8 +2278,8 @@ let main _ : () -> () =
             TypedStatement::try_from(
                 Statement::FnCall(ast::FnCall {
                     loc: (0, 0),
-                    value: ast::Expr::ValueRead("foo".to_string(),(0,0)).boxed(),
-                    arg: Some(ast::Expr::ValueRead("bar".to_string(),(0,0)).boxed()),
+                    value: ast::Expr::ValueRead("foo".to_string(), (0, 0)).boxed(),
+                    arg: Some(ast::Expr::ValueRead("bar".to_string(), (0, 0)).boxed()),
                 }),
                 &PREDEFINED_VALUES,
                 &HashMap::new(),
@@ -2289,10 +2293,10 @@ let main _ : () -> () =
                         arg: types::INT32.boxed(),
                         returns: types::INT32.boxed()
                     },
-                    (0,0)
+                    (0, 0)
                 )
                 .boxed(),
-                arg: Some(TypedExpr::ValueRead("bar".to_string(), types::INT32,(0,0)).boxed()),
+                arg: Some(TypedExpr::ValueRead("bar".to_string(), types::INT32, (0, 0)).boxed()),
                 arg_t: types::INT32,
                 rt: types::INT32
             }),
@@ -2390,7 +2394,7 @@ let main _ : () -> () =
                     ResolvedType::Generic {
                         name: "T".to_string()
                     },
-                    (1,30)
+                    (1, 30)
                 )),
                 ty: ResolvedType::Function {
                     arg: ResolvedType::Generic {
@@ -2431,7 +2435,7 @@ let main _ : () -> () =
                             }
                             .boxed()
                         },
-                        (4,5)
+                        (4, 5)
                     )
                     .boxed(),
                     arg: Some(
@@ -2594,7 +2598,7 @@ let main _ : int32 -> int32 =
                         ResolvedType::Generic {
                             name: "T".to_string()
                         },
-                        (2,12)
+                        (2, 12)
                     ),
                     (2, 5)
                 )]),
@@ -2632,7 +2636,7 @@ let main _ : int32 -> int32 =
                                 arg: types::INT32.boxed(),
                                 returns: types::INT32.boxed()
                             },
-                            (5,5)
+                            (5, 5)
                         )
                         .boxed(),
                         arg: Some(
@@ -2673,7 +2677,7 @@ let main _ : int32 -> int32 =
                     loc: (1, 17)
                 }],
                 value: crate::typed_ast::TypedValueType::Function(vec![TypedStatement::Return(
-                    TypedExpr::ValueRead("a".to_string(), types::INT32,(2,12)),
+                    TypedExpr::ValueRead("a".to_string(), types::INT32, (2, 12)),
                     (2, 5)
                 )]),
                 ty: ResolvedType::Function {
@@ -2721,49 +2725,70 @@ let statement_with_else_if a b : bool -> bool -> int32 =
                     ident: "a".to_string()
                 }],
                 value: TypedValueType::Expr(TypedExpr::IfExpr(TypedIfExpr {
-                    cond: TypedExpr::ValueRead("a".to_string(), types::BOOL,(1,48)).boxed(),
+                    cond: TypedExpr::ValueRead("a".to_string(), types::BOOL, (1, 48)).boxed(),
                     true_branch: (
-                        vec![
-                            TypedStatement::FnCall(TypedFnCall {
-                                loc: (2,9),
-                                value: TypedExpr::ValueRead(
-                                    "foo".to_string(), 
-                                    ResolvedType::Function { 
-                                        arg: types::INT32.boxed(),
-                                        returns: types::INT32.boxed()
-                                    },
-                                    (2,9)
-                                ).boxed(),
-                                arg: Some(TypedExpr::IntegerLiteral { value: "3".to_string(), size: types::IntWidth::ThirtyTwo }.boxed()),
-                                rt: types::INT32,
-                                arg_t: types::INT32,
-                            })
-                        ],
-                        TypedExpr::IntegerLiteral { value: "0".to_string(), size: types::IntWidth::ThirtyTwo }.boxed()
+                        vec![TypedStatement::FnCall(TypedFnCall {
+                            loc: (2, 9),
+                            value: TypedExpr::ValueRead(
+                                "foo".to_string(),
+                                ResolvedType::Function {
+                                    arg: types::INT32.boxed(),
+                                    returns: types::INT32.boxed()
+                                },
+                                (2, 9)
+                            )
+                            .boxed(),
+                            arg: Some(
+                                TypedExpr::IntegerLiteral {
+                                    value: "3".to_string(),
+                                    size: types::IntWidth::ThirtyTwo
+                                }
+                                .boxed()
+                            ),
+                            rt: types::INT32,
+                            arg_t: types::INT32,
+                        })],
+                        TypedExpr::IntegerLiteral {
+                            value: "0".to_string(),
+                            size: types::IntWidth::ThirtyTwo
+                        }
+                        .boxed()
                     ),
                     else_ifs: Vec::new(),
                     else_branch: (
-                        vec![
-                            TypedStatement::FnCall(TypedFnCall {
-                                loc: (5,9),
-                                value: TypedExpr::ValueRead(
-                                    "foo".to_string(), 
-                                    ResolvedType::Function { 
-                                        arg: types::INT32.boxed(),
-                                        returns: types::INT32.boxed()
-                                    },
-                                    (5,9)
-                                ).boxed(),
-                                arg: Some(TypedExpr::IntegerLiteral { value: "4".to_string(), size: types::IntWidth::ThirtyTwo }.boxed()),
-                                rt: types::INT32,
-                                arg_t: types::INT32,
-                            })
-                        ],
-                        TypedExpr::IntegerLiteral { value: "1".to_string(), size: types::IntWidth::ThirtyTwo }.boxed()
+                        vec![TypedStatement::FnCall(TypedFnCall {
+                            loc: (5, 9),
+                            value: TypedExpr::ValueRead(
+                                "foo".to_string(),
+                                ResolvedType::Function {
+                                    arg: types::INT32.boxed(),
+                                    returns: types::INT32.boxed()
+                                },
+                                (5, 9)
+                            )
+                            .boxed(),
+                            arg: Some(
+                                TypedExpr::IntegerLiteral {
+                                    value: "4".to_string(),
+                                    size: types::IntWidth::ThirtyTwo
+                                }
+                                .boxed()
+                            ),
+                            rt: types::INT32,
+                            arg_t: types::INT32,
+                        })],
+                        TypedExpr::IntegerLiteral {
+                            value: "1".to_string(),
+                            size: types::IntWidth::ThirtyTwo
+                        }
+                        .boxed()
                     ),
-                    loc: (1,46)
+                    loc: (1, 46)
                 })),
-                ty: ResolvedType::Function { arg: types::BOOL.boxed(), returns: types::INT32.boxed() },
+                ty: ResolvedType::Function {
+                    arg: types::BOOL.boxed(),
+                    returns: types::INT32.boxed()
+                },
                 generictypes: Vec::new(),
                 is_curried: false,
             }),
@@ -2793,36 +2818,37 @@ let statement_with_else_if a b : bool -> bool -> int32 =
                     }
                     .boxed(),
                 },
-                value: TypedValueType::Function(vec![
-                    TypedStatement::IfBranching(TypedIfBranching {
-                    cond: TypedExpr::ValueRead("a".to_string(),types::BOOL,(9,8)).boxed(),
-                    true_branch: vec![TypedStatement::Return(
-                        TypedExpr::IntegerLiteral {
-                            value:"0".to_string(), 
-                            size: types::IntWidth::ThirtyTwo 
-                        },
-                        (10, 9)
-                    )],
-                    else_ifs: vec![(
-                        TypedExpr::ValueRead("b".to_string(),types::BOOL,(11,13)).boxed(),
-                        vec![TypedStatement::Return(
+                value: TypedValueType::Function(vec![TypedStatement::IfBranching(
+                    TypedIfBranching {
+                        cond: TypedExpr::ValueRead("a".to_string(), types::BOOL, (9, 8)).boxed(),
+                        true_branch: vec![TypedStatement::Return(
                             TypedExpr::IntegerLiteral {
-                                value:"1".to_string(), 
-                                size: types::IntWidth::ThirtyTwo 
+                                value: "0".to_string(),
+                                size: types::IntWidth::ThirtyTwo
                             },
-                            (12, 9)
+                            (10, 9)
+                        )],
+                        else_ifs: vec![(
+                            TypedExpr::ValueRead("b".to_string(), types::BOOL, (11, 13)).boxed(),
+                            vec![TypedStatement::Return(
+                                TypedExpr::IntegerLiteral {
+                                    value: "1".to_string(),
+                                    size: types::IntWidth::ThirtyTwo
+                                },
+                                (12, 9)
+                            )]
+                        )],
+                        else_branch: vec![TypedStatement::Return(
+                            TypedExpr::IntegerLiteral {
+                                value: "2".to_string(),
+                                size: types::IntWidth::ThirtyTwo
+                            },
+                            (14, 9)
                         )]
-                    )],
-                    else_branch: vec![TypedStatement::Return(
-                        TypedExpr::IntegerLiteral {
-                            value:"2".to_string(), 
-                            size: types::IntWidth::ThirtyTwo 
-                        },
-                        (14, 9)
-                    )]
-                })]),
+                    }
+                )]),
                 generictypes: Vec::new(),
-                is_curried : false,
+                is_curried: false,
             }),
             stmnt,
             "statement if"

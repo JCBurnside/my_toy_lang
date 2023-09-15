@@ -418,7 +418,7 @@ where
 
     fn value(&mut self) -> Result<(Expr, crate::Location), ParseError> {
         if let Some((Token::Ident(ident), loc)) = self.stream.next() {
-            Ok((ast::Expr::ValueRead(ident,loc), loc))
+            Ok((ast::Expr::ValueRead(ident, loc), loc))
         } else {
             Err(ParseError {
                 span: (100, 100),
@@ -479,7 +479,7 @@ where
                 (
                     FnCall {
                         loc,
-                        value: ast::Expr::ValueRead(ident,loc).boxed(),
+                        value: ast::Expr::ValueRead(ident, loc).boxed(),
                         arg: None,
                     },
                     loc,
@@ -1758,8 +1758,8 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                 value: ValueType::Function(vec![
                     Statement::FnCall(FnCall {
                         loc: (7, 9), // TODO there is an error here.  somewhere in lexer
-                        value: Expr::ValueRead("bar".to_string(),(7,5)).boxed(),
-                        arg: Some(Expr::ValueRead("foo".to_string(),(7,9)).boxed()),
+                        value: Expr::ValueRead("bar".to_string(), (7, 5)).boxed(),
+                        arg: Some(Expr::ValueRead("foo".to_string(), (7, 9)).boxed()),
                     }),
                     Statement::Return(
                         Expr::NumericLiteral {
@@ -1802,7 +1802,7 @@ let main _ : int32 -> int32 =
                 value: ValueType::Function(vec![
                     Statement::FnCall(FnCall {
                         loc: (2, 5),
-                        value: Expr::ValueRead("put_int32".to_string(),(2,5)).boxed(),
+                        value: Expr::ValueRead("put_int32".to_string(), (2, 5)).boxed(),
                         arg: Some(
                             Expr::NumericLiteral {
                                 value: "100".to_owned(),
@@ -1813,7 +1813,7 @@ let main _ : int32 -> int32 =
                     }),
                     Statement::FnCall(FnCall {
                         loc: (3, 5),
-                        value: Expr::ValueRead("print_str".to_string(),(3,5)).boxed(),
+                        value: Expr::ValueRead("print_str".to_string(), (3, 5)).boxed(),
                         arg: Some(Expr::StringLiteral("v".to_string()).boxed())
                     }),
                     Statement::Return(
@@ -1851,7 +1851,7 @@ let main _ : int32 -> int32 =
                             ty: types::INT32
                         }
                         .boxed(),
-                        rhs: Expr::ValueRead("foo".to_string(),(0,13)).boxed(),
+                        rhs: Expr::ValueRead("foo".to_string(), (0, 13)).boxed(),
                         operator: "*".to_string()
                     })
                     .boxed(),
@@ -1894,7 +1894,7 @@ let main _ : int32 -> int32 =
                 value: ValueType::Function(vec![
                     Statement::FnCall(FnCall {
                         loc: (1, 21),
-                        value: Expr::ValueRead("print_int32".to_owned(),(1,5)).boxed(),
+                        value: Expr::ValueRead("print_int32".to_owned(), (1, 5)).boxed(),
                         arg: Some(
                             Expr::BinaryOpCall(BinaryOpCall {
                                 loc: (1, 21),
@@ -1935,8 +1935,8 @@ let main _ : int32 -> int32 =
                     loc: (0, 5),
                     lhs: ast::Expr::BinaryOpCall(BinaryOpCall {
                         loc: (0, 2),
-                        lhs: ast::Expr::ValueRead("a".to_string(),(0,1)).boxed(),
-                        rhs: ast::Expr::ValueRead("b".to_string(),(0,3)).boxed(),
+                        lhs: ast::Expr::ValueRead("a".to_string(), (0, 1)).boxed(),
+                        rhs: ast::Expr::ValueRead("b".to_string(), (0, 3)).boxed(),
                         operator: ".".to_string()
                     })
                     .boxed(),
@@ -1950,8 +1950,8 @@ let main _ : int32 -> int32 =
                 .boxed(),
                 rhs: ast::Expr::BinaryOpCall(BinaryOpCall {
                     loc: (0, 12),
-                    lhs: ast::Expr::ValueRead("c".to_string(),(0,11)).boxed(),
-                    rhs: ast::Expr::ValueRead("d".to_string(),(0,13)).boxed(),
+                    lhs: ast::Expr::ValueRead("c".to_string(), (0, 11)).boxed(),
+                    rhs: ast::Expr::ValueRead("d".to_string(), (0, 13)).boxed(),
                     operator: ".".to_string()
                 })
                 .boxed(),
@@ -1983,7 +1983,7 @@ let main _ : int32 -> int32 =
                     }
                     .boxed(),
                 }),
-                value: ast::ValueType::Expr(ast::Expr::ValueRead("a".to_string(),(0,30))),
+                value: ast::ValueType::Expr(ast::Expr::ValueRead("a".to_string(), (0, 30))),
                 generictypes: ["T".to_string()].into_iter().collect(),
             }),
             parser.declaration().unwrap(),
@@ -2185,7 +2185,7 @@ let statement_with_else_if a b : bool -> bool -> int32 =
                     returns: types::INT32.boxed()
                 }),
                 value: ast::ValueType::Expr(ast::Expr::If(IfExpr {
-                    cond: ast::Expr::ValueRead("a".to_string(),(1,40)).boxed(),
+                    cond: ast::Expr::ValueRead("a".to_string(), (1, 40)).boxed(),
                     true_branch: (
                         Vec::new(),
                         ast::Expr::NumericLiteral {
@@ -2225,12 +2225,12 @@ let statement_with_else_if a b : bool -> bool -> int32 =
                     returns: types::INT32.boxed()
                 }),
                 value: ast::ValueType::Expr(ast::Expr::If(IfExpr {
-                    cond: ast::Expr::ValueRead("a".to_string(),(3,45)).boxed(),
+                    cond: ast::Expr::ValueRead("a".to_string(), (3, 45)).boxed(),
                     true_branch: (
                         Vec::new(),
                         ast::Expr::FnCall(ast::FnCall {
                             loc: (4, 9),
-                            value: ast::Expr::ValueRead("fun".to_string(),(4,9)).boxed(),
+                            value: ast::Expr::ValueRead("fun".to_string(), (4, 9)).boxed(),
                             arg: Some(
                                 ast::Expr::NumericLiteral {
                                     value: "0".to_string(),
@@ -2271,11 +2271,11 @@ let statement_with_else_if a b : bool -> bool -> int32 =
                     returns: types::INT32.boxed()
                 }),
                 value: ast::ValueType::Expr(ast::Expr::If(IfExpr {
-                    cond: ast::Expr::ValueRead("a".to_string(),(8,48)).boxed(),
+                    cond: ast::Expr::ValueRead("a".to_string(), (8, 48)).boxed(),
                     true_branch: (
                         vec![ast::Statement::FnCall(FnCall {
                             loc: (9, 9),
-                            value: ast::Expr::ValueRead("bar".to_string(),(9,9)).boxed(),
+                            value: ast::Expr::ValueRead("bar".to_string(), (9, 9)).boxed(),
                             arg: Some(
                                 ast::Expr::NumericLiteral {
                                     value: "3".to_string(),
@@ -2294,7 +2294,7 @@ let statement_with_else_if a b : bool -> bool -> int32 =
                     else_branch: (
                         vec![ast::Statement::FnCall(FnCall {
                             loc: (12, 9),
-                            value: ast::Expr::ValueRead("baz".to_string(),(12,9)).boxed(),
+                            value: ast::Expr::ValueRead("baz".to_string(), (12, 9)).boxed(),
                             arg: Some(
                                 ast::Expr::NumericLiteral {
                                     value: "4".to_string(),
@@ -2331,11 +2331,11 @@ let statement_with_else_if a b : bool -> bool -> int32 =
                     returns: types::INT32.boxed()
                 }),
                 value: ast::ValueType::Function(vec![ast::Statement::IfStatement(IfBranching {
-                    cond: ast::Expr::ValueRead("a".to_string(),(16,8)).boxed(),
+                    cond: ast::Expr::ValueRead("a".to_string(), (16, 8)).boxed(),
                     true_branch: vec![
                         ast::Statement::FnCall(FnCall {
                             loc: (17, 9),
-                            value: ast::Expr::ValueRead("foo".to_string(),(17,9)).boxed(),
+                            value: ast::Expr::ValueRead("foo".to_string(), (17, 9)).boxed(),
                             arg: Some(
                                 ast::Expr::NumericLiteral {
                                     value: "3".to_string(),
@@ -2356,7 +2356,7 @@ let statement_with_else_if a b : bool -> bool -> int32 =
                     else_branch: vec![
                         ast::Statement::FnCall(FnCall {
                             loc: (20, 9),
-                            value: ast::Expr::ValueRead("bar".to_string(),(20,9)).boxed(),
+                            value: ast::Expr::ValueRead("bar".to_string(), (20, 9)).boxed(),
                             arg: Some(
                                 ast::Expr::NumericLiteral {
                                     value: "4".to_string(),
@@ -2373,8 +2373,7 @@ let statement_with_else_if a b : bool -> bool -> int32 =
                             (21, 9)
                         ),
                     ],
-                })
-                ]),
+                })]),
                 generictypes: Vec::new(),
             }),
             parser.declaration().unwrap(),
@@ -2405,7 +2404,7 @@ let statement_with_else_if a b : bool -> bool -> int32 =
                     .boxed(),
                 }),
                 value: ast::ValueType::Function(vec![ast::Statement::IfStatement(IfBranching {
-                    cond: ast::Expr::ValueRead("a".to_string(),(24,8)).boxed(),
+                    cond: ast::Expr::ValueRead("a".to_string(), (24, 8)).boxed(),
                     true_branch: vec![ast::Statement::Return(
                         ast::Expr::NumericLiteral {
                             value: "0".to_string(),
@@ -2414,7 +2413,7 @@ let statement_with_else_if a b : bool -> bool -> int32 =
                         (25, 9)
                     )],
                     else_ifs: vec![(
-                        ast::Expr::ValueRead("b".to_string(),(26,13)).boxed(),
+                        ast::Expr::ValueRead("b".to_string(), (26, 13)).boxed(),
                         vec![ast::Statement::Return(
                             ast::Expr::NumericLiteral {
                                 value: "1".to_string(),

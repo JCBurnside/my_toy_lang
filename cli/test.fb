@@ -1,12 +1,10 @@
-for<T> let id a : T -> T = a
-
-for<T> type Generic = {
-    a : T
-}
-
-let new_generic a : int32 -> Generic<int32> = Generic<int32> {a:a} 
-
+let test_ifs a b : bool -> bool -> int32 =
+    if a then
+        print_str "a"
+    else if b then
+        print_str "b"
+    else
+        print_str "neither"
+    return 0
 let main _ : () -> () = 
-    let r : Generic<int32> = new_generic 3
-    id r.a
     return ()

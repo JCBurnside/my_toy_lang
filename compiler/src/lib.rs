@@ -87,8 +87,6 @@ pub fn from_file<'ctx>(
         _ => true,
     });
 
-    println!("{:?}", ast);
-
     let module = code_gen.compile_program(vec![ast], false, is_debug);
     Ok(module)
 }

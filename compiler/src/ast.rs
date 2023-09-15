@@ -332,7 +332,7 @@ pub enum Expr {
     /// eg `foo bar` (composed of two [`ValueRead`]s in this example)
     FnCall(FnCall),
     /// basically an ident on it's own
-    ValueRead(String,crate::Location),
+    ValueRead(String, crate::Location),
 
     /// NOT IMPLEMENTED YET
     /// defined like [ expr, expr, expr, ... ]
@@ -364,7 +364,7 @@ pub enum Expr {
 impl Expr {
     fn replace(&mut self, nice_name: &str, actual: &str) {
         match self {
-            Expr::ValueRead(read,_) if read == nice_name => {
+            Expr::ValueRead(read, _) if read == nice_name => {
                 *read = actual.to_string();
             }
             Expr::BinaryOpCall(bin) => bin.replace(nice_name, actual),
