@@ -16,6 +16,8 @@ pub enum Token {
     If,
     Then,
     Else,
+    True,
+    False,
 
     Match,
 

@@ -1,0 +1,8 @@
+public use std::array::*;
+public use std::result::*;
+public use Result::*;
+public use std::option::*;
+public use Option::*;
+public use std::vec::Vec;
+public use std::seq;
+public use std::ignore;

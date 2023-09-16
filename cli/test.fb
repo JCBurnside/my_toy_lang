@@ -11,8 +11,11 @@ let test_ifexpr a b : bool -> bool -> int32 = if a then
         0 
     else if b then 
         1 
-    else 
-        2
+    else if true then 
+        let x : int32 = 2
+        x
+    else
+        3
 
 let main _ : () -> () = 
     return ()

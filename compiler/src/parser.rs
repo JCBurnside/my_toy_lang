@@ -181,7 +181,9 @@ where
                 | Token::FloatingPoint(_, _)
                 | Token::CharLiteral(_)
                 | Token::StringLiteral(_)
-                | Token::Ident(_),
+                | Token::Ident(_)
+                | Token::True
+                | Token::False,
                 _,
             )) if match self.stream.clone().nth(1) {
                 Some((Token::Op(_), _)) => true,
@@ -223,7 +225,16 @@ where
                 } else {
                     self.value()
                 }
-            }
+            },
+            Some((Token::True,loc)) => {
+                let _ = self.stream.next();
+                Ok((Expr::BoolLiteral(true, loc),loc))
+            },
+            Some((Token::False,loc)) => {
+                let _ = self.stream.next();
+                Ok((Expr::BoolLiteral(false, loc),loc))
+            },
+            
             _ => Err(ParseError {
                 span: (100000, 0),
                 reason: ParseErrorReason::UnknownError,
@@ -352,23 +363,12 @@ where
                     ),
                 };
                 else_ifs.push((cond, body, ret.boxed()));
+                self.skip_newlines();
+                let Some((Token::Else,_)) = self.stream.next() else {
+                    return Err(ParseError { span: loc, reason: ParseErrorReason::NoElseBlock });
+                };
             }
-            self.skip_newlines();
-            if else_ifs.len() > 0 {
-                if let Some((Token::Else, _)) = self.stream.clone().next() {
-                    let _ = self.stream.next();
-                } else {
-                    return Err(ParseError {
-                        span: self
-                            .stream
-                            .peek()
-                            .map(|(_, it)| it)
-                            .copied()
-                            .unwrap_or((0, 0)),
-                        reason: ParseErrorReason::NoElseBlock,
-                    });
-                }
-            }
+            
             self.skip_newlines();
             let else_branch = match self.stream.clone().next() {
                 Some((Token::BeginBlock, _)) => {
@@ -1567,12 +1567,15 @@ mod tests {
     #[ignore = "This is for singled out tests"]
     fn for_debugging_only() {
         let mut it = Parser::from_source(
-            r#"let test_ifexpr a b : bool -> bool -> bool -> int32 = if a then 
-        0 
-    else if b then 
-        1 
-    else 
-        2
+            r#"let test_ifexpr a b : bool -> bool -> int32 = if a then 
+            0 
+        else if b then 
+            1 
+        else if true then 
+            let x = 2
+            x
+        else
+            3
 "#,
         );
         println!("{:?}", it.declaration().unwrap());

@@ -1010,6 +1010,7 @@ pub enum TypedExpr {
 
     IfExpr(TypedIfExpr),
 
+    BoolLiteral(bool,crate::Location),
     // This is used to allow to continue type checking.  should never naturally generate.
     ErrorNode,
 }
@@ -1099,6 +1100,7 @@ impl TypedExpr {
                 known_values,
                 known_types,
             ))),
+            Expr::BoolLiteral(value, loc) => Ok(Self::BoolLiteral(value, loc)),
             Expr::Error => Ok(Self::ErrorNode),
         }
     }
@@ -1114,7 +1116,8 @@ impl TypedExpr {
             Self::MemeberRead(read) => read.loc,
             Self::UnaryOpCall(_) => todo!(),
             Self::FnCall(call) => call.loc,
-            Self::ValueRead(_, _, loc) => *loc,
+            Self::BoolLiteral(_, loc)
+            | Self::ValueRead(_, _, loc) => *loc,
             Self::ArrayLiteral { contents } => todo!(),
             Self::ListLiteral { contents } => todo!(),
             Self::TupleLiteral { contents } => todo!(),
@@ -1126,6 +1129,7 @@ impl TypedExpr {
 
     pub(crate) fn get_ty(&self) -> ResolvedType {
         match self {
+            Self::BoolLiteral(_, _)=>types::BOOL,
             Self::IntegerLiteral { size, .. } => ResolvedType::Int {
                 signed: true,
                 width: size.clone(),
@@ -1228,6 +1232,7 @@ impl TypedExpr {
 
     fn lower_generics(&mut self, context: &mut LoweringContext) {
         match self {
+            Self::BoolLiteral(_, _) => (),
             Self::FnCall(data) => {
                 data.lower_generics(context);
             }

@@ -207,7 +207,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                 'f' if self
                     .source_stream
                     .clone()
-                    .take_while(|c| c.is_alphabetic())
+                    .take_while(|c| c.is_alphanumeric())
                     .collect::<String>()
                     == "or" =>
                 {
@@ -218,10 +218,38 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     (Token::For, (self.curr_line, self.curr_col))
                 }
 
+                't' if self
+                    .source_stream
+                    .clone()
+                    .take_while(|c| c.is_alphanumeric())
+                    .collect::<String>()
+                    == "rue" => 
+                {
+                    for _ in 0..3 {
+                        let _ = self.source_stream.next();
+                    }
+                    let curr_col = self.curr_col;
+                    self.curr_col+=3;
+                    (Token::True,(self.curr_line,self.curr_col))
+                },
+                'f' if self
+                    .source_stream
+                    .clone()
+                    .take_while(|c| c.is_alphanumeric())
+                    .collect::<String>()
+                    == "alse" => 
+                {
+                    for _ in 0..4 {
+                        let _ = self.source_stream.next();
+                    }
+                    let curr_col = self.curr_col;
+                    self.curr_col+=4;
+                    (Token::False,(self.curr_line,self.curr_col))
+                },
                 'm' if self
                     .source_stream
                     .clone()
-                    .take_while(|c| c.is_alphabetic())
+                    .take_while(|c| c.is_alphanumeric())
                     .collect::<String>()
                     == "atch" =>
                 {
@@ -235,7 +263,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                 'w' if self
                     .source_stream
                     .clone()
-                    .take_while(|c| c.is_alphabetic())
+                    .take_while(|c| c.is_alphanumeric())
                     .collect::<String>()
                     == "here" =>
                 {
@@ -255,7 +283,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                 't' if self
                     .source_stream
                     .clone()
-                    .take_while(|c| c.is_alphabetic())
+                    .take_while(|c| c.is_alphanumeric())
                     .collect::<String>()
                     == "hen" =>
                 {
@@ -269,7 +297,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                 'e' if self
                     .source_stream
                     .clone()
-                    .take_while(|c| c.is_alphabetic())
+                    .take_while(|c| c.is_alphanumeric())
                     .collect::<String>()
                     == "lse" =>
                 {
@@ -283,7 +311,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                 'l' if self
                     .source_stream
                     .clone()
-                    .take_while(|c| c.is_alphabetic())
+                    .take_while(|c| c.is_alphanumeric())
                     .collect::<String>()
                     == "et" =>
                 {
@@ -295,7 +323,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                 'r' if self
                     .source_stream
                     .clone()
-                    .take_while(|c| c.is_alphabetic())
+                    .take_while(|c| c.is_alphanumeric())
                     .collect::<String>()
                     == "eturn" =>
                 {
@@ -310,7 +338,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                 't' if self
                     .source_stream
                     .clone()
-                    .take_while(|c| c.is_alphabetic())
+                    .take_while(|c| c.is_alphanumeric())
                     .collect::<String>()
                     == "ype" =>
                 {
@@ -324,7 +352,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                 'e' if self
                     .source_stream
                     .clone()
-                    .take_while(|c| c.is_alphabetic())
+                    .take_while(|c| c.is_alphanumeric())
                     .collect::<String>()
                     == "num" =>
                 {
@@ -614,6 +642,21 @@ let foo = 3").map(|(a,_)| a).collect_vec();
             [Token::Else, Token::EoF],
             "else"
         );
+
+        assert_eq!(
+            TokenStream::from_source("true")
+                .map(|(a,_)| a)
+                .collect_vec(),
+            [Token::True,Token::EoF],
+            "true"
+        );
+        assert_eq!(
+            TokenStream::from_source("false")
+                .map(|(a,_)| a)
+                .collect_vec(),
+            [Token::False,Token::EoF],
+            "false"
+        )
     }
 
     #[test]
@@ -782,6 +825,7 @@ enum Bar =
     }
 
     #[test]
+    #[rustfmt::skip]
     fn control_flow() {
         use Token::*;
         const SRC_MATCH: &'static str = r#"
@@ -795,34 +839,9 @@ match x where
                 .collect_vec(),
             [
                 NewLine,
-                Match,
-                Ident("x".to_string()),
-                Where,
-                NewLine,
-                Op("|".to_string()),
-                Ident("Foo".to_string()),
-                Colon,
-                Colon,
-                Ident("Y".to_string()),
-                Ident("bar".to_string()),
-                Arrow,
-                GroupOpen,
-                GroupClose,
-                NewLine,
-                Op("|".to_string()),
-                Ident("Foo".to_string()),
-                Colon,
-                Colon,
-                Ident("Z".to_string()),
-                CurlOpen,
-                Ident("a".to_string()),
-                Comma,
-                Ident("b".to_string()),
-                CurlClose,
-                Arrow,
-                GroupOpen,
-                GroupClose,
-                NewLine,
+                Match,Ident("x".to_string()),Where,NewLine,
+                Op("|".to_string()),Ident("Foo".to_string()),Colon,Colon,Ident("Y".to_string()),Ident("bar".to_string()),Arrow,GroupOpen,GroupClose,NewLine,
+                Op("|".to_string()),Ident("Foo".to_string()),Colon,Colon,Ident("Z".to_string()),CurlOpen,Ident("a".to_string()),Comma,Ident("b".to_string()),CurlClose,Arrow,GroupOpen,GroupClose,NewLine,
                 EoF
             ],
             "Match"

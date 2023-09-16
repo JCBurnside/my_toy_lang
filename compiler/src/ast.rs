@@ -358,7 +358,7 @@ pub enum Expr {
     },
 
     StructConstruction(StructConstruction),
-
+    BoolLiteral(bool,crate::Location),
     If(IfExpr),
 }
 impl Expr {

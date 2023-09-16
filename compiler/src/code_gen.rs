@@ -191,8 +191,11 @@ impl<'ctx> CodeGen<'ctx> {
             )
         };
         self.ret_target = ret_value;
-        let curried_args = collect_args(&decl.ty)
+        let arg_ts = collect_args(&decl.ty);
+        let arg_c = arg_ts.len(); 
+        let curried_args = arg_ts 
             .into_iter()
+            .take(arg_c - 1)
             .map(|it| self.type_resolver.resolve_arg_type(&it))
             .collect_vec();
         let first_arg = {
@@ -613,7 +616,15 @@ impl<'ctx> CodeGen<'ctx> {
         #[cfg(debug_assertions)]
         let _ = self.module.print_to_file("./debug.llvm");
         match expr {
+            TypedExpr::BoolLiteral(value, _loc) =>{
+                if value {
+                    self.ctx.bool_type().const_int(1, false).as_any_value_enum()
+                } else {
+                    self.ctx.bool_type().const_zero().as_any_value_enum()
+                }
+            }
             TypedExpr::IfExpr(expr) => {
+                let rt = expr.get_ty();
                 let ty = self.type_resolver.resolve_type_as_basic(expr.get_ty());
                 let TypedIfExpr {
                     cond,
@@ -646,11 +657,21 @@ impl<'ctx> CodeGen<'ctx> {
                         self.compile_statement(stmnt);
                     }
                     let true_value = convert_to_basic_value(self.compile_expr(*true_branch.1));
+                    let true_value = if !rt.is_user() && true_value.is_pointer_value() {
+                        self.builder.build_load(true_value.into_pointer_value(), "")
+                    } else {
+                        true_value
+                    };
                     self.builder.position_at_end(else_block);
                     for stmnt in else_branch.0 {
                         self.compile_statement(stmnt);
                     }
                     let else_value = convert_to_basic_value(self.compile_expr(*else_branch.1));
+                    let else_value = if !rt.is_user() && else_value.is_pointer_value() {
+                        self.builder.build_load(else_value.into_pointer_value(), "")
+                    } else {
+                        else_value
+                    };
                     self.builder.position_at_end(result_block);
                     let phi = self.builder.build_phi(ty, "");
                     phi.add_incoming(&[(&true_value, then_block), (&else_value, else_block)]);
@@ -673,6 +694,11 @@ impl<'ctx> CodeGen<'ctx> {
                         self.compile_statement(stmnt);
                     }
                     let true_value = convert_to_basic_value(self.compile_expr(*true_branch.1));
+                    let true_value = if !rt.is_user() && true_value.is_pointer_value() {
+                        self.builder.build_load(true_value.into_pointer_value(), "")
+                    } else {
+                        true_value
+                    };
                     self.builder.build_unconditional_branch(result_block);
                     phi.add_incoming(&[(&true_value, then_block)]);
                     let else_ifs = else_ifs
@@ -684,6 +710,11 @@ impl<'ctx> CodeGen<'ctx> {
                                 self.compile_statement(stmnt);
                             }
                             let result = convert_to_basic_value(self.compile_expr(*result));
+                            let result = if !rt.is_user() && result.is_pointer_value() {
+                                self.builder.build_load(result.into_pointer_value(), "")
+                            } else {
+                                result
+                            };
                             phi.add_incoming(&[(
                                 &result,
                                 self.builder.get_insert_block().unwrap(),
@@ -720,6 +751,11 @@ impl<'ctx> CodeGen<'ctx> {
                     }
                     let else_value = convert_to_basic_value(self.compile_expr(*else_branch.1));
                     self.builder.build_unconditional_branch(result_block);
+                    let else_value = if !rt.is_user() && else_value.is_pointer_value() {
+                        self.builder.build_load(else_value.into_pointer_value(), "")
+                    } else {
+                        else_value
+                    };
                     phi.add_incoming(&[(&else_value, self.builder.get_insert_block().unwrap())]);
                     self.builder.position_at_end(result_block);
                     phi.as_any_value_enum()
