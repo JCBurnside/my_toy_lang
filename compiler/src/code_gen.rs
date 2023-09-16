@@ -353,6 +353,7 @@ impl<'ctx> CodeGen<'ctx> {
                     true_branch,
                     else_ifs,
                     else_branch,
+                    ..
                 } = ifbranch;
                 let fun = self
                     .builder

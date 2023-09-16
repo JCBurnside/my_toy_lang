@@ -577,6 +577,7 @@ pub struct TypedIfBranching {
     pub(crate) true_branch: Vec<TypedStatement>,
     pub(crate) else_ifs: Vec<(Box<TypedExpr>, Vec<TypedStatement>)>,
     pub(crate) else_branch: Vec<TypedStatement>,
+    pub(crate) loc : crate::Location
 }
 
 impl TypedIfBranching {
@@ -590,6 +591,7 @@ impl TypedIfBranching {
             true_branch,
             else_ifs,
             else_branch,
+            loc,
         } = value;
         let cond = match TypedExpr::try_from(*cond, known_values, known_types, Vec::new()) {
             Ok(cond) if cond.get_ty() == ResolvedType::Bool => cond,
@@ -711,6 +713,7 @@ impl TypedIfBranching {
             true_branch,
             else_ifs,
             else_branch,
+            loc
         }
     }
 
@@ -2580,11 +2583,11 @@ let first a : Tuple<int32,float64> -> int32 =
         let parser = Parser::from_stream(TokenStream::from_source(
             r#"
 for<T> let test a : T -> T =
-    return a
+    return a;
 
 let main _ : int32 -> int32 =
-    test 3
-    return 0
+    test 3;
+    return 0;
 "#,
         ));
         let module = parser.module("test".to_string());
@@ -2705,19 +2708,19 @@ let main _ : int32 -> int32 =
         let parser = Parser::from_source(
             r#"
 let expr_with_statement a : bool -> int32 = if a then
-        foo 3
+        foo 3;
         0
     else
-        foo 4
+        foo 4;
         1
 
 let statement_with_else_if a b : bool -> bool -> int32 =
     if a then
-        return 0
+        return 0;
     else if b then
-        return 1
+        return 1;
     else
-        return 2
+        return 2;
 "#,
         );
         let mut module = parser.module("test".to_string());
@@ -2792,7 +2795,7 @@ let statement_with_else_if a b : bool -> bool -> int32 =
                         }
                         .boxed()
                     ),
-                    loc: (1, 46)
+                    loc: (1, 45)
                 })),
                 ty: ResolvedType::Function {
                     arg: types::BOOL.boxed(),
@@ -2853,7 +2856,8 @@ let statement_with_else_if a b : bool -> bool -> int32 =
                                 size: types::IntWidth::ThirtyTwo
                             },
                             (14, 9)
-                        )]
+                        )],
+                        loc:(9,5)
                     }
                 )]),
                 generictypes: Vec::new(),

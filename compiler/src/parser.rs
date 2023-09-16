@@ -67,10 +67,6 @@ where
     }
 
     pub fn has_next(&mut self) -> bool {
-        let _ = self
-            .stream
-            .peeking_take_while(|(it, _)| it == &Token::NewLine)
-            .collect::<Vec<_>>();
         self.stream
             .peek()
             .map_or(false, |(token, _)| !token.is_eof())
@@ -92,37 +88,49 @@ where
         }
     }
 
-    fn skip_newlines(&mut self) {
-        while let Some((Token::NewLine, _)) = self.stream.peek() {
-            let _ = self.stream.next();
-        }
-    }
-
     pub fn next_statement(&mut self) -> Result<Statement, ParseError> {
-        self.skip_newlines();
         match self.stream.clone().next() {
-            Some((Token::NewLine, _)) => {
-                self.stream.next();
-                self.next_statement()
-            }
             Some((Token::Let, _)) | Some((Token::For, _)) => {
                 let generics = self.collect_generics()?;
-                Ok(Statement::Declaration(self.fn_declaration(generics)?))
+                let inner = Statement::Declaration(self.fn_declaration(generics)?);
+                if let Some((Token::Seq,_)) = self.stream.clone().next() {
+                    self.stream.next();
+                } else {
+                    println!("expected ; on line {}", inner.get_loc().0);
+                }
+                Ok(inner)
             }
-            Some((Token::Return, _)) => self.ret(),
+            Some((Token::Return, _)) => {
+                let inner = self.ret()?;
+                if let Some((Token::Seq,_)) = self.stream.clone().next() {
+                    self.stream.next();
+                } else {
+                    println!("expected ; on line {}", inner.get_loc().0);
+                }
+                Ok(inner)
+            },
             // hmmm should handle if it's actually a binary op call esp and/or compose.
             Some((Token::Ident(_), _)) =>
             // for now last statement in a block is not treated as return though will allow for that soon.
             {
-                Ok(Statement::FnCall(self.function_call()?.0))
+                let inner = Statement::FnCall(self.function_call()?.0);
+                if let Some((Token::Seq,_)) = self.stream.clone().next() {
+                    self.stream.next();
+                } else {
+                    println!("expected ; on line {}", inner.get_loc().0);
+                }
+                Ok(inner)
             }
-            Some((Token::If, _)) => Ok(Statement::IfStatement(self.ifstatement()?)),
+            Some((Token::If, _)) => {
+                let inner = Statement::IfStatement(self.ifstatement()?);
+                
+                Ok(inner)
+            },
             _ => unreachable!("how?"),
         }
     }
 
     pub fn next_expr(&mut self) -> Result<(crate::ast::Expr, crate::Location), ParseError> {
-        self.skip_newlines();
         match self.stream.clone().next() {
             Some((Token::If, loc)) => Ok((ast::Expr::If(self.ifexpr()?.0), loc)),
             Some((Token::GroupOpen, loc))
@@ -139,10 +147,6 @@ where
                     self.stream.next();
                 }
                 return Ok(out);
-            }
-            Some((Token::NewLine, _)) => {
-                self.stream.next();
-                self.next_expr()
             }
             Some((Token::Ident(_), _))
                 if match self.stream.clone().nth(1) {
@@ -216,7 +220,7 @@ where
                     .stream
                     .clone()
                     .skip(1)
-                    .skip_while(|(it, _)| matches!(it, Token::NewLine | Token::BeginBlock))
+                    .skip_while(|(it, _)| matches!(it, Token::BeginBlock))
                     .next()
                 {
                     let strct = self.struct_construct()?;
@@ -253,7 +257,6 @@ where
         }
         .boxed();
         let Some((Token::Then,_)) = self.stream.next() else { return Err(ParseError { span: loc, reason: ParseErrorReason::UnexpectedToken })};
-        self.skip_newlines();
         let body = match self.stream.clone().next() {
             Some((Token::BeginBlock, _)) => {
                 let _ = self.stream.next();
@@ -261,8 +264,7 @@ where
                 while self
                     .stream
                     .clone()
-                    .skip_while(|(it, _)| it != &Token::NewLine)
-                    .skip_while(|(it, _)| it == &Token::NewLine)
+                    .skip_while(|(it, _)| it != &Token::Seq && it != &Token::EndBlock)
                     .next()
                     .map(|a| a.0)
                     != Some(Token::EndBlock)
@@ -274,7 +276,6 @@ where
                             Statement::Error
                         }
                     });
-                    self.skip_newlines();
                 }
                 let ret = match self.next_expr() {
                     Ok(expr) => expr.0,
@@ -284,7 +285,6 @@ where
                     }
                 }
                 .boxed();
-                self.skip_newlines();
                 let _ = self.stream.next();
                 (body, ret)
             }
@@ -300,11 +300,10 @@ where
                 .boxed(),
             ),
         };
-        self.skip_newlines();
         if let Some((Token::Else, _)) = self.stream.peek() {
             let _ = self.stream.next();
             let mut else_ifs = Vec::new();
-            self.skip_newlines();
+            
             while let Some((Token::If, _)) = self.stream.peek() {
                 let Some((Token::If,loc)) = self.stream.next() else { unreachable!() };
                 let cond = match self.next_expr() {
@@ -315,9 +314,9 @@ where
                     Ok(cond) => cond.0,
                 }
                 .boxed();
-                self.skip_newlines();
+                
                 let Some((Token::Then,_)) = self.stream.next() else { return Err(ParseError { span: loc, reason: ParseErrorReason::UnexpectedToken })};
-                self.skip_newlines();
+                
                 let (body, ret) = match self.stream.clone().next() {
                     Some((Token::BeginBlock, _)) => {
                         let _ = self.stream.next();
@@ -325,8 +324,7 @@ where
                         while self
                             .stream
                             .clone()
-                            .skip_while(|(it, _)| it != &Token::NewLine)
-                            .skip_while(|(it, _)| it == &Token::NewLine)
+                            .skip_while(|(it, _)| it != &Token::Seq && it != &Token::EndBlock)
                             .next()
                             .map(|a| a.0)
                             != Some(Token::EndBlock)
@@ -338,7 +336,7 @@ where
                                     Statement::Error
                                 }
                             });
-                            self.skip_newlines();
+                            
                         }
                         let ret = match self.next_expr() {
                             Ok(expr) => expr.0,
@@ -347,7 +345,7 @@ where
                                 Expr::Error
                             }
                         };
-                        self.skip_newlines();
+                        
                         let _ = self.stream.next();
                         (body, ret)
                     }
@@ -363,23 +361,22 @@ where
                     ),
                 };
                 else_ifs.push((cond, body, ret.boxed()));
-                self.skip_newlines();
+                
                 let Some((Token::Else,_)) = self.stream.next() else {
                     return Err(ParseError { span: loc, reason: ParseErrorReason::NoElseBlock });
                 };
             }
             
-            self.skip_newlines();
+            
             let else_branch = match self.stream.clone().next() {
                 Some((Token::BeginBlock, _)) => {
                     let _ = self.stream.next();
-                    self.skip_newlines();
+                    
                     let mut body = Vec::new();
                     while self
                         .stream
                         .clone()
-                        .skip_while(|(it, _)| it != &Token::NewLine)
-                        .skip_while(|(it, _)| it == &Token::NewLine)
+                        .skip_while(|(it, _)| it != &Token::Seq && it != &Token::EndBlock)
                         .next()
                         .map(|a| a.0 != Token::EndBlock && a.0 != Token::EoF)
                         .unwrap_or(false)
@@ -391,7 +388,7 @@ where
                                 Statement::Error
                             }
                         });
-                        self.skip_newlines();
+                        
                     }
                     let ret = match self.next_expr() {
                         Ok(expr) => expr.0,
@@ -401,7 +398,7 @@ where
                         }
                     }
                     .boxed();
-                    self.skip_newlines();
+                    
                     let _ = self.stream.next();
                     (body, ret)
                 }
@@ -562,7 +559,7 @@ where
         }
         let _: Vec<_> = self
             .stream
-            .peeking_take_while(|(t, _)| matches!(t, Token::EndBlock | Token::NewLine))
+            .peeking_take_while(|(t, _)| matches!(t, Token::EndBlock))
             .collect();
         let Some((Token::CurlClose,_)) = self.stream.next() else { println!("not closed"); return Err(ParseError { span: loc, reason: ParseErrorReason::UnbalancedBraces }) };
         Ok(StructConstruction {
@@ -576,7 +573,8 @@ where
     fn ret(&mut self) -> Result<Statement, ParseError> {
         let (token, span) = self.stream.next().unwrap();
         if token == Token::Return {
-            Ok(ast::Statement::Return(self.next_expr()?.0, span))
+            let expr = self.next_expr()?.0;
+            Ok(ast::Statement::Return(expr, span))
         } else {
             Err(ParseError {
                 span,
@@ -601,7 +599,7 @@ where
         }
         .boxed();
         let Some((Token::Then,_)) = self.stream.next() else { return Err(ParseError { span: loc, reason: ParseErrorReason::UnexpectedToken })};
-        self.skip_newlines();
+        
         let body = match self.stream.peek() {
             Some((Token::BeginBlock, _)) => match self.collect_block() {
                 Ok(body) => body,
@@ -618,7 +616,7 @@ where
                 }
             }],
         };
-        self.skip_newlines();
+        
         if let Some((Token::Else, _)) = self.stream.peek() {
             let mut else_ifs = Vec::new();
             while let Some((Token::If, _)) = self.stream.clone().nth(1) {
@@ -633,7 +631,7 @@ where
                 }
                 .boxed();
                 let Some((Token::Then,_)) = self.stream.next() else { return Err(ParseError { span: loc, reason: ParseErrorReason::UnexpectedToken })};
-                self.skip_newlines();
+                
                 let body = match self.stream.peek() {
                     Some((Token::BeginBlock, _)) => match self.collect_block() {
                         Ok(body) => body,
@@ -652,11 +650,11 @@ where
                 };
                 else_ifs.push((cond, body));
             }
-            self.skip_newlines();
+            
 
             let else_branch = if let Some((Token::Else, _)) = self.stream.clone().next() {
                 let _ = self.stream.next();
-                self.skip_newlines();
+                
                 match self.stream.peek() {
                     Some((Token::BeginBlock, _)) => match self.collect_block() {
                         Ok(body) => body,
@@ -681,6 +679,7 @@ where
                 true_branch: body,
                 else_ifs,
                 else_branch,
+                loc,
             })
         } else {
             Ok(ast::IfBranching {
@@ -688,6 +687,7 @@ where
                 true_branch: body,
                 else_ifs: Vec::new(),
                 else_branch: Vec::new(),
+                loc,
             })
         }
     }
@@ -791,7 +791,7 @@ where
     }
 
     fn declaration(&mut self) -> Result<ast::Declaration, ParseError> {
-        self.skip_newlines();
+        
         let generics = self.collect_generics()?;
         let next = self.stream.clone().next();
         match next {
@@ -803,10 +803,6 @@ where
                 Ok(ast::Declaration::TypeDefinition(self.type_decl(generics)?))
             }
             Some((Token::Let, _)) => Ok(ast::Declaration::Value(self.fn_declaration(generics)?)),
-            Some((Token::NewLine, _)) => {
-                self.stream.next();
-                self.declaration()
-            }
             _ => unimplemented!(),
         }
     }
@@ -871,7 +867,7 @@ where
         loc: crate::Location,
     ) -> Result<ast::StructDefinition, ParseError> {
         let Some((Token::CurlOpen,_)) = self.stream.next() else { unreachable!() };
-        while let Some((Token::BeginBlock | Token::NewLine, _)) = self.stream.clone().next() {
+        while let Some((Token::BeginBlock, _)) = self.stream.clone().next() {
             self.stream.next();
         }
         let mut fields = Vec::<ast::FieldDecl>::new();
@@ -888,7 +884,7 @@ where
             if let Some((Token::Comma, _)) = self.stream.clone().next() {
                 self.stream.next();
             } else {
-                self.skip_newlines();
+                
                 if let Some((Token::Ident(_), loc)) = self.stream.clone().next() {
                     println!("expected comma at line:{},col:{}", loc.0, loc.1);
                     while let Some((token, _)) = self.stream.clone().next() {
@@ -908,12 +904,12 @@ where
                     });
                 }
             }
-            while let Some((Token::EndBlock | Token::NewLine, _)) = self.stream.clone().next() {
+            while let Some((Token::EndBlock, _)) = self.stream.clone().next() {
                 self.stream.next();
             }
             fields.push(ast::FieldDecl { name, ty, loc });
         }
-        while let Some((Token::EndBlock | Token::NewLine | Token::Comma, _)) =
+        while let Some((Token::EndBlock | Token::Comma, _)) =
             self.stream.clone().next()
         {
             self.stream.next();
@@ -991,10 +987,7 @@ where
                         let ty = self.collect_type()?;
                         match self.stream.next() {
                             Some((Token::Op(eq), _)) if eq == "=" => {
-                                self.stream
-                                    .peeking_take_while(|(t, _)| t == &Token::NewLine)
-                                    .collect_vec();
-                                let value = match self.stream.clone().nth(1) {
+                                let value = match self.stream.clone().next() {
                                     Some((Token::BeginBlock, _)) => {
                                         ValueType::Function(self.collect_block()?)
                                     }
@@ -1051,15 +1044,8 @@ where
                             let next = self.stream.next();
                             match next {
                                 Some((Token::Op(eq), _)) if eq == "=" => {
-                                    let consumed = self
-                                        .stream
-                                        .clone()
-                                        .take_while(|(t, _)| t == &Token::NewLine)
-                                        .collect_vec();
-                                    for _ in 0..consumed.len() {
-                                        self.stream.next();
-                                    }
-                                    let value = match self.stream.clone().nth(0) {
+                                    
+                                    let value = match self.stream.clone().next() {
                                         Some((Token::BeginBlock, _)) => {
                                             ValueType::Function(self.collect_block()?)
                                         }
@@ -1089,15 +1075,8 @@ where
                         } else {
                             match self.stream.next() {
                                 Some((Token::Op(eq), _)) if eq == "=" => {
-                                    let consumed = self
-                                        .stream
-                                        .clone()
-                                        .take_while(|(t, _)| t == &Token::NewLine)
-                                        .collect_vec();
-                                    for _ in 0..consumed.len() {
-                                        self.stream.next();
-                                    }
-                                    let value = match self.stream.clone().nth(0) {
+                                    
+                                    let value = match self.stream.clone().next() {
                                         Some((Token::BeginBlock, _)) => {
                                             ValueType::Function(self.collect_block()?)
                                         }
@@ -1138,15 +1117,7 @@ where
                         let ty = self.collect_type()?;
                         match self.stream.next() {
                             Some((Token::Op(eq), _)) if eq == "=" => {
-                                let consumed = self
-                                    .stream
-                                    .clone()
-                                    .take_while(|(t, _)| t == &Token::NewLine)
-                                    .collect_vec();
-                                for _ in 0..consumed.len() {
-                                    self.stream.next();
-                                }
-                                let value = match self.stream.clone().nth(0) {
+                                let value = match self.stream.clone().next() {
                                     Some((Token::BeginBlock, _)) => {
                                         ValueType::Function(self.collect_block()?)
                                     }
@@ -1206,14 +1177,6 @@ where
                                 .fold(ty, |ty, name| ty.replace_user_with_generic(&name));
                             match self.stream.next() {
                                 Some((Token::Op(eq), _)) if eq == "=" => {
-                                    let consumed = self
-                                        .stream
-                                        .clone()
-                                        .take_while(|(t, _)| t == &Token::NewLine)
-                                        .collect_vec();
-                                    for _ in 0..consumed.len() {
-                                        self.stream.next();
-                                    }
                                     let value = match self.stream.clone().nth(0) {
                                         Some((Token::BeginBlock, _)) => {
                                             ValueType::Function(self.collect_block()?)
@@ -1292,14 +1255,11 @@ where
             loop {
                 let next = self.stream.peek();
                 if let Some((Token::EndBlock, _)) = next {
-                    self.skip_newlines();
+                    
                     self.stream.next();
                     break;
                 } else if let Some((Token::EoF, _)) = next {
                     break;
-                } else if let Some((Token::NewLine, _)) = next {
-                    self.stream.next();
-                    continue;
                 }
                 sub_expr.push(self.next_statement()?)
             }
@@ -1706,7 +1666,7 @@ let foo _ : int32 -> ( int32 -> int32 ) =
 
     #[test]
     fn multiple_statements() {
-        const SRC: &'static str = include_str!("../../samples/test.foo");
+        const SRC: &'static str = include_str!("../../samples/test.fb");
         let mut parser = Parser::from_source(SRC);
         assert_eq!(
             ast::Declaration::Value(ValueDeclaration {
@@ -1808,9 +1768,9 @@ let foo _ : int32 -> ( int32 -> int32 ) =
     fn fn_chain() {
         const SRC: &'static str = r#"
 let main _ : int32 -> int32 = 
-    put_int32 100
-    print_str "v"
-    return 32
+    put_int32 100;
+    print_str "v";
+    return 32;
 "#;
         let mut parser = Parser::from_source(SRC);
         assert_eq!(
@@ -2199,7 +2159,7 @@ for<T,U> type Tuple = {
                         }
                         .boxed()
                     ),
-                    loc: (0, 38)
+                    loc: (0, 37)
                 })),
                 generictypes: Vec::new()
             }),
@@ -2246,7 +2206,7 @@ for<T,U> type Tuple = {
                         }
                         .boxed()
                     ),
-                    loc: (2, 43)
+                    loc: (2, 42)
                 })),
                 generictypes: Vec::new()
             }),
@@ -2306,7 +2266,7 @@ for<T,U> type Tuple = {
                         }
                         .boxed()
                     ),
-                    loc: (7, 46)
+                    loc: (7, 45)
                 })),
                 generictypes: Vec::new(),
             }),
@@ -2364,7 +2324,7 @@ for<T,U> type Tuple = {
                         }
                         .boxed()
                     ),
-                    loc: (14, 54)
+                    loc: (14, 53)
                 })),
                 generictypes: Vec::new()
             }),
@@ -2428,6 +2388,7 @@ for<T,U> type Tuple = {
                             (22, 9)
                         ),
                     ],
+                    loc: (17,5)
                 })]),
                 generictypes: Vec::new(),
             }),
@@ -2483,7 +2444,8 @@ for<T,U> type Tuple = {
                             ty: types::INT32
                         },
                         (30, 9)
-                    )]
+                    )],
+                    loc: (25,5),
                 })]),
                 generictypes: Vec::new(),
             }),
@@ -2531,7 +2493,7 @@ for<T,U> type Tuple = {
                         Vec::new(),
                         ast::Expr::NumericLiteral { value: "2".to_string(), ty: types::INT32 }.boxed(),
                     ),
-                    loc: (32,59)
+                    loc: (32,58)
                 })),
                 generictypes: Vec::new(),
             }),

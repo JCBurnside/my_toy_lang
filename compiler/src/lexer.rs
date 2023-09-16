@@ -44,8 +44,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
             self.source_stream.next().unwrap();
             self.curr_col = 0;
             self.curr_line += 1;
-            return (Token::NewLine, (self.curr_line, self.curr_col));
-            // return self.lex()
+            return self.lex();
         }
 
         let (ws, count) = self
@@ -82,11 +81,11 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                 self.start_line = true;
                 self.curr_col = 0;
                 self.curr_line += 1;
-                return (Token::NewLine, (self.curr_line, self.curr_col));
-                // return self.lex()
+                return self.lex();
             }
 
             match c {
+                ';' => (Token::Seq, (self.curr_line,self.curr_col)),
                 ',' => (Token::Comma, (self.curr_line, self.curr_col)),
                 '(' => (Token::GroupOpen, (self.curr_line, self.curr_col)),
                 ')' => (Token::GroupClose, (self.curr_line, self.curr_col)),
@@ -276,8 +275,9 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
 
                 'i' if self.source_stream.peek() == Some(&'f') => {
                     let _ = self.source_stream.next();
+                    let col = self.curr_col;
                     self.curr_col += 1;
-                    (Token::If, (self.curr_line, self.curr_col))
+                    (Token::If, (self.curr_line, col))
                 }
 
                 't' if self
@@ -446,12 +446,18 @@ mod tests {
     #[test]
     #[ignore = "for debugging only"]
     fn debugging() {
-        let tokens = TokenStream::from_source("let out_of_line_expr a : bool -> int32 = if a then
-        fun 0
-    else
-        1
-let foo = 3").map(|(a,_)| a).collect_vec();
+        let tokens = TokenStream::from_source("foo { a:3, b : 4 }")
+            .map(fst)
+            .collect_vec();
         println!("{:?}", tokens);
+        let tokens = TokenStream::from_source("
+foo {
+    a:3,
+    b:4
+}
+").map(fst).filter(|it| it != &Token::EndBlock && it != &Token::BeginBlock).collect_vec();
+        println!("{:?}", tokens);
+
     }
 
     #[test]
@@ -464,180 +470,191 @@ let foo = 3").map(|(a,_)| a).collect_vec();
     bar + baz
 "#
             )
-            .map(|(a, _)| a)
+            .map(fst)
             .collect_vec(),
             [
-                For, Op("<".to_owned()), Ident("T".to_owned()), Comma, Ident("U".to_owned()), Op(">".to_owned()), Let, Ident("foo".to_owned()), Ident("bar".to_owned()), Ident("baz".to_owned()), Colon, Ident("T".to_owned()), Arrow, Ident("U".to_owned()), Arrow, Ident("int8".to_owned()), Op("=".to_owned()), NewLine,
+                For, Op("<".to_owned()), Ident("T".to_owned()), Comma, Ident("U".to_owned()), Op(">".to_owned()), Let, Ident("foo".to_owned()), Ident("bar".to_owned()), Ident("baz".to_owned()), Colon, Ident("T".to_owned()), Arrow, Ident("U".to_owned()), Arrow, Ident("int8".to_owned()), Op("=".to_owned()), 
                 BeginBlock,
-                    Ident("bar".to_owned()), Op("+".to_owned()), Ident("baz".to_owned()), NewLine,
+                    Ident("bar".to_owned()), Op("+".to_owned()), Ident("baz".to_owned()), 
                 EoF
             ]
         )
     }
 
     #[test]
+    #[rustfmt::skip]
     fn complex_type() {
         use Token::*;
         assert_eq!(
             TokenStream::from_source("Foo<Bar<int32->(),int32>>")
-                .map(|(a, _)| a)
+                .map(fst)
                 .collect_vec(),
             [
                 Ident("Foo".to_string()),
                 Op("<".to_string()),
-                Ident("Bar".to_string()),
-                Op("<".to_string()),
-                Ident("int32".to_string()),
-                Arrow,
-                GroupOpen,
-                GroupClose,
-                Comma,
-                Ident("int32".to_string()),
+                    Ident("Bar".to_string()),
+                    Op("<".to_string()),
+                        Ident("int32".to_string()),
+                        Arrow,
+                        GroupOpen,
+                        GroupClose,
+                        Comma,
+                        Ident("int32".to_string()),
                 Op(">>".to_string()),
                 EoF
             ]
         );
     }
 
+    fn fst<T,U>((it,_):(T,U)) -> T {
+        it
+    }
     #[test]
     fn single_tokens() {
         assert_eq!(
-            TokenStream::from_source("let")
-                .map(|(a, _)| a)
+            TokenStream::from_source(";")
+                .map(fst)
                 .collect_vec(),
-            vec![Token::Let, Token::EoF],
+            [Token::Seq,Token::EoF],
+            "seq"
+        );
+        assert_eq!(
+            TokenStream::from_source("let")
+                .map(fst)
+                .collect_vec(),
+            [Token::Let, Token::EoF],
             "let token"
         );
         assert_eq!(
-            TokenStream::from_source(":").map(|(a, _)| a).collect_vec(),
+            TokenStream::from_source(":").map(fst).collect_vec(),
             [Token::Colon, Token::EoF],
             "colon"
         );
         assert_eq!(
-            TokenStream::from_source("1").map(|(a, _)| a).collect_vec(),
-            vec![Token::Integer(false, "1".to_owned()), Token::EoF],
+            TokenStream::from_source("1").map(fst).collect_vec(),
+            [Token::Integer(false, "1".to_owned()), Token::EoF],
             "int token"
         );
         assert_eq!(
             TokenStream::from_source("1.0")
-                .map(|(a, _)| a)
+                .map(fst)
                 .collect_vec(),
-            vec![Token::FloatingPoint(false, "1.0".to_owned()), Token::EoF],
+            [Token::FloatingPoint(false, "1.0".to_owned()), Token::EoF],
             "float token"
         );
         assert_eq!(
             TokenStream::from_source("'l'")
-                .map(|(a, _)| a)
+                .map(fst)
                 .collect_vec(),
-            vec![Token::CharLiteral("l".to_owned()), Token::EoF],
+            [Token::CharLiteral("l".to_owned()), Token::EoF],
             "char token"
         );
         assert_eq!(
             TokenStream::from_source("\"let\"")
-                .map(|(a, _)| a)
+                .map(fst)
                 .collect_vec(),
-            vec![Token::StringLiteral("let".to_owned()), Token::EoF],
+            [Token::StringLiteral("let".to_owned()), Token::EoF],
             "string token"
         );
         assert_eq!(
             TokenStream::from_source("foo")
-                .map(|(a, _)| a)
+                .map(fst)
                 .collect_vec(),
             vec![Token::Ident("foo".to_owned()), Token::EoF],
             "ident token"
         );
         assert_eq!(
-            TokenStream::from_source("!=").map(|(a, _)| a).collect_vec(),
+            TokenStream::from_source("!=").map(fst).collect_vec(),
             vec![Token::Op("!=".to_owned()), Token::EoF],
             "op token"
         );
 
         assert_eq!(
             TokenStream::from_source("return")
-                .map(|(a, _)| a)
+                .map(fst)
                 .collect_vec(),
             [Token::Return, Token::EoF],
             "return token"
         );
 
         assert_eq!(
-            TokenStream::from_source("(").map(|(a, _)| a).collect_vec(),
+            TokenStream::from_source("(").map(fst).collect_vec(),
             [Token::GroupOpen, Token::EoF],
             "open group token"
         );
 
         assert_eq!(
-            TokenStream::from_source(")").map(|(a, _)| a).collect_vec(),
+            TokenStream::from_source(")").map(fst).collect_vec(),
             [Token::GroupClose, Token::EoF],
             "close group token"
         );
 
         assert_eq!(
-            TokenStream::from_source("->").map(|(a, _)| a).collect_vec(),
+            TokenStream::from_source("->").map(fst).collect_vec(),
             [Token::Arrow, Token::EoF],
             "Arrow token"
         );
 
         assert_eq!(
             TokenStream::from_source("\n\t")
-                .map(|(a, _)| a)
+                .map(fst)
                 .collect_vec(),
-            [Token::NewLine, Token::BeginBlock, Token::EoF],
+            [Token::BeginBlock, Token::EoF],
             "Begin block"
         );
 
         assert_eq!(
             TokenStream::from_source("type")
-                .map(|(a, _)| a)
+                .map(fst)
                 .collect_vec(),
             [Token::Type, Token::EoF],
             "Type"
         );
         assert_eq!(
             TokenStream::from_source("enum")
-                .map(|(a, _)| a)
+                .map(fst)
                 .collect_vec(),
             [Token::Enum, Token::EoF],
             "enum"
         );
         assert_eq!(
-            TokenStream::from_source("{").map(|(a, _)| a).collect_vec(),
+            TokenStream::from_source("{").map(fst).collect_vec(),
             [Token::CurlOpen, Token::EoF],
             "Open Curl"
         );
         assert_eq!(
-            TokenStream::from_source("}").map(|(a, _)| a).collect_vec(),
+            TokenStream::from_source("}").map(fst).collect_vec(),
             [Token::CurlClose, Token::EoF],
             "Close Curl"
         );
         assert_eq!(
-            TokenStream::from_source(",").map(|(a, _)| a).collect_vec(),
+            TokenStream::from_source(",").map(fst).collect_vec(),
             [Token::Comma, Token::EoF],
             "comma"
         );
 
         assert_eq!(
             TokenStream::from_source("match")
-                .map(|(a, _)| a)
+                .map(fst)
                 .collect_vec(),
             [Token::Match, Token::EoF],
             "match"
         );
         assert_eq!(
-            TokenStream::from_source("if").map(|(a, _)| a).collect_vec(),
+            TokenStream::from_source("if").map(fst).collect_vec(),
             [Token::If, Token::EoF],
             "if"
         );
         assert_eq!(
             TokenStream::from_source("then")
-                .map(|(a, _)| a)
+                .map(fst)
                 .collect_vec(),
             [Token::Then, Token::EoF],
             "then"
         );
         assert_eq!(
             TokenStream::from_source("else")
-                .map(|(a, _)| a)
+                .map(fst)
                 .collect_vec(),
             [Token::Else, Token::EoF],
             "else"
@@ -663,7 +680,7 @@ let foo = 3").map(|(a,_)| a).collect_vec();
     fn literals_edge_cases() {
         assert_eq!(
             TokenStream::from_source("\"foo bar \\\"baz\"")
-                .map(|(a, _)| a)
+                .map(fst)
                 .collect_vec(),
             [
                 Token::StringLiteral("foo bar \\\"baz".to_owned()),
@@ -672,34 +689,44 @@ let foo = 3").map(|(a,_)| a).collect_vec();
         );
         assert_eq!(
             TokenStream::from_source("\"\"")
-                .map(|(a, _)| a)
+                .map(fst)
                 .collect_vec(),
             [Token::StringLiteral("".to_owned()), Token::EoF]
         );
         assert_eq!(
             TokenStream::from_source("\" \"")
-                .map(|(a, _)| a)
+                .map(fst)
                 .collect_vec(),
             [Token::StringLiteral(" ".to_owned()), Token::EoF]
         );
 
         assert_eq!(
             TokenStream::from_source("' '")
-                .map(|(a, _)| a)
+                .map(fst)
                 .collect_vec(),
             [Token::CharLiteral(" ".to_owned()), Token::EoF]
         );
     }
 
     #[test]
+    #[rustfmt::skip]
     fn generic_test() {
-        TokenStream::from_source(
-            r#"let foo : int32 =
-    return 5
+        use Token::*;
+        assert_eq!(
+            TokenStream::from_source(
+r#"let foo : int32 =
+    return 5;
 "#,
+            )
+            .map(fst)
+            .collect_vec(),
+            [
+                Let, Ident("foo".to_string()), Colon, Ident("int32".to_string()), Op("=".to_string()),
+                BeginBlock,
+                    Return, Integer(false, "5".to_string()),Seq,
+                EoF
+            ]
         )
-        .map(|(a, _)| a)
-        .collect_vec();
     }
 
     #[test]
@@ -711,7 +738,7 @@ let foo = 3").map(|(a,_)| a).collect_vec();
                 r#"let depth1 =
     let depth2 =
         'c'
-    return 1.0
+    return 1.0;
 
 let bar : int32 = 1
 
@@ -720,23 +747,23 @@ let baz = "foo bar baz"
 let group_test arg : ( int32 -> int32 ) -> int32
 "#
             )
-            .map(|(a, _)| a)
+            .map(fst)
             .collect_vec(),
             [
-                Let, Ident("depth1".to_owned()), Op("=".to_owned()), NewLine,
+                Let, Ident("depth1".to_owned()), Op("=".to_owned()), 
                 BeginBlock,
-                    Let, Ident("depth2".to_owned()), Op("=".to_owned()), NewLine,
+                    Let, Ident("depth2".to_owned()), Op("=".to_owned()), 
                     BeginBlock,
-                        CharLiteral("c".to_owned()), NewLine,
+                        CharLiteral("c".to_owned()), 
                     EndBlock,
-                    Return, FloatingPoint(false,"1.0".to_owned()), NewLine,
-                    NewLine,
+                    Return, FloatingPoint(false,"1.0".to_owned()), Seq, 
+                    
                 EndBlock,
-                Let, Ident("bar".to_owned()), Colon, Ident("int32".to_owned()), Op("=".to_owned()), Integer(false,"1".to_owned()),NewLine,
-                NewLine,
-                Let, Ident("baz".to_owned()), Op("=".to_owned()),  StringLiteral("foo bar baz".to_owned()),  NewLine,
-                NewLine,
-                Let, Ident("group_test".to_owned()), Ident("arg".to_owned()), Colon, GroupOpen, Ident("int32".to_owned()), Arrow, Ident("int32".to_owned()), GroupClose, Arrow, Ident("int32".to_owned()), NewLine,
+                Let, Ident("bar".to_owned()), Colon, Ident("int32".to_owned()), Op("=".to_owned()), Integer(false,"1".to_owned()),
+                
+                Let, Ident("baz".to_owned()), Op("=".to_owned()),  StringLiteral("foo bar baz".to_owned()),  
+                
+                Let, Ident("group_test".to_owned()), Ident("arg".to_owned()), Colon, GroupOpen, Ident("int32".to_owned()), Arrow, Ident("int32".to_owned()), GroupClose, Arrow, Ident("int32".to_owned()), 
                 EoF,
             ]
         )
@@ -745,23 +772,23 @@ let group_test arg : ( int32 -> int32 ) -> int32
     #[test]
     #[rustfmt::skip]
     fn from_file() {
-        const SRC: &'static str = include_str!("../../samples/test.foo");
+        const SRC: &'static str = include_str!("../../samples/test.fb");
         use Token::*;
         assert_eq!(
-            TokenStream::from_source(SRC).map(|(a, _)| a).collect_vec(),
+            TokenStream::from_source(SRC).map(fst).collect_vec(),
             [
-                Let, Ident("foo".to_owned()), Colon, Ident("int32".to_owned()), Op("=".to_owned()), Integer(false, "3".to_owned()),NewLine,
-                NewLine,
-                Let, Ident("bar".to_owned()), Ident("quz".to_owned()), Colon, Ident("int32".to_owned()), Arrow, Ident("int32".to_owned()), Op("=".to_owned()),NewLine,
+                Let, Ident("foo".to_owned()), Colon, Ident("int32".to_owned()), Op("=".to_owned()), Integer(false, "3".to_owned()),
+                
+                Let, Ident("bar".to_owned()), Ident("quz".to_owned()), Colon, Ident("int32".to_owned()), Arrow, Ident("int32".to_owned()), Op("=".to_owned()),
                 BeginBlock,
-                    Let, Ident("baz".to_owned()), Colon, Ident("str".to_owned()), Op("=".to_owned()), StringLiteral("merp \\\" yes".to_owned()),NewLine,
-                    Return, Integer(false, "2".to_owned()),NewLine,
+                    Let, Ident("baz".to_owned()), Colon, Ident("str".to_owned()), Op("=".to_owned()), StringLiteral("merp \\\" yes".to_owned()),Seq,
+                    Return, Integer(false, "2".to_owned()),Seq,
                 EndBlock,
-                NewLine,
-                Let, Op("^^".to_owned()), Ident("lhs".to_owned()), Ident("rhs".to_owned()), Colon, Ident("int32".to_owned()), Arrow, Ident("int32".to_owned()), Arrow, Ident("int32".to_owned()), Op("=".to_owned()),NewLine,
+                
+                Let, Op("^^".to_owned()), Ident("lhs".to_owned()), Ident("rhs".to_owned()), Colon, Ident("int32".to_owned()), Arrow, Ident("int32".to_owned()), Arrow, Ident("int32".to_owned()), Op("=".to_owned()),
                 BeginBlock,
-                    Ident("bar".to_string()), Ident("foo".to_owned()),NewLine,
-                    Return, Integer(false, "1".to_owned()),
+                    Ident("bar".to_string()), Ident("foo".to_owned()),Seq,
+                    Return, Integer(false, "1".to_owned()),Seq,
                 EoF
             ]
         )
@@ -772,21 +799,21 @@ let group_test arg : ( int32 -> int32 ) -> int32
     fn chain_fn_calls() {
         const SRC: &'static str = r#"
 let main _ : int32 -> int32 = 
-    put_int32 100
-    print_str "v"
-    return 32
+    put_int32 100;
+    print_str "v";
+    return 32;
 "#;
 
         use Token::*;
         assert_eq!(
-            TokenStream::from_source(SRC).map(|(a, _)| a).collect_vec(),
+            TokenStream::from_source(SRC).map(fst).collect_vec(),
             [
-            NewLine,
-            Let, Ident("main".to_owned()), Ident("_".to_owned()), Colon, Ident("int32".to_owned()), Arrow, Ident("int32".to_owned()), Op("=".to_owned()),NewLine,
+            
+            Let, Ident("main".to_owned()), Ident("_".to_owned()), Colon, Ident("int32".to_owned()), Arrow, Ident("int32".to_owned()), Op("=".to_owned()),
             BeginBlock,
-                Ident("put_int32".to_owned()), Integer(false,"100".to_owned()),NewLine,
-                Ident("print_str".to_owned()), StringLiteral("v".to_owned()),NewLine,
-                Return, Integer(false, "32".to_owned()),NewLine,
+                Ident("put_int32".to_owned()), Integer(false,"100".to_owned()),Seq,
+                Ident("print_str".to_owned()), StringLiteral("v".to_owned()),Seq,
+                Return, Integer(false, "32".to_owned()),Seq,
             EoF
             ]
         )
@@ -797,28 +824,28 @@ let main _ : int32 -> int32 =
     fn types() {
         const SRC : &'static str = r#"
 type Foo = {
-    a : int32
+    a : int32,
 }
 
 enum Bar =
 | A
 | B int32
-| C { a:int32 }"#;
+| C { a:int32, }"#;
         use Token::*;
         assert_eq!(
             TokenStream::from_source(SRC).map(|(a,_)| a).collect_vec(),
             [
-            NewLine,
-            Type, Ident("Foo".to_string()), Op("=".to_string()), CurlOpen, NewLine,
+            
+            Type, Ident("Foo".to_string()), Op("=".to_string()), CurlOpen, 
             BeginBlock,
-                Ident("a".to_owned()), Colon, Ident("int32".to_string()), NewLine,
+                Ident("a".to_owned()), Colon, Ident("int32".to_string()), Comma, 
             EndBlock,
-            CurlClose,NewLine,
-            NewLine,
-            Enum, Ident("Bar".to_string()), Op("=".to_string()), NewLine,
-            Op("|".to_string()), Ident("A".to_string()), NewLine,
-            Op("|".to_string()), Ident("B".to_string()), Ident("int32".to_string()), NewLine,
-            Op("|".to_string()), Ident("C".to_string()), CurlOpen, Ident("a".to_owned()), Colon, Ident("int32".to_string()), CurlClose, 
+            CurlClose,
+            
+            Enum, Ident("Bar".to_string()), Op("=".to_string()), 
+            Op("|".to_string()), Ident("A".to_string()), 
+            Op("|".to_string()), Ident("B".to_string()), Ident("int32".to_string()), 
+            Op("|".to_string()), Ident("C".to_string()), CurlOpen, Ident("a".to_owned()), Colon, Ident("int32".to_string()), Comma, CurlClose, 
             EoF
             ]
         )
@@ -835,13 +862,13 @@ match x where
 "#;
         assert_eq!(
             TokenStream::from_source(SRC_MATCH)
-                .map(|(a, _)| a)
+                .map(fst)
                 .collect_vec(),
             [
-                NewLine,
-                Match,Ident("x".to_string()),Where,NewLine,
-                Op("|".to_string()),Ident("Foo".to_string()),Colon,Colon,Ident("Y".to_string()),Ident("bar".to_string()),Arrow,GroupOpen,GroupClose,NewLine,
-                Op("|".to_string()),Ident("Foo".to_string()),Colon,Colon,Ident("Z".to_string()),CurlOpen,Ident("a".to_string()),Comma,Ident("b".to_string()),CurlClose,Arrow,GroupOpen,GroupClose,NewLine,
+                
+                Match,Ident("x".to_string()),Where,
+                Op("|".to_string()),Ident("Foo".to_string()),Colon,Colon,Ident("Y".to_string()),Ident("bar".to_string()),Arrow,GroupOpen,GroupClose,
+                Op("|".to_string()),Ident("Foo".to_string()),Colon,Colon,Ident("Z".to_string()),CurlOpen,Ident("a".to_string()),Comma,Ident("b".to_string()),CurlClose,Arrow,GroupOpen,GroupClose,
                 EoF
             ],
             "Match"
@@ -855,30 +882,30 @@ else
 "#;
         assert_eq!(
             TokenStream::from_source(SRC_IF)
-                .map(|(a, _)| a)
+                .map(fst)
                 .collect_vec(),
             [
-                NewLine,
+                
                 If,
                 Ident("cond".to_string()),
                 Then,
-                NewLine,
+                
                 BeginBlock,
                 Ident("a".to_string()),
-                NewLine,
+                
                 EndBlock,
                 Else,
-                NewLine,
+                
                 BeginBlock,
                 Ident("b".to_string()),
-                NewLine,
+                
                 EoF
             ],
             "If then else multiline"
         );
         assert_eq!(
             TokenStream::from_source("if cond then a else b")
-                .map(|(a, _)| a)
+                .map(fst)
                 .collect_vec(),
             [
                 If,

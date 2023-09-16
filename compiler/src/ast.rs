@@ -214,6 +214,17 @@ impl Statement {
             Statement::Error => (),
         }
     }
+
+    pub(crate) fn get_loc(&self) -> crate::Location {
+        match self {
+            Statement::Declaration(decl) => decl.loc,
+            Statement::Return(_, loc) => *loc,
+            Statement::FnCall(call) => call.loc,
+            Statement::Pipe(_) => todo!(),
+            Statement::IfStatement(if_) => if_.loc,
+            Statement::Error => todo!(),
+        }
+    }
 }
 
 #[derive(PartialEq, Eq, Debug)]
@@ -222,6 +233,7 @@ pub struct IfBranching {
     pub(crate) true_branch: Vec<Statement>,
     pub(crate) else_ifs: Vec<(Box<Expr>, Vec<Statement>)>,
     pub(crate) else_branch: Vec<Statement>,
+    pub(crate) loc : crate::Location,
 }
 
 impl IfBranching {

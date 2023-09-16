@@ -36,7 +36,8 @@ pub enum Token {
     // |, >, <, !, @,  $, =, &, +, -, \, /, *, ^, .
     Op(String),
     //meta tokens
-    NewLine, //needed due to how fn args are parsed.  largely ignored
+    //TODO! attribute indicatator
+    Seq,        // ;
     BeginBlock,
     EndBlock,
     EoF,
