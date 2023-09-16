@@ -1285,11 +1285,11 @@ impl TypedExpr {
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct TypedIfExpr {
-    cond: Box<TypedExpr>,
-    true_branch: (Vec<TypedStatement>, Box<TypedExpr>),
-    else_ifs: Vec<(Box<TypedExpr>, Vec<TypedStatement>, Box<TypedExpr>)>,
-    else_branch: (Vec<TypedStatement>, Box<TypedExpr>),
-    loc: crate::Location,
+    pub(crate) cond: Box<TypedExpr>,
+    pub(crate) true_branch: (Vec<TypedStatement>, Box<TypedExpr>),
+    pub(crate) else_ifs: Vec<(Box<TypedExpr>, Vec<TypedStatement>, Box<TypedExpr>)>,
+    pub(crate) else_branch: (Vec<TypedStatement>, Box<TypedExpr>),
+    pub(crate) loc: crate::Location,
 }
 
 impl TypedIfExpr {
@@ -1516,6 +1516,10 @@ impl TypedIfExpr {
             .iter_mut()
             .for_each(|it| it.lower_generics(context));
         self.else_branch.1.lower_generics(context);
+    }
+
+    pub(crate) fn get_ty(&self) -> ResolvedType {
+        self.true_branch.1.get_ty()
     }
 }
 

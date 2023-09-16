@@ -3,6 +3,7 @@ use std::convert::TryInto;
 use std::iter::once;
 
 use inkwell::attributes::Attribute;
+use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::debug_info::{
@@ -24,7 +25,7 @@ use multimap::MultiMap;
 
 use crate::typed_ast::{
     collect_args, ResolvedTypeDeclaration, StructDefinition, TypedBinaryOpCall, TypedDeclaration,
-    TypedExpr, TypedFnCall, TypedIfBranching, TypedMemberRead, TypedStatement,
+    TypedExpr, TypedFnCall, TypedIfBranching, TypedIfExpr, TypedMemberRead, TypedStatement,
     TypedValueDeclaration, TypedValueType,
 };
 use crate::types::{self, ResolvedType, TypeResolver};
@@ -106,7 +107,10 @@ impl<'ctx> CodeGen<'ctx> {
     }
 
     fn compile_function(&mut self, decl: TypedValueDeclaration) {
-        let v = self.incomplete_functions.get(&decl.ident).unwrap().clone();
+        #[cfg(debug_assertions)]
+        let _ = self.module.print_to_file("./debug.llvm");
+        let v = self.incomplete_functions.get(dbg!(&decl.ident)).unwrap().clone();
+        
         if let Some(dibuilder) = &self.dibuilder {
             let Some(difile) = self.difile.as_ref() else { unreachable!() };
             let fnty = {
@@ -322,7 +326,7 @@ impl<'ctx> CodeGen<'ctx> {
                     } else {
                         value
                     };
-                    self.builder.build_store(dbg!(*ret_target), dbg!(value));
+                    self.builder.build_store(*ret_target, value);
                 }
                 self.builder.build_unconditional_branch(ret_bb);
             }
@@ -335,7 +339,7 @@ impl<'ctx> CodeGen<'ctx> {
         }
         self.difunction = None;
         self.dilocals.clear();
-        ret_block.move_after(v.get_last_basic_block().unwrap());
+        let _ = ret_block.move_after(v.get_last_basic_block().unwrap());
     }
 
     pub fn compile_statement(&mut self, stmnt: TypedStatement) {
@@ -388,130 +392,116 @@ impl<'ctx> CodeGen<'ctx> {
                         }
                         let _ = end_block.move_after(else_block);
                         self.builder.build_unconditional_branch(end_block);
-
                     }
                     (false, true) => {
                         //if then else if then
-                        let blocks = std::iter::repeat_with(|| {
-                            (
-                                self.ctx.append_basic_block(fun, ""),
-                                self.ctx.append_basic_block(fun, ""),
-                            )
-                        }) //make block pairs
-                        .take(else_ifs.len()) //take the number of else ifs we have.
-                        .collect_vec();
-                        let Some((next_cond,_)) = blocks.first() else {unreachable!()};
-                        self.builder
-                            .build_conditional_branch(cond, true_block, *next_cond);
+                        let cond_blocks = std::iter::repeat_with(|| self.ctx.append_basic_block(fun, ""))
+                                .take(else_ifs.len())
+                                .collect_vec();
+
+                        self.builder.build_conditional_branch(
+                            cond, 
+                            true_block, 
+                            *cond_blocks.first().unwrap()
+                        );
                         self.builder.position_at_end(true_block);
                         for stmnt in true_branch {
                             self.compile_statement(stmnt);
                         }
-                        self.builder.build_unconditional_branch(end_block);
-
-                        // this looks so nasty. not sure how to clean it up tbh.
-                        // idea to use mutating next block.
-                        let next_blocks = blocks
-                            .iter()
-                            .skip(1)
-                            .map(|(a, _)| a)
-                            .chain(once(&end_block))
-                            .collect_vec();
-                        let blocks_with_branches = blocks
-                            .iter()
-                            .zip_eq(else_ifs) //pair with blocks and conditions
-                            .map(|((cond_block, true_block), (cond, branch))| {
-                                (cond, branch, cond_block, true_block)
+                        self.builder.position_at_end(true_block);
+                        
+                        let else_ifs = else_ifs
+                            .into_iter()
+                            .map(|(cond,stmnts)| {
+                                let block = self.ctx.append_basic_block(fun, "");
+                                self.builder.position_at_end(block);
+                                for stmnt in stmnts {
+                                    self.compile_statement(stmnt);
+                                }
+                                self.builder.build_unconditional_branch(end_block);
+                                (cond,block)
                             })
-                            .zip(next_blocks.into_iter()) //pair with next cond block and then end block
-                            .map(|((cond, branch, cond_block, true_block), next_block)| {
-                                (cond, branch, cond_block, true_block, next_block)
-                            })
+                            .zip(cond_blocks.iter().copied())
+                            .map(|((cond,block),cond_block)|{
+                                let _ = block.move_after(cond_block);
+                                (cond,block,cond_block)
+                            }).collect_vec();
+                        let blocks = else_ifs.into_iter()
+                            .zip(cond_blocks.into_iter().skip(1).chain(once(end_block)))
+                            .map(|(it,false_block)|(it.0,it.1,it.2,false_block))
                             .collect_vec();
-                        for (cond, branch, cond_block, true_block, next_block) in
-                            blocks_with_branches
-                        {
-                            self.builder.position_at_end(*cond_block);
+                        let _ = end_block.move_after(blocks.last().map(|it| it.1).unwrap());
+                        for (cond,true_block,cond_block,false_block) in blocks {
+                            self.builder.position_at_end(cond_block);
                             let cond = match self.compile_expr(*cond) {
-                                AnyValueEnum::PointerValue(ptr) => self.builder.build_load(ptr,"").into_int_value(),
-                                AnyValueEnum::IntValue(it) => it,
-                                _=> unreachable!("it can only ever be a point which means a value read or an expression resulting in a boolean")
+                                AnyValueEnum::PointerValue(p) => {
+                                    self.builder.build_load(p, "").into_int_value()
+                                }
+                                AnyValueEnum::IntValue(i) => i,
+                                _ => unreachable!(),
                             };
-                            self.builder
-                                .build_conditional_branch(cond, *true_block, *next_block);
-                            self.builder.position_at_end(*true_block);
-                            for stmnt in branch {
-                                self.compile_statement(stmnt);
-                            }
-                            let _ = end_block.move_after(*true_block);
-                            self.builder.build_unconditional_branch(end_block);
+                            self.builder.build_conditional_branch(cond, true_block, false_block);
                         }
                     }
                     (false, false) => {
-                        // if then else if then else
-                        let blocks = std::iter::repeat_with(|| {
-                            (
-                                self.ctx.append_basic_block(fun, ""),
-                                self.ctx.append_basic_block(fun, ""),
-                            )
-                        }) //make block pairs
-                        .take(else_ifs.len()) //take the number of else ifs we have.
-                        .collect_vec();
-                        let Some((next_cond,_)) = blocks.first() else {unreachable!()};
-                        self.builder
-                            .build_conditional_branch(cond, true_block, *next_cond);
+                        
+                        let cond_blocks = std::iter::repeat_with(|| self.ctx.append_basic_block(fun, ""))
+                                .take(else_ifs.len())
+                                .collect_vec();
+
+                        self.builder.build_conditional_branch(
+                            cond, 
+                            true_block, 
+                            *cond_blocks.first().unwrap()
+                        );
                         self.builder.position_at_end(true_block);
                         for stmnt in true_branch {
                             self.compile_statement(stmnt);
                         }
                         self.builder.build_unconditional_branch(end_block);
                         let else_block = self.ctx.append_basic_block(fun, "");
-                        let next_blocks = blocks
-                            .iter()
-                            .skip(1)
-                            .map(|(a, _)| a)
-                            .chain(once(&else_block))
-                            .collect_vec();
-
-                        // this looks so nasty. not sure how to clean it up tbh.
-                        // idea to use mutating next block.
-                        let blocks_with_branches = blocks
-                            .iter()
-                            .zip_eq(else_ifs) //pair with blocks and conditions
-                            .map(|((cond_block, true_block), (cond, branch))| {
-                                (cond, branch, cond_block, true_block)
+                        let else_ifs = else_ifs
+                            .into_iter()
+                            .map(|(cond,stmnts)| {
+                                let block = self.ctx.append_basic_block(fun, "");
+                                self.builder.position_at_end(block);
+                                for stmnt in stmnts {
+                                    self.compile_statement(stmnt);
+                                }
+                                self.builder.build_unconditional_branch(end_block);
+                                (cond,block)
                             })
-                            .zip(next_blocks.into_iter()) //pair with next cond block and then end block
-                            .map(|((cond, branch, cond_block, true_block), next_block)| {
-                                (cond, branch, cond_block, true_block, next_block)
-                            })
+                            .zip(cond_blocks.iter().copied())
+                            .map(|((cond,block),cond_block)|{
+                                let _ = block.move_after(cond_block);
+                                (cond,block,cond_block)
+                            }).collect_vec();
+                        let blocks = else_ifs.into_iter()
+                            .zip(cond_blocks.into_iter().skip(1).chain(once(else_block)))
+                            .map(|(it,false_block)|(it.0,it.1,it.2,false_block))
                             .collect_vec();
-                        for (cond, branch, cond_block, true_block, next_block) in
-                            blocks_with_branches
-                        {
-                            self.builder.position_at_end(*cond_block);
+                        let _ = else_block.move_after(blocks.last().map(|it| it.2).unwrap());
+                        for (cond,true_block,cond_block,false_block) in blocks {
+                            self.builder.position_at_end(cond_block);
                             let cond = match self.compile_expr(*cond) {
-                                AnyValueEnum::PointerValue(ptr) => self.builder.build_load(ptr,"").into_int_value(),
-                                AnyValueEnum::IntValue(it) => it,
-                                _=> unreachable!("it can only ever be a point which means a value read or an expression resulting in a boolean")
+                                AnyValueEnum::PointerValue(p) => {
+                                    self.builder.build_load(p, "").into_int_value()
+                                }
+                                AnyValueEnum::IntValue(i) => i,
+                                _ => unreachable!(),
                             };
-                            self.builder
-                                .build_conditional_branch(cond, *true_block, *next_block);
-                            self.builder.position_at_end(*true_block);
-                            for stmnt in branch {
-                                self.compile_statement(stmnt);
-                            }
-                            self.builder.build_unconditional_branch(end_block);
+                            self.builder.build_conditional_branch(cond, true_block, false_block);
                         }
                         self.builder.position_at_end(else_block);
                         for stmnt in else_branch {
                             self.compile_statement(stmnt);
                         }
-                        let _ = end_block.move_after(else_block);
                         self.builder.build_unconditional_branch(end_block);
+                        let _ = end_block.move_after(else_block);
                     }
                 }
-
+                #[cfg(debug_assertions)]
+                let _ = self.module.print_to_file("./debug.llvm");
                 self.builder.position_at_end(end_block);
             }
             TypedStatement::Return(expr, loc) => {
@@ -623,7 +613,118 @@ impl<'ctx> CodeGen<'ctx> {
         #[cfg(debug_assertions)]
         let _ = self.module.print_to_file("./debug.llvm");
         match expr {
-            TypedExpr::IfExpr(_expr) => todo!(),
+            TypedExpr::IfExpr(expr) => {
+                let ty = self.type_resolver.resolve_type_as_basic(expr.get_ty());
+                let TypedIfExpr {
+                    cond,
+                    true_branch,
+                    else_ifs,
+                    else_branch,
+                    loc,
+                } = expr;
+                let fun = self
+                    .builder
+                    .get_insert_block()
+                    .unwrap()
+                    .get_parent()
+                    .unwrap();
+                let root_cond = match self.compile_expr(*cond) {
+                    AnyValueEnum::PointerValue(p) => {
+                        self.builder.build_load(p, "").into_int_value()
+                    }
+                    AnyValueEnum::IntValue(i) => i,
+                    _ => unreachable!(),
+                };
+                let result_block = self.ctx.append_basic_block(fun, "");
+                let then_block = self.ctx.append_basic_block(fun, "");
+                let else_block = self.ctx.append_basic_block(fun, "");
+                if else_ifs.is_empty() {
+                    self.builder
+                        .build_conditional_branch(root_cond, then_block, else_block);
+                    self.builder.position_at_end(then_block);
+                    for stmnt in true_branch.0 {
+                        self.compile_statement(stmnt);
+                    }
+                    let true_value = convert_to_basic_value(self.compile_expr(*true_branch.1));
+                    self.builder.position_at_end(else_block);
+                    for stmnt in else_branch.0 {
+                        self.compile_statement(stmnt);
+                    }
+                    let else_value = convert_to_basic_value(self.compile_expr(*else_branch.1));
+                    self.builder.position_at_end(result_block);
+                    let phi = self.builder.build_phi(ty, "");
+                    phi.add_incoming(&[(&true_value, then_block), (&else_value, else_block)]);
+                    let _ = result_block.move_after(else_block);
+                    phi.as_any_value_enum()
+                } else {
+                    let cond_blocks =
+                        std::iter::repeat_with(|| self.ctx.append_basic_block(fun, ""))
+                            .take(else_ifs.len())
+                            .collect_vec();
+                    self.builder.build_conditional_branch(
+                        root_cond,
+                        then_block,
+                        *cond_blocks.first().unwrap(),
+                    );
+                    self.builder.position_at_end(result_block);
+                    let phi = self.builder.build_phi(ty, "");
+                    self.builder.position_at_end(then_block);
+                    for stmnt in true_branch.0 {
+                        self.compile_statement(stmnt);
+                    }
+                    let true_value = convert_to_basic_value(self.compile_expr(*true_branch.1));
+                    self.builder.build_unconditional_branch(result_block);
+                    phi.add_incoming(&[(&true_value, then_block)]);
+                    let else_ifs = else_ifs
+                        .into_iter()
+                        .map(|(cond, stmnts, result)| {
+                            let block = self.ctx.append_basic_block(fun, "");
+                            self.builder.position_at_end(block);
+                            for stmnt in stmnts {
+                                self.compile_statement(stmnt);
+                            }
+                            let result = convert_to_basic_value(self.compile_expr(*result));
+                            phi.add_incoming(&[(
+                                &result,
+                                self.builder.get_insert_block().unwrap(),
+                            )]);
+                            self.builder.build_unconditional_branch(result_block);
+                            (cond, block)
+                        })
+                        .zip(cond_blocks.iter().copied())
+                        .map(|((cond, block), cond_block)| {
+                            let _ = block.move_after(cond_block);
+                            (cond, block, cond_block)
+                        })
+                        .collect_vec();
+                    let _ = else_block.move_after(else_ifs.last().unwrap().1);
+                    for ((cond, true_block, cond_block), false_block) in else_ifs
+                        .into_iter()
+                        .zip(cond_blocks.into_iter().skip(1).chain(once(else_block)))
+                    {
+                        self.builder.position_at_end(cond_block);
+                        let cond = match self.compile_expr(*cond) {
+                            AnyValueEnum::PointerValue(p) => {
+                                self.builder.build_load(p, "").into_int_value()
+                            }
+                            AnyValueEnum::IntValue(i) => i,
+                            _ => unreachable!(),
+                        };
+                        self.builder
+                            .build_conditional_branch(cond, true_block, false_block);
+                    }
+                    let _ = result_block.move_after(else_block);
+                    self.builder.position_at_end(else_block);
+                    for stmnt in else_branch.0 {
+                        self.compile_statement(stmnt);
+                    }
+                    let else_value = convert_to_basic_value(self.compile_expr(*else_branch.1));
+                    self.builder.build_unconditional_branch(result_block);
+                    phi.add_incoming(&[(&else_value, self.builder.get_insert_block().unwrap())]);
+                    self.builder.position_at_end(result_block);
+                    phi.as_any_value_enum()
+                }
+            }
             TypedExpr::BinaryOpCall(TypedBinaryOpCall {
                 operator,
                 lhs,
@@ -644,6 +745,9 @@ impl<'ctx> CodeGen<'ctx> {
                     self.builder.set_current_debug_location(loc);
                 }
                 match operator.as_str() {
+                    "==" => {
+                        todo!("equality");
+                    }
                     "+" => match (lhs, rhs) {
                         (BasicValueEnum::FloatValue(lhs), BasicValueEnum::FloatValue(rhs)) => self
                             .builder
@@ -1175,7 +1279,7 @@ impl<'ctx> CodeGen<'ctx> {
             TypedDeclaration::Value(decl) => {
                 if decl.ty.is_function() {
                     let fun = self.create_curry_list(decl);
-                    self.known_functions.insert(decl.ident.clone(), fun);
+                    self.known_functions.insert(dbg!(decl.ident.clone()), fun);
                 }
             }
             TypedDeclaration::TypeDefinition(def) => match def {

@@ -6,5 +6,13 @@ let test_ifs a b : bool -> bool -> int32 =
     else
         print_str "neither"
     return 0
+
+let test_ifexpr a b : bool -> bool -> int32 = if a then 
+        0 
+    else if b then 
+        1 
+    else 
+        2
+
 let main _ : () -> () = 
     return ()

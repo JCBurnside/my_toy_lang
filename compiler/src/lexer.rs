@@ -416,6 +416,17 @@ mod tests {
     use itertools::Itertools;
 
     #[test]
+    #[ignore = "for debugging only"]
+    fn debugging() {
+        let tokens = TokenStream::from_source("let out_of_line_expr a : bool -> int32 = if a then
+        fun 0
+    else
+        1
+let foo = 3").map(|(a,_)| a).collect_vec();
+        println!("{:?}", tokens);
+    }
+
+    #[test]
     #[rustfmt::skip]
     fn explicit_generics() {
         use Token::*;
@@ -602,26 +613,6 @@ mod tests {
                 .collect_vec(),
             [Token::Else, Token::EoF],
             "else"
-        );
-    }
-
-    #[test]
-    #[ignore = "Used only for debugging tests.  for specific cases"]
-    fn singled_out() {
-        assert_eq!(
-            TokenStream::from_source("\n\tlet")
-                .map(|(a, _)| a)
-                .collect_vec(),
-            [Token::BeginBlock, Token::Let, Token::EoF],
-            "Begin block"
-        );
-
-        assert_eq!(
-            TokenStream::from_source("for")
-                .map(|(a, _)| a)
-                .collect_vec(),
-            [Token::For, Token::EoF],
-            "For generics"
         );
     }
 

@@ -1,0 +1,38 @@
+let inline_expr a : bool -> int32 = if a then 0 else 1
+
+let out_of_line_expr a : bool -> int32 = if a then
+        fun 0
+    else
+        1
+
+let expr_with_statement a : bool -> int32 = if a then
+        bar 3
+        0
+    else
+        baz 4
+        1
+
+let expr_with_else_if a b : bool -> bool -> int32 = if a then 0 else if b then 1 else 2
+
+let statement a : bool -> int32 = 
+    if a then
+        foo 3
+        return 0
+    else
+        bar 4
+        return 1
+
+let statement_with_else_if a b : bool -> bool -> int32 =
+    if a then
+        return 0
+    else if b then
+        return 1
+    else
+        return 2
+
+let expr_multi_with_elseif a b : bool -> bool -> int32 = if a then 
+        0 
+    else if b then 
+        1 
+    else 
+        2
