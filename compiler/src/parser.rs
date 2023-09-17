@@ -141,12 +141,34 @@ where
                 return Ok((Expr::UnitLiteral, loc));
             }
             Some((Token::GroupOpen, _)) => {
-                self.stream.next();
-                let out = self.next_expr()?;
-                if let Some((Token::GroupClose, _)) = self.stream.peek() {
+                let mut group_opens = 0;
+                if let Some((Token::Op(_),_)) = self.stream.clone().skip(1).skip_while(|(it,_)| match it {
+                    //skip this whole expression to examine what's after it.
+                    Token::GroupOpen => {
+                        group_opens += 1;
+                        true
+                    },
+                    Token::Ident(_)
+                    | Token::FloatingPoint(_, _)
+                    | Token::Integer(_, _)
+                    | Token::Op(_) => true,
+                    Token::GroupClose => {
+                        group_opens -= 1;
+                        group_opens >= 0
+                    }
+                    _ => false,
+                })
+                .skip(1)
+                .next() {
+                    self.binary_op()
+                } else {
                     self.stream.next();
+                    let out = self.next_expr()?;
+                    if let Some((Token::GroupClose, _)) = self.stream.peek() {
+                        self.stream.next();
+                    }
+                    return Ok(out);
                 }
-                return Ok(out);
             }
             Some((Token::Ident(_), _))
                 if match self.stream.clone().nth(1) {
@@ -256,7 +278,13 @@ where
             Ok(cond) => cond.0,
         }
         .boxed();
-        let Some((Token::Then,_)) = self.stream.next() else { return Err(ParseError { span: loc, reason: ParseErrorReason::UnexpectedToken })};
+        if let Some((Token::Then,_)) = self.stream.peek() {
+            let _ = self.stream.next();
+        } else { 
+            let (token,loc) = self.stream.next().unwrap();
+            println!("Expected then but got {:?} at line:{} col:{}", token,loc.0,loc.1);
+            return Err(ParseError { span: loc, reason: ParseErrorReason::UnexpectedToken 
+        })};
         let body = match self.stream.clone().next() {
             Some((Token::BeginBlock, _)) => {
                 let _ = self.stream.next();
@@ -315,8 +343,13 @@ where
                 }
                 .boxed();
                 
-                let Some((Token::Then,_)) = self.stream.next() else { return Err(ParseError { span: loc, reason: ParseErrorReason::UnexpectedToken })};
-                
+                if let Some((Token::Then,_)) = self.stream.peek() {
+                    let _ = self.stream.next();
+                } else { 
+                    let (token,loc) = self.stream.next().unwrap();
+                    println!("Expected then but got {:?} at line:{} col:{}", token,loc.0,loc.1);
+                    return Err(ParseError { span: loc, reason: ParseErrorReason::UnexpectedToken 
+                })};
                 let (body, ret) = match self.stream.clone().next() {
                     Some((Token::BeginBlock, _)) => {
                         let _ = self.stream.next();
@@ -454,6 +487,8 @@ where
                 | Token::FloatingPoint(_, _)
                 | Token::CharLiteral(_)
                 | Token::StringLiteral(_)
+                | Token::True
+                | Token::False
                 ,_
             )) = self.stream.peek() {
                 match self.stream.peek().map(|(a,_)| a) {
@@ -471,6 +506,8 @@ where
                         | Token::FloatingPoint(_, _)
                         | Token::CharLiteral(_)
                         | Token::StringLiteral(_)
+                        | Token::True
+                        | Token::False
                     ) => {
                         let test = self.stream.clone().nth(1);
                         if let Some((
@@ -598,7 +635,13 @@ where
             Ok(cond) => cond.0,
         }
         .boxed();
-        let Some((Token::Then,_)) = self.stream.next() else { return Err(ParseError { span: loc, reason: ParseErrorReason::UnexpectedToken })};
+        if let Some((Token::Then,_)) = self.stream.peek() {
+            let _ = self.stream.next();
+        } else { 
+            let (token,loc) = self.stream.next().unwrap();
+            println!("Expected then but got {:?} at line:{} col:{}", token,loc.0,loc.1);
+            return Err(ParseError { span: loc, reason: ParseErrorReason::UnexpectedToken 
+        })};
         
         let body = match self.stream.peek() {
             Some((Token::BeginBlock, _)) => match self.collect_block() {
@@ -630,8 +673,13 @@ where
                     Ok(cond) => cond.0,
                 }
                 .boxed();
-                let Some((Token::Then,_)) = self.stream.next() else { return Err(ParseError { span: loc, reason: ParseErrorReason::UnexpectedToken })};
-                
+                if let Some((Token::Then,_)) = self.stream.peek() {
+                    let _ = self.stream.next();
+                } else { 
+                    let (token,loc) = self.stream.next().unwrap();
+                    println!("Expected then but got {:?} at line:{} col:{}", token,loc.0,loc.1);
+                    return Err(ParseError { span: loc, reason: ParseErrorReason::UnexpectedToken 
+                })};
                 let body = match self.stream.peek() {
                     Some((Token::BeginBlock, _)) => match self.collect_block() {
                         Ok(body) => body,
@@ -1299,15 +1347,19 @@ where
         }
 
         // (name,weight,right associative)
-        const PRECIDENCE: [(&'static str, usize, bool); 8] = [
+        const PRECIDENCE: [(&'static str, usize, bool); 12] = [
             (".", usize::MAX, true),
-            ("<", usize::MAX - 1, true),
-            (">", usize::MAX - 1, true),
-            ("**", 4, false),
-            ("*", 3, true),
-            ("/", 3, true),
-            ("+", 2, true),
-            ("-", 2, true),
+            ("**", 7, false),
+            ("*", 5, true),
+            ("/", 5, true),
+            ("+", 4, true),
+            ("-", 4, true),
+            ("<", 2, true),
+            ("<=", 2, true),
+            (">", 2, true),
+            (">=", 2, true),
+            ("&&", 1, true),
+            ("||", 1, true),
         ];
         let mut output = Vec::with_capacity(tokens.len());
         let mut op_stack = Vec::with_capacity(tokens.len() / 3);
@@ -1456,6 +1508,8 @@ fn make_literal(token: Token, span: (usize, usize)) -> Result<crate::ast::Expr, 
             value: if is_neg { "-".to_owned() + &f } else { f },
             ty: types::FLOAT32,
         }),
+        Token::True => Ok(Expr::BoolLiteral(true, span)),
+        Token::False => Ok(Expr::BoolLiteral(false, span)),
         _ => Err(ParseError {
             span,
             reason: ParseErrorReason::UnknownError,
@@ -1526,21 +1580,25 @@ mod tests {
     #[test]
     #[ignore = "This is for singled out tests"]
     fn for_debugging_only() {
-        let mut it = Parser::from_source(
-            r#"let test_ifexpr a b : bool -> bool -> int32 = if a then 
-            0 
-        else if b then 
-            1 
-        else if true then 
-            let x = 2
-            x
-        else
-            3
-"#,
+        let mut parser = Parser::from_source("(foo bar) && (baz quz)");
+        assert_eq!(
+            ast::Expr::BinaryOpCall(BinaryOpCall { 
+                loc: (0,11),
+                lhs: ast::Expr::FnCall(FnCall {
+                    loc: (0,2),
+                    value: ast::Expr::ValueRead("foo".to_string(), (0,2)).boxed(),
+                    arg: Some(ast::Expr::ValueRead("bar".to_string(), (0,6)).boxed()) 
+                }).boxed(), 
+                rhs: ast::Expr::FnCall(FnCall {
+                    loc: (0,19),
+                    value: ast::Expr::ValueRead("baz".to_string(), (0,15)).boxed(),
+                    arg: Some(ast::Expr::ValueRead("quz".to_string(), (0,19)).boxed()) 
+                }).boxed(),
+                operator: "&&".to_string()
+            }),
+            parser.next_expr().unwrap().0,
+            "(foo bar) && (baz quz)"
         );
-        println!("{:?}", it.declaration().unwrap());
-        // let expr = TypedExpr::try_from(&ctx, type_resolver, values, &HashSet::new(), expr).unwrap();
-        // println!("{:?}",expr);
     }
     #[test]
     fn individual_simple_expressions() {
@@ -1946,7 +2004,27 @@ let main _ : int32 -> int32 =
                 operator: "-".to_string()
             }),
             parser.next_expr().unwrap().0,
-        )
+        );
+
+        let mut parser = Parser::from_source("(foo bar) && (baz quz)");
+        assert_eq!(
+            ast::Expr::BinaryOpCall(BinaryOpCall { 
+                loc: (0,11),
+                lhs: ast::Expr::FnCall(FnCall {
+                    loc: (0,2),
+                    value: ast::Expr::ValueRead("foo".to_string(), (0,2)).boxed(),
+                    arg: Some(ast::Expr::ValueRead("bar".to_string(), (0,6)).boxed()) 
+                }).boxed(), 
+                rhs: ast::Expr::FnCall(FnCall {
+                    loc: (0,19),
+                    value: ast::Expr::ValueRead("baz".to_string(), (0,15)).boxed(),
+                    arg: Some(ast::Expr::ValueRead("quz".to_string(), (0,19)).boxed()) 
+                }).boxed(),
+                operator: "&&".to_string()
+            }),
+            parser.next_expr().unwrap().0,
+            "(foo bar) && (baz quz)"
+        );
     }
 
     #[test]

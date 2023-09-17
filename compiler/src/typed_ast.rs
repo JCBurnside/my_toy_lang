@@ -1753,6 +1753,50 @@ impl TypedBinaryOpCall {
             ..
         } = self;
         match operator.as_str() {
+
+            "&&" | "||" => {
+                let lhs_t = lhs.get_ty();
+                let rhs_t = rhs.get_ty();
+                if lhs_t == types::BOOL && rhs_t == types::BOOL {
+                    *rt = types::BOOL;
+                } else {
+                    println!("operator not supported");
+                    *rt = types::ERROR;
+                }
+            },
+
+            "==" | "!=" => {
+                let lhs_t = lhs.get_ty();
+                let rhs_t = rhs.get_ty();
+                if lhs_t == rhs_t && (
+                    lhs_t.is_int() ||
+                    lhs_t.is_float() ||
+                    lhs_t == types::BOOL
+                ) {
+                    if lhs_t.is_float() {
+                        println!("WARNING:comparing two floats for equality")
+                    }
+                    *rt = types::BOOL;
+                } else {
+                    println!("op not supported");
+                    *rt = types::ERROR;
+                }
+            },
+            "<=" | "<" | ">=" | ">" => {
+                
+                let lhs_t = lhs.get_ty();
+                let rhs_t = rhs.get_ty();
+                if lhs_t == rhs_t && (
+                    lhs_t.is_int() ||
+                    lhs_t.is_float() ||
+                    lhs_t == types::BOOL
+                ) {
+                    *rt = types::BOOL;
+                } else {
+                    println!("op not supported");
+                    *rt = types::ERROR;
+                }
+            },
             "*" | "+" | "/" | "-" => {
                 // TODO: need to add support for overloading this.
                 let lhs_t = lhs.get_ty();
@@ -1856,15 +1900,95 @@ impl TypedBinaryOpCall {
             }
         };
         match operator.as_str() {
-            "." => {
-                todo!()
-            }
+            "&&" | "||" => {
+                let lhs_t = lhs.get_ty();
+                let rhs_t = rhs.get_ty();
+                if lhs_t == types::BOOL && rhs_t == types::BOOL {
+                    Ok(Self{
+                        loc,
+                        lhs: lhs.boxed(),
+                        rhs: rhs.boxed(),
+                        operator,
+                        rt: types::BOOL
+                    })
+                } else if lhs_t.is_generic() || lhs_t == ResolvedType::Error || rhs_t.is_generic() || rhs_t == ResolvedType::Error {
+                    Ok(Self {
+                        loc,
+                        lhs: lhs.boxed(),
+                        rhs: rhs.boxed(),
+                        operator,
+                        rt: types::ERROR
+                    })
+                } else {
+                    println!("operator not supported");
+                    Err(TypingError::OpNotSupported)
+                }
+            },
+            "==" | "!=" => {
+                let lhs_t = lhs.get_ty();
+                let rhs_t = rhs.get_ty();
+                if lhs_t == rhs_t && (
+                    lhs_t.is_int() ||
+                    lhs_t.is_float() ||
+                    lhs_t == types::BOOL
+                ) {
+                    if lhs_t.is_float() {
+                        println!("WARNING:comparing two floats for equality")
+                    }
+                    Ok(Self {
+                        loc,
+                        lhs:lhs.boxed(),
+                        rhs:rhs.boxed(),
+                        operator,
+                        rt: types::BOOL 
+                    })
+                } else if lhs_t.is_generic() || lhs_t == ResolvedType::Error || rhs_t.is_generic() || rhs_t == ResolvedType::Error {
+                    Ok(Self {
+                        loc,
+                        lhs: lhs.boxed(),
+                        rhs: rhs.boxed(),
+                        operator,
+                        rt: types::ERROR
+                    })
+                } else {
+                    println!("op not supported");
+                    Err(TypingError::OpNotSupported)
+                }
+            },
+            "<=" | "<" | ">=" | ">" => {
+                let lhs_t = lhs.get_ty();
+                let rhs_t = rhs.get_ty();
+                if lhs_t == rhs_t && (
+                    lhs_t.is_int() ||
+                    lhs_t.is_float() ||
+                    lhs_t == types::BOOL
+                ) {
+                    Ok(Self {
+                        loc,
+                        lhs:lhs.boxed(),
+                        rhs:rhs.boxed(),
+                        operator,
+                        rt: types::BOOL 
+                    })
+                } else if lhs_t.is_generic() || lhs_t == ResolvedType::Error || rhs_t.is_generic() || rhs_t == ResolvedType::Error {
+                    Ok(Self {
+                        loc,
+                        lhs: lhs.boxed(),
+                        rhs: rhs.boxed(),
+                        operator,
+                        rt: types::ERROR
+                    })
+                } else {
+                    println!("op not supported");
+                    Err(TypingError::OpNotSupported)
+                }
+            },
             "*" | "+" | "/" | "-" => {
                 // TODO: need to add support for overloading this.
                 let lhs_t = lhs.get_ty();
                 let rhs_t = rhs.get_ty();
-                if (lhs_t.is_float() || lhs_t.is_int() || lhs_t.is_generic())
-                    && (rhs_t.is_float() || rhs_t.is_int() || rhs_t.is_generic())
+                if (lhs_t.is_float() || lhs_t.is_int() || lhs_t.is_generic() || lhs_t == types::ERROR)
+                    && (rhs_t.is_float() || rhs_t.is_int() || rhs_t.is_generic() || rhs_t == types::ERROR)
                 {
                     Ok(Self {
                         loc,
@@ -1872,6 +1996,8 @@ impl TypedBinaryOpCall {
                         rhs: rhs.boxed(),
                         operator,
                         rt: match (lhs_t, rhs_t) {
+                            (ResolvedType::Error, _)
+                            |(_, ResolvedType::Error) => types::ERROR, 
                             (lhs, rhs) if lhs.is_float() && rhs.is_float() => {
                                 let ResolvedType::Float { width : lhs_w } = lhs else { unreachable!() };
                                 let ResolvedType::Float { width : rhs_w } = rhs else { unreachable!() };
@@ -1904,8 +2030,8 @@ impl TypedBinaryOpCall {
             "**" => {
                 let lhs_t = lhs.get_ty();
                 let rhs_t = rhs.get_ty();
-                if (lhs_t.is_float() || lhs_t.is_int() || lhs_t.is_generic())
-                    && (rhs_t.is_float() || rhs_t.is_int() || rhs_t.is_generic())
+                if (lhs_t.is_float() || lhs_t.is_int() || lhs_t.is_generic() || lhs_t == types::ERROR)
+                    && (rhs_t.is_float() || rhs_t.is_int() || rhs_t.is_generic() || rhs_t == types::ERROR)
                 {
                     Ok(Self {
                         loc,
@@ -1913,6 +2039,8 @@ impl TypedBinaryOpCall {
                         rhs: rhs.boxed(),
                         operator,
                         rt: match (lhs_t, rhs_t) {
+                            (ResolvedType::Error, _)
+                            |(_, ResolvedType::Error) => types::ERROR, 
                             (lhs, rhs) if lhs.is_float() && rhs.is_float() => {
                                 let ResolvedType::Float { width : lhs } = lhs else { unreachable!() };
                                 let ResolvedType::Float { width : rhs } = rhs else { unreachable!() };

@@ -77,6 +77,7 @@ pub fn from_file<'ctx>(
     let mut ast = parser.module(file_name.to_str().unwrap().to_string());
     ast.canonialize(vec![project_name]);
     let mut ast = TypedModuleDeclaration::from(ast, &fwd_declarations); //TODO: foward declare std lib
+    
     ast.lower_generics(&HashMap::new());
     ast.declarations.retain(|it| match it {
         TypedDeclaration::Value(it) => it.generictypes.is_empty(),

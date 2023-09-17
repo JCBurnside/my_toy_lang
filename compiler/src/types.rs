@@ -600,6 +600,8 @@ impl<'ctx> TypeResolver<'ctx> {
             self.resolve_type_as_basic(ty.clone())
                 .ptr_type(AddressSpace::default())
                 .as_basic_type_enum()
+        } else if ty == &ResolvedType::Unit {
+            self.resolve_type_as_basic(ResolvedType::Pointer { underlining:UNIT.boxed() })
         } else {
             self.resolve_type_as_basic(ty.clone())
         }

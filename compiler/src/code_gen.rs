@@ -17,7 +17,7 @@ use inkwell::values::{
     AnyValue, AnyValueEnum, BasicValue, BasicValueEnum, CallableValue, FunctionValue, GlobalValue,
     PointerValue,
 };
-use inkwell::AddressSpace;
+use inkwell::{AddressSpace, IntPredicate};
 
 use itertools::Itertools;
 
@@ -29,6 +29,7 @@ use crate::typed_ast::{
     TypedValueDeclaration, TypedValueType,
 };
 use crate::types::{self, ResolvedType, TypeResolver};
+use crate::util::ExtraUtilFunctions;
 
 pub struct CodeGen<'ctx> {
     ctx: &'ctx Context,
@@ -109,7 +110,7 @@ impl<'ctx> CodeGen<'ctx> {
     fn compile_function(&mut self, decl: TypedValueDeclaration) {
         #[cfg(debug_assertions)]
         let _ = self.module.print_to_file("./debug.llvm");
-        let v = self.incomplete_functions.get(dbg!(&decl.ident)).unwrap().clone();
+        let v = self.incomplete_functions.get(&decl.ident).unwrap().clone();
         
         if let Some(dibuilder) = &self.dibuilder {
             let Some(difile) = self.difile.as_ref() else { unreachable!() };
@@ -769,8 +770,12 @@ impl<'ctx> CodeGen<'ctx> {
                 loc,
                 ..
             }) => {
-                let lhs: BasicValueEnum = self.compile_expr(*lhs).try_into().unwrap();
-                let rhs: BasicValueEnum = self.compile_expr(*rhs).try_into().unwrap();
+                
+                let lhs_t = lhs.get_ty();
+                let rhs_t = rhs.get_ty();
+                if lhs_t.is_user() || rhs_t.is_user() {
+                    unimplemented!("user defined operators not supported yet")
+                }
                 if let Some(dibuilder) = &self.dibuilder {
                     let loc = dibuilder.create_debug_location(
                         self.ctx,
@@ -782,113 +787,322 @@ impl<'ctx> CodeGen<'ctx> {
                     self.builder.set_current_debug_location(loc);
                 }
                 match operator.as_str() {
-                    "==" => {
-                        todo!("equality");
+                    "&&" => {
+                        
+
+                        let result = self.builder.build_alloca(self.ctx.bool_type(), "");
+                        let lhs = convert_to_basic_value(self.compile_expr(*lhs));
+                        let lhs = self.value_or_load(lhs);
+                        let fun = self.builder.get_insert_block().unwrap().get_parent().unwrap();
+                        let lhs_false = self.ctx.append_basic_block(fun, "");
+                        let else_block = self.ctx.append_basic_block(fun, "");
+                        let continue_block = self.ctx.append_basic_block(fun, "");
+                        self.builder.build_conditional_branch(lhs.into_int_value(), else_block,lhs_false);
+                        self.builder.position_at_end(lhs_false);
+                        self.builder.build_store(result, self.ctx.bool_type().const_zero());
+                        self.builder.build_unconditional_branch(continue_block);
+                        self.builder.position_at_end(else_block);
+                        let rhs = convert_to_basic_value(self.compile_expr(*rhs));
+                        let rhs = self.value_or_load(rhs);
+                        self.builder.build_store(result,rhs);
+                        self.builder.build_unconditional_branch(continue_block);
+                        self.builder.position_at_end(continue_block);
+                        let result = self.builder.build_load(result,"");
+                        result.as_any_value_enum()
+                    },
+
+                    "||" => {
+                        let result = self.builder.build_alloca(self.ctx.bool_type(), "");
+                        let lhs = convert_to_basic_value(self.compile_expr(*lhs));
+                        let lhs = self.value_or_load(lhs);
+                        let fun = self.builder.get_insert_block().unwrap().get_parent().unwrap();
+                        let lhs_true = self.ctx.append_basic_block(fun, "");
+                        let else_block = self.ctx.append_basic_block(fun, "");
+                        let continue_block = self.ctx.append_basic_block(fun, "");
+                        self.builder.build_conditional_branch(lhs.into_int_value(), lhs_true, else_block);
+                        self.builder.position_at_end(lhs_true);
+                        self.builder.build_store(result, self.ctx.bool_type().const_int(1, false));
+                        self.builder.build_unconditional_branch(continue_block);
+                        self.builder.position_at_end(else_block);
+                        let rhs = convert_to_basic_value(self.compile_expr(*rhs));
+                        let rhs = self.value_or_load(rhs);
+                        self.builder.build_store(result,rhs);
+                        self.builder.build_unconditional_branch(continue_block);
+                        self.builder.position_at_end(continue_block);
+                        let result = self.builder.build_load(result,"");
+                        result.as_any_value_enum()
                     }
-                    "+" => match (lhs, rhs) {
-                        (BasicValueEnum::FloatValue(lhs), BasicValueEnum::FloatValue(rhs)) => self
-                            .builder
-                            .build_float_add(lhs, rhs, "")
-                            .as_any_value_enum(),
-                        (BasicValueEnum::FloatValue(lhs), BasicValueEnum::IntValue(rhs)) => {
-                            let rhs =
-                                self.builder
-                                    .build_signed_int_to_float(rhs, lhs.get_type(), "");
-                            self.builder
+
+                    "==" => {
+                        let lhs = convert_to_basic_value(self.compile_expr(*lhs));
+                        let lhs = self.value_or_load(lhs);
+                        let rhs = convert_to_basic_value(self.compile_expr(*rhs));
+                        let rhs = self.value_or_load(rhs); 
+                        if lhs_t.is_user() || rhs_t.is_user() {
+                            panic!("comparing user types is not supported");
+                        }
+                        let lhs = self.value_or_load(lhs);
+                        let rhs = self.value_or_load(rhs);
+                        if lhs_t == types::BOOL || lhs_t.is_int() {
+                            self.builder.build_int_compare(inkwell::IntPredicate::EQ, lhs.into_int_value(), rhs.into_int_value(), "").as_any_value_enum()
+                        } else {
+                            //this should have warned.
+                            self.builder.build_float_compare(inkwell::FloatPredicate::OEQ, lhs.into_float_value(), rhs.into_float_value(), "").as_any_value_enum()
+                        }
+                    },
+                    "!=" => {
+                        let lhs = convert_to_basic_value(self.compile_expr(*lhs));
+                        let lhs = self.value_or_load(lhs);
+                        let rhs = convert_to_basic_value(self.compile_expr(*rhs));
+                        let rhs = self.value_or_load(rhs); 
+                        if lhs_t.is_user() || rhs_t.is_user() {
+                            panic!("comparing user types is not supported");
+                        }
+                        let lhs = self.value_or_load(lhs);
+                        let rhs = self.value_or_load(rhs);
+                        if lhs_t == types::BOOL || lhs_t.is_int() {
+                            self.builder.build_int_compare(inkwell::IntPredicate::NE, lhs.into_int_value(), rhs.into_int_value(), "").as_any_value_enum()
+                        } else {
+                            // this should have warned
+                            self.builder.build_float_compare(inkwell::FloatPredicate::UNE, lhs.into_float_value(), rhs.into_float_value(), "").as_any_value_enum()
+                        }
+                    },
+                    "<=" => {
+                        if lhs_t.is_user() || rhs_t.is_user() {
+                            panic!("comparing user types is not supported");
+                        }
+                        let lhs = convert_to_basic_value(self.compile_expr(*lhs));
+                        let lhs = self.value_or_load(lhs);
+                        let rhs = convert_to_basic_value(self.compile_expr(*rhs));
+                        let rhs = self.value_or_load(rhs); 
+                        
+                        if lhs_t.is_int() || rhs_t.is_int() {
+                            let lhs_s = if let ResolvedType::Int { signed, .. } = lhs_t { signed } else { false };
+                            let rhs_s = if let ResolvedType::Int { signed, .. } = rhs_t { signed } else { false };
+                            self.builder.build_int_compare(
+                                if lhs_s || rhs_s { IntPredicate::SLE } else { IntPredicate::ULE }, 
+                                lhs.into_int_value(),
+                                rhs.into_int_value(),
+                                ""
+                            ).as_any_value_enum()
+                        } else {
+                            self.builder.build_float_compare(
+                                inkwell::FloatPredicate::OLE, 
+                                lhs.into_float_value(), 
+                                rhs.into_float_value(), 
+                                ""
+                            ).as_any_value_enum()
+                        }
+                    },
+                    "<" => {
+                        if lhs_t.is_user() || rhs_t.is_user() {
+                            panic!("comparing user types is not supported");
+                        }
+                        let lhs = convert_to_basic_value(self.compile_expr(*lhs));
+                        let lhs = self.value_or_load(lhs);
+                        let rhs = convert_to_basic_value(self.compile_expr(*rhs));
+                        let rhs = self.value_or_load(rhs); 
+                        
+                        if lhs_t.is_int() || rhs_t.is_int() {
+                            let lhs_s = if let ResolvedType::Int { signed, .. } = lhs_t { signed } else { false };
+                            let rhs_s = if let ResolvedType::Int { signed, .. } = rhs_t { signed } else { false };
+                            self.builder.build_int_compare(
+                                if lhs_s || rhs_s { IntPredicate::SLT } else { IntPredicate::ULE }, 
+                                lhs.into_int_value(),
+                                rhs.into_int_value(),
+                                ""
+                            ).as_any_value_enum()
+                        } else {
+                            self.builder.build_float_compare(
+                                inkwell::FloatPredicate::OLT, 
+                                lhs.into_float_value(), 
+                                rhs.into_float_value(), 
+                                ""
+                            ).as_any_value_enum()
+                        }
+                    },
+                    ">=" => {
+                        if lhs_t.is_user() || rhs_t.is_user() {
+                            panic!("comparing user types is not supported");
+                        }
+                        let lhs = convert_to_basic_value(self.compile_expr(*lhs));
+                        let lhs = self.value_or_load(lhs);
+                        let rhs = convert_to_basic_value(self.compile_expr(*rhs));
+                        let rhs = self.value_or_load(rhs); 
+                        
+                        if lhs_t.is_int() || rhs_t.is_int() {
+                            let lhs_s = if let ResolvedType::Int { signed, .. } = lhs_t { signed } else { false };
+                            let rhs_s = if let ResolvedType::Int { signed, .. } = rhs_t { signed } else { false };
+                            self.builder.build_int_compare(
+                                if lhs_s || rhs_s { IntPredicate::SGE } else { IntPredicate::ULE }, 
+                                lhs.into_int_value(),
+                                rhs.into_int_value(),
+                                ""
+                            ).as_any_value_enum()
+                        } else {
+                            self.builder.build_float_compare(
+                                inkwell::FloatPredicate::OGE, 
+                                lhs.into_float_value(), 
+                                rhs.into_float_value(), 
+                                ""
+                            ).as_any_value_enum()
+                        }
+                    },
+                    ">" => {
+                        if lhs_t.is_user() || rhs_t.is_user() {
+                            panic!("comparing user types is not supported");
+                        }
+                        let lhs = convert_to_basic_value(self.compile_expr(*lhs));
+                        let lhs = self.value_or_load(lhs);
+                        let rhs = convert_to_basic_value(self.compile_expr(*rhs));
+                        let rhs = self.value_or_load(rhs); 
+                        
+                        if lhs_t.is_int() || rhs_t.is_int() {
+                            let lhs_s = if let ResolvedType::Int { signed, .. } = lhs_t { signed } else { false };
+                            let rhs_s = if let ResolvedType::Int { signed, .. } = rhs_t { signed } else { false };
+                            self.builder.build_int_compare(
+                                if lhs_s || rhs_s { IntPredicate::SGT } else { IntPredicate::ULE }, 
+                                lhs.into_int_value(),
+                                rhs.into_int_value(),
+                                ""
+                            ).as_any_value_enum()
+                        } else {
+                            self.builder.build_float_compare(
+                                inkwell::FloatPredicate::OGT, 
+                                lhs.into_float_value(), 
+                                rhs.into_float_value(), 
+                                ""
+                            ).as_any_value_enum()
+                        }
+                    },
+                    "+" =>{
+                        let lhs = convert_to_basic_value(self.compile_expr(*lhs));
+                        let lhs = self.value_or_load(lhs);
+                        let rhs = convert_to_basic_value(self.compile_expr(*rhs));
+                        let rhs = self.value_or_load(rhs); 
+                        match (lhs, rhs) {
+                            (BasicValueEnum::FloatValue(lhs), BasicValueEnum::FloatValue(rhs)) => self
+                                .builder
                                 .build_float_add(lhs, rhs, "")
-                                .as_any_value_enum()
-                        }
-                        (BasicValueEnum::IntValue(lhs), BasicValueEnum::FloatValue(rhs)) => {
-                            let lhs =
+                                .as_any_value_enum(),
+                            (BasicValueEnum::FloatValue(lhs), BasicValueEnum::IntValue(rhs)) => {
+                                let rhs =
+                                    self.builder
+                                        .build_signed_int_to_float(rhs, lhs.get_type(), "");
                                 self.builder
-                                    .build_signed_int_to_float(lhs, rhs.get_type(), "");
-                            self.builder
-                                .build_float_add(lhs, rhs, "")
-                                .as_any_value_enum()
+                                    .build_float_add(lhs, rhs, "")
+                                    .as_any_value_enum()
+                            }
+                            (BasicValueEnum::IntValue(lhs), BasicValueEnum::FloatValue(rhs)) => {
+                                let lhs =
+                                    self.builder
+                                        .build_signed_int_to_float(lhs, rhs.get_type(), "");
+                                self.builder
+                                    .build_float_add(lhs, rhs, "")
+                                    .as_any_value_enum()
+                            }
+                            (BasicValueEnum::IntValue(lhs), BasicValueEnum::IntValue(rhs)) => {
+                                self.builder.build_int_add(lhs, rhs, "").as_any_value_enum()
+                            }
+                            _ => unimplemented!("Operation is not currently supported."),
                         }
-                        (BasicValueEnum::IntValue(lhs), BasicValueEnum::IntValue(rhs)) => {
-                            self.builder.build_int_add(lhs, rhs, "").as_any_value_enum()
-                        }
-                        _ => unimplemented!("Operation is not currently supported."),
                     },
-                    "-" => match (lhs, rhs) {
-                        (BasicValueEnum::FloatValue(lhs), BasicValueEnum::FloatValue(rhs)) => self
-                            .builder
-                            .build_float_sub(lhs, rhs, "")
-                            .as_any_value_enum(),
-                        (BasicValueEnum::FloatValue(lhs), BasicValueEnum::IntValue(rhs)) => {
-                            let rhs =
-                                self.builder
-                                    .build_signed_int_to_float(rhs, lhs.get_type(), "");
-                            self.builder
+                    "-" =>{
+                        let lhs = convert_to_basic_value(self.compile_expr(*lhs));
+                        let lhs = self.value_or_load(lhs);
+                        let rhs = convert_to_basic_value(self.compile_expr(*rhs));
+                        let rhs = self.value_or_load(rhs); 
+                        match (lhs, rhs) {
+                            (BasicValueEnum::FloatValue(lhs), BasicValueEnum::FloatValue(rhs)) => self
+                                .builder
                                 .build_float_sub(lhs, rhs, "")
-                                .as_any_value_enum()
-                        }
-                        (BasicValueEnum::IntValue(lhs), BasicValueEnum::FloatValue(rhs)) => {
-                            let lhs =
+                                .as_any_value_enum(),
+                            (BasicValueEnum::FloatValue(lhs), BasicValueEnum::IntValue(rhs)) => {
+                                let rhs =
+                                    self.builder
+                                        .build_signed_int_to_float(rhs, lhs.get_type(), "");
                                 self.builder
-                                    .build_signed_int_to_float(lhs, rhs.get_type(), "");
-                            self.builder
-                                .build_float_sub(lhs, rhs, "")
-                                .as_any_value_enum()
+                                    .build_float_sub(lhs, rhs, "")
+                                    .as_any_value_enum()
+                            }
+                            (BasicValueEnum::IntValue(lhs), BasicValueEnum::FloatValue(rhs)) => {
+                                let lhs =
+                                    self.builder
+                                        .build_signed_int_to_float(lhs, rhs.get_type(), "");
+                                self.builder
+                                    .build_float_sub(lhs, rhs, "")
+                                    .as_any_value_enum()
+                            }
+                            (BasicValueEnum::IntValue(lhs), BasicValueEnum::IntValue(rhs)) => {
+                                self.builder.build_int_sub(lhs, rhs, "").as_any_value_enum()
+                            }
+                            _ => unimplemented!("Operation is not currently supported."),
                         }
-                        (BasicValueEnum::IntValue(lhs), BasicValueEnum::IntValue(rhs)) => {
-                            self.builder.build_int_sub(lhs, rhs, "").as_any_value_enum()
-                        }
-                        _ => unimplemented!("Operation is not currently supported."),
                     },
-                    "*" => match (lhs, rhs) {
-                        (BasicValueEnum::FloatValue(lhs), BasicValueEnum::FloatValue(rhs)) => self
-                            .builder
-                            .build_float_mul(lhs, rhs, "")
-                            .as_any_value_enum(),
-                        (BasicValueEnum::FloatValue(lhs), BasicValueEnum::IntValue(rhs)) => {
-                            let rhs =
-                                self.builder
-                                    .build_signed_int_to_float(rhs, lhs.get_type(), "");
-                            self.builder
+                    "*" => {
+                        let lhs = convert_to_basic_value(self.compile_expr(*lhs));
+                        let lhs = self.value_or_load(lhs);
+                        let rhs = convert_to_basic_value(self.compile_expr(*rhs));
+                        let rhs = self.value_or_load(rhs); 
+                        match (lhs, rhs) {
+                            (BasicValueEnum::FloatValue(lhs), BasicValueEnum::FloatValue(rhs)) => self
+                                .builder
                                 .build_float_mul(lhs, rhs, "")
-                                .as_any_value_enum()
-                        }
-                        (BasicValueEnum::IntValue(lhs), BasicValueEnum::FloatValue(rhs)) => {
-                            let lhs =
+                                .as_any_value_enum(),
+                            (BasicValueEnum::FloatValue(lhs), BasicValueEnum::IntValue(rhs)) => {
+                                let rhs =
+                                    self.builder
+                                        .build_signed_int_to_float(rhs, lhs.get_type(), "");
                                 self.builder
-                                    .build_signed_int_to_float(lhs, rhs.get_type(), "");
-                            self.builder
-                                .build_float_mul(lhs, rhs, "")
-                                .as_any_value_enum()
+                                    .build_float_mul(lhs, rhs, "")
+                                    .as_any_value_enum()
+                            }
+                            (BasicValueEnum::IntValue(lhs), BasicValueEnum::FloatValue(rhs)) => {
+                                let lhs =
+                                    self.builder
+                                        .build_signed_int_to_float(lhs, rhs.get_type(), "");
+                                self.builder
+                                    .build_float_mul(lhs, rhs, "")
+                                    .as_any_value_enum()
+                            }
+                            (BasicValueEnum::IntValue(lhs), BasicValueEnum::IntValue(rhs)) => {
+                                self.builder.build_int_mul(lhs, rhs, "").as_any_value_enum()
+                            }
+                            _ => unimplemented!("Operation is not currently supported."),
                         }
-                        (BasicValueEnum::IntValue(lhs), BasicValueEnum::IntValue(rhs)) => {
-                            self.builder.build_int_mul(lhs, rhs, "").as_any_value_enum()
-                        }
-                        _ => unimplemented!("Operation is not currently supported."),
                     },
-                    "/" => match (lhs, rhs) {
-                        (BasicValueEnum::FloatValue(lhs), BasicValueEnum::FloatValue(rhs)) => self
-                            .builder
-                            .build_float_div(lhs, rhs, "")
-                            .as_any_value_enum(),
-                        (BasicValueEnum::FloatValue(lhs), BasicValueEnum::IntValue(rhs)) => {
-                            let rhs =
-                                self.builder
-                                    .build_signed_int_to_float(rhs, lhs.get_type(), "");
-                            self.builder
+                    "/" =>{
+                        let lhs = convert_to_basic_value(self.compile_expr(*lhs));
+                        let lhs = self.value_or_load(lhs);
+                        let rhs = convert_to_basic_value(self.compile_expr(*rhs));
+                        let rhs = self.value_or_load(rhs); 
+                        match (lhs, rhs) {
+                            (BasicValueEnum::FloatValue(lhs), BasicValueEnum::FloatValue(rhs)) => self
+                                .builder
                                 .build_float_div(lhs, rhs, "")
-                                .as_any_value_enum()
-                        }
-                        (BasicValueEnum::IntValue(lhs), BasicValueEnum::FloatValue(rhs)) => {
-                            let lhs =
+                                .as_any_value_enum(),
+                            (BasicValueEnum::FloatValue(lhs), BasicValueEnum::IntValue(rhs)) => {
+                                let rhs =
+                                    self.builder
+                                        .build_signed_int_to_float(rhs, lhs.get_type(), "");
                                 self.builder
-                                    .build_signed_int_to_float(lhs, rhs.get_type(), "");
-                            self.builder
-                                .build_float_div(lhs, rhs, "")
-                                .as_any_value_enum()
+                                    .build_float_div(lhs, rhs, "")
+                                    .as_any_value_enum()
+                            }
+                            (BasicValueEnum::IntValue(lhs), BasicValueEnum::FloatValue(rhs)) => {
+                                let lhs =
+                                    self.builder
+                                        .build_signed_int_to_float(lhs, rhs.get_type(), "");
+                                self.builder
+                                    .build_float_div(lhs, rhs, "")
+                                    .as_any_value_enum()
+                            }
+                            (BasicValueEnum::IntValue(lhs), BasicValueEnum::IntValue(rhs)) => self
+                                .builder
+                                .build_int_signed_div(lhs, rhs, "")
+                                .as_any_value_enum(),
+                            _ => unimplemented!("Operation is not currently supported."),
                         }
-                        (BasicValueEnum::IntValue(lhs), BasicValueEnum::IntValue(rhs)) => self
-                            .builder
-                            .build_int_signed_div(lhs, rhs, "")
-                            .as_any_value_enum(),
-                        _ => unimplemented!("Operation is not currently supported."),
                     },
                     _ => unreachable!(),
                 }
@@ -956,6 +1170,9 @@ impl<'ctx> CodeGen<'ctx> {
                                     );
                                     result.as_any_value_enum()
                                 } else {
+
+                                    #[cfg(debug_assertions)]
+                                    let _ = self.module.print_to_file("./debug.llvm");
                                     self.builder
                                         .build_call(target_fun, &[target.into(), arg.into()], "")
                                         .as_any_value_enum()
@@ -1316,7 +1533,7 @@ impl<'ctx> CodeGen<'ctx> {
             TypedDeclaration::Value(decl) => {
                 if decl.ty.is_function() {
                     let fun = self.create_curry_list(decl);
-                    self.known_functions.insert(dbg!(decl.ident.clone()), fun);
+                    self.known_functions.insert(decl.ident.clone(), fun);
                 }
             }
             TypedDeclaration::TypeDefinition(def) => match def {
@@ -1708,7 +1925,7 @@ impl<'ctx> CodeGen<'ctx> {
                                         )
                                         .ptr_type(AddressSpace::default())
                                         .into(),
-                                    self.ctx.struct_type(&[], false).into(),
+                                    self.type_resolver.resolve_arg_type(&types::UNIT).into(),
                                 ],
                                 false,
                             )
@@ -1721,7 +1938,7 @@ impl<'ctx> CodeGen<'ctx> {
                     main,
                     &[
                         gs.as_basic_value_enum().into(),
-                        self.ctx.const_struct(&[], false).into(),
+                        self.module.get_global("()").unwrap().as_pointer_value().into(),
                     ],
                     "",
                 );
@@ -1732,7 +1949,15 @@ impl<'ctx> CodeGen<'ctx> {
         }
         self.module
     }
+    fn value_or_load(&mut self, value:BasicValueEnum<'ctx>) -> BasicValueEnum<'ctx> {
+        if value.is_pointer_value() {
+            self.builder.build_load(value.into_pointer_value(),"")
+        } else {
+            value
+        }
+    }
 }
+
 
 fn convert_to_basic_value<'ctx>(value: AnyValueEnum<'ctx>) -> BasicValueEnum<'ctx> {
     match value {
