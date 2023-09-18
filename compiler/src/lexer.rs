@@ -85,7 +85,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
             }
 
             match c {
-                ';' => (Token::Seq, (self.curr_line,self.curr_col)),
+                ';' => (Token::Seq, (self.curr_line, self.curr_col)),
                 ',' => (Token::Comma, (self.curr_line, self.curr_col)),
                 '(' => (Token::GroupOpen, (self.curr_line, self.curr_col)),
                 ')' => (Token::GroupClose, (self.curr_line, self.curr_col)),
@@ -150,7 +150,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                         .source_stream
                         .clone()
                         .nth(2)
-                        .map_or(true, |c| !c.is_whitespace()) =>
+                        .map_or(true, |c| !matches!(c, operators!())) =>
                 {
                     self.curr_col += 1;
                     self.source_stream.next();
@@ -206,7 +206,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                 'f' if self
                     .source_stream
                     .clone()
-                    .take_while(|c| c.is_alphanumeric())
+                    .take_while(ident_char)
                     .collect::<String>()
                     == "or" =>
                 {
@@ -220,49 +220,50 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                 't' if self
                     .source_stream
                     .clone()
-                    .take_while(|c| c.is_alphanumeric())
+                    .take_while(ident_char)
                     .collect::<String>()
-                    == "rue" => 
+                    == "rue" =>
                 {
                     for _ in 0..3 {
                         let _ = self.source_stream.next();
                     }
                     let curr_col = self.curr_col;
-                    self.curr_col+=3;
-                    (Token::True,(self.curr_line,self.curr_col))
-                },
+                    self.curr_col += 3;
+                    (Token::True, (self.curr_line, curr_col))
+                }
                 'f' if self
                     .source_stream
                     .clone()
-                    .take_while(|c| c.is_alphanumeric())
+                    .take_while(ident_char)
                     .collect::<String>()
-                    == "alse" => 
+                    == "alse" =>
                 {
                     for _ in 0..4 {
                         let _ = self.source_stream.next();
                     }
                     let curr_col = self.curr_col;
-                    self.curr_col+=4;
-                    (Token::False,(self.curr_line,self.curr_col))
-                },
+                    self.curr_col += 4;
+                    (Token::False, (self.curr_line, curr_col))
+                }
                 'm' if self
                     .source_stream
                     .clone()
-                    .take_while(|c| c.is_alphanumeric())
+                    .take_while(ident_char)
                     .collect::<String>()
                     == "atch" =>
                 {
                     for _ in 0..4 {
                         let _ = self.source_stream.next();
                     }
+                    let curr_col = self.curr_col;
                     self.curr_col += 4;
-                    (Token::Match, (self.curr_line, self.curr_col))
+                    (Token::Match, (self.curr_line, curr_col))
                 }
 
                 'w' if self
                     .source_stream
                     .clone()
-                    .take_while(|c| c.is_alphanumeric())
+                    .take_while(ident_char)
                     .collect::<String>()
                     == "here" =>
                 {
@@ -283,7 +284,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                 't' if self
                     .source_stream
                     .clone()
-                    .take_while(|c| c.is_alphanumeric())
+                    .take_while(ident_char)
                     .collect::<String>()
                     == "hen" =>
                 {
@@ -297,7 +298,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                 'e' if self
                     .source_stream
                     .clone()
-                    .take_while(|c| c.is_alphanumeric())
+                    .take_while(ident_char)
                     .collect::<String>()
                     == "lse" =>
                 {
@@ -311,7 +312,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                 'l' if self
                     .source_stream
                     .clone()
-                    .take_while(|c| c.is_alphanumeric())
+                    .take_while(ident_char)
                     .collect::<String>()
                     == "et" =>
                 {
@@ -323,7 +324,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                 'r' if self
                     .source_stream
                     .clone()
-                    .take_while(|c| c.is_alphanumeric())
+                    .take_while(ident_char)
                     .collect::<String>()
                     == "eturn" =>
                 {
@@ -338,7 +339,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                 't' if self
                     .source_stream
                     .clone()
-                    .take_while(|c| c.is_alphanumeric())
+                    .take_while(ident_char)
                     .collect::<String>()
                     == "ype" =>
                 {
@@ -352,7 +353,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                 'e' if self
                     .source_stream
                     .clone()
-                    .take_while(|c| c.is_alphanumeric())
+                    .take_while(ident_char)
                     .collect::<String>()
                     == "num" =>
                 {
@@ -393,6 +394,10 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
             )
         }
     }
+}
+
+fn ident_char(c: &char) -> bool {
+    c.is_alphanumeric() || c == &'_'
 }
 
 #[derive(Clone)]
@@ -446,18 +451,20 @@ mod tests {
     #[test]
     #[ignore = "for debugging only"]
     fn debugging() {
-        let tokens = TokenStream::from_source("foo { a:3, b : 4 }")
-            .map(fst)
-            .collect_vec();
+        let tokens = TokenStream::from_source(
+            "
+let match_expr_with_block x : int32 -> int32 = match x where
+| 1 ->
+    let a : int32 = 2;
+    a*3
+| 2 ->
+    2
+| a -> a/2,
+",
+        )
+        .map(fst)
+        .collect_vec();
         println!("{:?}", tokens);
-        let tokens = TokenStream::from_source("
-foo {
-    a:3,
-    b:4
-}
-").map(fst).filter(|it| it != &Token::EndBlock && it != &Token::BeginBlock).collect_vec();
-        println!("{:?}", tokens);
-
     }
 
     #[test]
@@ -506,22 +513,18 @@ foo {
         );
     }
 
-    fn fst<T,U>((it,_):(T,U)) -> T {
+    fn fst<T, U>((it, _): (T, U)) -> T {
         it
     }
     #[test]
     fn single_tokens() {
         assert_eq!(
-            TokenStream::from_source(";")
-                .map(fst)
-                .collect_vec(),
-            [Token::Seq,Token::EoF],
+            TokenStream::from_source(";").map(fst).collect_vec(),
+            [Token::Seq, Token::EoF],
             "seq"
         );
         assert_eq!(
-            TokenStream::from_source("let")
-                .map(fst)
-                .collect_vec(),
+            TokenStream::from_source("let").map(fst).collect_vec(),
             [Token::Let, Token::EoF],
             "let token"
         );
@@ -536,30 +539,22 @@ foo {
             "int token"
         );
         assert_eq!(
-            TokenStream::from_source("1.0")
-                .map(fst)
-                .collect_vec(),
+            TokenStream::from_source("1.0").map(fst).collect_vec(),
             [Token::FloatingPoint(false, "1.0".to_owned()), Token::EoF],
             "float token"
         );
         assert_eq!(
-            TokenStream::from_source("'l'")
-                .map(fst)
-                .collect_vec(),
+            TokenStream::from_source("'l'").map(fst).collect_vec(),
             [Token::CharLiteral("l".to_owned()), Token::EoF],
             "char token"
         );
         assert_eq!(
-            TokenStream::from_source("\"let\"")
-                .map(fst)
-                .collect_vec(),
+            TokenStream::from_source("\"let\"").map(fst).collect_vec(),
             [Token::StringLiteral("let".to_owned()), Token::EoF],
             "string token"
         );
         assert_eq!(
-            TokenStream::from_source("foo")
-                .map(fst)
-                .collect_vec(),
+            TokenStream::from_source("foo").map(fst).collect_vec(),
             vec![Token::Ident("foo".to_owned()), Token::EoF],
             "ident token"
         );
@@ -570,9 +565,7 @@ foo {
         );
 
         assert_eq!(
-            TokenStream::from_source("return")
-                .map(fst)
-                .collect_vec(),
+            TokenStream::from_source("return").map(fst).collect_vec(),
             [Token::Return, Token::EoF],
             "return token"
         );
@@ -596,24 +589,18 @@ foo {
         );
 
         assert_eq!(
-            TokenStream::from_source("\n\t")
-                .map(fst)
-                .collect_vec(),
+            TokenStream::from_source("\n\t").map(fst).collect_vec(),
             [Token::BeginBlock, Token::EoF],
             "Begin block"
         );
 
         assert_eq!(
-            TokenStream::from_source("type")
-                .map(fst)
-                .collect_vec(),
+            TokenStream::from_source("type").map(fst).collect_vec(),
             [Token::Type, Token::EoF],
             "Type"
         );
         assert_eq!(
-            TokenStream::from_source("enum")
-                .map(fst)
-                .collect_vec(),
+            TokenStream::from_source("enum").map(fst).collect_vec(),
             [Token::Enum, Token::EoF],
             "enum"
         );
@@ -634,9 +621,7 @@ foo {
         );
 
         assert_eq!(
-            TokenStream::from_source("match")
-                .map(fst)
-                .collect_vec(),
+            TokenStream::from_source("match").map(fst).collect_vec(),
             [Token::Match, Token::EoF],
             "match"
         );
@@ -646,32 +631,28 @@ foo {
             "if"
         );
         assert_eq!(
-            TokenStream::from_source("then")
-                .map(fst)
-                .collect_vec(),
+            TokenStream::from_source("then").map(fst).collect_vec(),
             [Token::Then, Token::EoF],
             "then"
         );
         assert_eq!(
-            TokenStream::from_source("else")
-                .map(fst)
-                .collect_vec(),
+            TokenStream::from_source("else").map(fst).collect_vec(),
             [Token::Else, Token::EoF],
             "else"
         );
 
         assert_eq!(
             TokenStream::from_source("true")
-                .map(|(a,_)| a)
+                .map(|(a, _)| a)
                 .collect_vec(),
-            [Token::True,Token::EoF],
+            [Token::True, Token::EoF],
             "true"
         );
         assert_eq!(
             TokenStream::from_source("false")
-                .map(|(a,_)| a)
+                .map(|(a, _)| a)
                 .collect_vec(),
-            [Token::False,Token::EoF],
+            [Token::False, Token::EoF],
             "false"
         )
     }
@@ -688,22 +669,16 @@ foo {
             ]
         );
         assert_eq!(
-            TokenStream::from_source("\"\"")
-                .map(fst)
-                .collect_vec(),
+            TokenStream::from_source("\"\"").map(fst).collect_vec(),
             [Token::StringLiteral("".to_owned()), Token::EoF]
         );
         assert_eq!(
-            TokenStream::from_source("\" \"")
-                .map(fst)
-                .collect_vec(),
+            TokenStream::from_source("\" \"").map(fst).collect_vec(),
             [Token::StringLiteral(" ".to_owned()), Token::EoF]
         );
 
         assert_eq!(
-            TokenStream::from_source("' '")
-                .map(fst)
-                .collect_vec(),
+            TokenStream::from_source("' '").map(fst).collect_vec(),
             [Token::CharLiteral(" ".to_owned()), Token::EoF]
         );
     }

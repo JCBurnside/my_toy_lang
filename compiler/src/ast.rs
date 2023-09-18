@@ -7,7 +7,7 @@ use crate::types::ResolvedType;
 pub(crate) type File = ModuleDeclaration;
 #[allow(unused)]
 pub(crate) type Program = Vec<File>;
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub(crate) struct ModuleDeclaration {
     pub(crate) loc: Option<crate::Location>,
     pub(crate) name: String,
@@ -70,7 +70,7 @@ impl ModuleDeclaration {
     }
 }
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Debug)]
 pub(crate) enum Declaration {
     #[allow(unused)] //TODO submoduling
     Mod(ModuleDeclaration),
@@ -89,7 +89,7 @@ impl Declaration {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub(crate) enum TypeDefinition {
     Alias(String, ResolvedType),
     #[allow(unused)]
@@ -122,7 +122,7 @@ impl TypeDefinition {
     }
 }
 
-#[derive(PartialEq, Eq, Debug, Clone)]
+#[derive(PartialEq, Debug, Clone)]
 pub(crate) struct EnumDeclation {
     pub(crate) ident: String,
     pub(crate) generics: Vec<String>,
@@ -130,7 +130,7 @@ pub(crate) struct EnumDeclation {
     pub(crate) loc: crate::Location,
 }
 
-#[derive(PartialEq, Eq, Debug, Clone)]
+#[derive(PartialEq, Debug, Clone)]
 #[allow(unused)]
 pub(crate) enum EnumVariant {
     Unit(String, crate::Location),
@@ -138,7 +138,7 @@ pub(crate) enum EnumVariant {
     Struct(String, StructDefinition, crate::Location),
 }
 
-#[derive(PartialEq, Eq, Debug, Clone)]
+#[derive(PartialEq, Debug, Clone)]
 pub(crate) struct StructDefinition {
     pub(crate) ident: String,
     pub(crate) generics: Vec<String>,
@@ -146,21 +146,21 @@ pub(crate) struct StructDefinition {
     pub(crate) loc: crate::Location,
 }
 
-#[derive(PartialEq, Eq, Debug, Clone)]
+#[derive(PartialEq, Debug, Clone)]
 pub(crate) struct FieldDecl {
     pub(crate) name: String,
     pub(crate) ty: ResolvedType,
     pub(crate) loc: crate::Location,
 }
 
-#[derive(PartialEq, Eq, Debug, Clone)]
+#[derive(PartialEq, Debug, Clone)]
 pub(crate) struct ArgDeclation {
     pub(crate) loc: crate::Location,
     pub(crate) ident: String,
     // ty : Option<ResolvedType>,// TODO
 }
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Debug)]
 pub struct ValueDeclaration {
     pub(crate) loc: crate::Location, //should be location of the ident.
     pub(crate) is_op: bool,
@@ -178,7 +178,7 @@ impl ValueDeclaration {
         self.value.replace(nice_name, actual);
     }
 }
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Debug)]
 pub enum ValueType {
     Expr(Expr),
     Function(Vec<Statement>),
@@ -194,46 +194,49 @@ impl ValueType {
     }
 }
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Debug)]
 pub enum Statement {
     Declaration(ValueDeclaration),
     Return(Expr, crate::Location),
     FnCall(FnCall),
     Pipe(Pipe),
     IfStatement(IfBranching),
+    Match(Match),
     Error,
 }
 impl Statement {
     fn replace(&mut self, nice_name: &str, actual: &str) {
         match self {
-            Statement::Declaration(decl) => decl.replace(nice_name, actual),
-            Statement::Return(expr, _) => expr.replace(nice_name, actual),
-            Statement::FnCall(fncall) => fncall.replace(nice_name, actual),
-            Statement::Pipe(_) => todo!(),
-            Statement::IfStatement(ifbranches) => ifbranches.replace(nice_name, actual),
-            Statement::Error => (),
+            Self::Declaration(decl) => decl.replace(nice_name, actual),
+            Self::Return(expr, _) => expr.replace(nice_name, actual),
+            Self::FnCall(fncall) => fncall.replace(nice_name, actual),
+            Self::Pipe(_) => todo!(),
+            Self::IfStatement(ifbranches) => ifbranches.replace(nice_name, actual),
+            Self::Match(match_) => match_.replace(nice_name, actual),
+            Self::Error => (),
         }
     }
 
     pub(crate) fn get_loc(&self) -> crate::Location {
         match self {
-            Statement::Declaration(decl) => decl.loc,
-            Statement::Return(_, loc) => *loc,
-            Statement::FnCall(call) => call.loc,
-            Statement::Pipe(_) => todo!(),
-            Statement::IfStatement(if_) => if_.loc,
-            Statement::Error => todo!(),
+            Self::Declaration(decl) => decl.loc,
+            Self::Return(_, loc) => *loc,
+            Self::FnCall(call) => call.loc,
+            Self::Pipe(_) => todo!(),
+            Self::IfStatement(if_) => if_.loc,
+            Self::Match(match_) => match_.loc,
+            Self::Error => (0, 0),
         }
     }
 }
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Debug)]
 pub struct IfBranching {
     pub(crate) cond: Box<Expr>,
     pub(crate) true_branch: Vec<Statement>,
     pub(crate) else_ifs: Vec<(Box<Expr>, Vec<Statement>)>,
     pub(crate) else_branch: Vec<Statement>,
-    pub(crate) loc : crate::Location,
+    pub(crate) loc: crate::Location,
 }
 
 impl IfBranching {
@@ -254,7 +257,7 @@ impl IfBranching {
     }
 }
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Debug)]
 pub struct Pipe {
     ///if you need to spread more than an u8's worth of values... wtf are you doing? what would even return that many values as a tuple?  
     pub(crate) expansion: NonZeroU8,
@@ -263,14 +266,14 @@ pub struct Pipe {
     pub(crate) rhs: Box<Expr>,
 }
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Debug)]
 pub struct UnaryOpCall {
     pub(crate) loc: crate::Location,
     pub(crate) operand: Box<Expr>,
     pub(crate) operator: String,
 }
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Debug)]
 pub struct BinaryOpCall {
     pub(crate) loc: crate::Location,
     pub(crate) lhs: Box<Expr>,
@@ -284,7 +287,7 @@ impl BinaryOpCall {
     }
 }
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Debug)]
 pub struct FnCall {
     pub(crate) loc: crate::Location,
     pub(crate) value: Box<Expr>,
@@ -297,7 +300,7 @@ impl FnCall {
     }
 }
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Debug)]
 pub struct StructConstruction {
     pub(crate) loc: crate::Location,
     pub(crate) fields: HashMap<String, (Expr, crate::Location)>,
@@ -318,7 +321,7 @@ impl StructConstruction {
     }
 }
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Debug)]
 pub enum Expr {
     Error,
     /// any integer or floating point value
@@ -370,8 +373,9 @@ pub enum Expr {
     },
 
     StructConstruction(StructConstruction),
-    BoolLiteral(bool,crate::Location),
+    BoolLiteral(bool, crate::Location),
     If(IfExpr),
+    Match(Match),
 }
 impl Expr {
     fn replace(&mut self, nice_name: &str, actual: &str) {
@@ -392,12 +396,14 @@ impl Expr {
                 lhs.replace(nice_name, actual);
                 rhs.replace(nice_name, actual);
             }
+            Expr::If(ifexpr) => ifexpr.replace(nice_name, actual),
+            Expr::Match(match_) => match_.replace(nice_name, actual),
             _ => (),
         }
     }
 }
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Debug)]
 pub struct IfExpr {
     pub(crate) cond: Box<Expr>,
     pub(crate) true_branch: (Vec<Statement>, Box<Expr>),
@@ -427,4 +433,48 @@ impl IfExpr {
             .for_each(|stmt| stmt.replace(nice_name, actual));
         self.else_branch.1.replace(nice_name, actual);
     }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Match {
+    pub(crate) loc: crate::Location,
+    pub(crate) on: Box<Expr>,
+    pub(crate) arms: Vec<MatchArm>,
+}
+impl Match {
+    fn replace(&mut self, nice_name: &str, actual: &str) {
+        self.on.replace(nice_name, actual);
+        for arm in &mut self.arms {
+            arm.replace(nice_name, actual);
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) struct MatchArm {
+    pub(crate) block: Vec<Statement>,
+    pub(crate) ret: Option<Box<Expr>>,
+    pub(crate) cond: Pattern,
+    pub(crate) loc: crate::Location,
+}
+impl MatchArm {
+    fn replace(&mut self, nice_name: &str, actual: &str) {
+        for stmnt in &mut self.block {
+            stmnt.replace(nice_name, actual);
+        }
+        self.ret.as_mut().map(|it| it.replace(nice_name, actual));
+
+        //TODO! allowing for named consts in patterns and handling replacing them with cannon names.
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Pattern {
+    Default,
+    ConstNumber(String), // todo! conditional branch
+    ConstStr(String),
+    ConstChar(String),
+    ConstBool(bool), //... this is one is odd but gonna support it anyway and eventaully warn with suggestion to convert to if
+    Read(String),    // todo! conditional branch
+                     // todo! variant patterns.
 }

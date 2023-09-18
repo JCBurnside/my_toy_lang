@@ -8,12 +8,11 @@ use itertools::Itertools;
 
 use crate::{
     ast::{
-        self, BinaryOpCall, Expr, FnCall, Statement, StructConstruction, ValueDeclaration,
-        ValueType,
+        self, BinaryOpCall, Expr, FnCall, Match, Pattern, Statement, StructConstruction,
+        ValueDeclaration, ValueType,
     },
     lexer::TokenStream,
     tokens::Token,
-    typed_ast::TypedStatement,
     types::{self, ResolvedType},
     util::ExtraUtilFunctions,
 };
@@ -93,7 +92,7 @@ where
             Some((Token::Let, _)) | Some((Token::For, _)) => {
                 let generics = self.collect_generics()?;
                 let inner = Statement::Declaration(self.fn_declaration(generics)?);
-                if let Some((Token::Seq,_)) = self.stream.clone().next() {
+                if let Some((Token::Seq, _)) = self.stream.clone().next() {
                     self.stream.next();
                 } else {
                     println!("expected ; on line {}", inner.get_loc().0);
@@ -102,19 +101,19 @@ where
             }
             Some((Token::Return, _)) => {
                 let inner = self.ret()?;
-                if let Some((Token::Seq,_)) = self.stream.clone().next() {
+                if let Some((Token::Seq, _)) = self.stream.clone().next() {
                     self.stream.next();
                 } else {
                     println!("expected ; on line {}", inner.get_loc().0);
                 }
                 Ok(inner)
-            },
+            }
             // hmmm should handle if it's actually a binary op call esp and/or compose.
             Some((Token::Ident(_), _)) =>
             // for now last statement in a block is not treated as return though will allow for that soon.
             {
                 let inner = Statement::FnCall(self.function_call()?.0);
-                if let Some((Token::Seq,_)) = self.stream.clone().next() {
+                if let Some((Token::Seq, _)) = self.stream.clone().next() {
                     self.stream.next();
                 } else {
                     println!("expected ; on line {}", inner.get_loc().0);
@@ -123,9 +122,13 @@ where
             }
             Some((Token::If, _)) => {
                 let inner = Statement::IfStatement(self.ifstatement()?);
-                
+
                 Ok(inner)
-            },
+            }
+            Some((Token::Match, _)) => {
+                let match_ = Statement::Match(self.match_()?.0);
+                Ok(match_)
+            }
             _ => unreachable!("how?"),
         }
     }
@@ -142,24 +145,29 @@ where
             }
             Some((Token::GroupOpen, _)) => {
                 let mut group_opens = 0;
-                if let Some((Token::Op(_),_)) = self.stream.clone().skip(1).skip_while(|(it,_)| match it {
-                    //skip this whole expression to examine what's after it.
-                    Token::GroupOpen => {
-                        group_opens += 1;
-                        true
-                    },
-                    Token::Ident(_)
-                    | Token::FloatingPoint(_, _)
-                    | Token::Integer(_, _)
-                    | Token::Op(_) => true,
-                    Token::GroupClose => {
-                        group_opens -= 1;
-                        group_opens >= 0
-                    }
-                    _ => false,
-                })
-                .skip(1)
-                .next() {
+                if let Some((Token::Op(_), _)) = self
+                    .stream
+                    .clone()
+                    .skip(1)
+                    .skip_while(|(it, _)| match it {
+                        //skip this whole expression to examine what's after it.
+                        Token::GroupOpen => {
+                            group_opens += 1;
+                            true
+                        }
+                        Token::Ident(_)
+                        | Token::FloatingPoint(_, _)
+                        | Token::Integer(_, _)
+                        | Token::Op(_) => true,
+                        Token::GroupClose => {
+                            group_opens -= 1;
+                            group_opens >= 0
+                        }
+                        _ => false,
+                    })
+                    .skip(1)
+                    .next()
+                {
                     self.binary_op()
                 } else {
                     self.stream.next();
@@ -251,16 +259,25 @@ where
                 } else {
                     self.value()
                 }
-            },
-            Some((Token::True,loc)) => {
+            }
+            Some((Token::True, loc)) => {
                 let _ = self.stream.next();
-                Ok((Expr::BoolLiteral(true, loc),loc))
-            },
-            Some((Token::False,loc)) => {
+                Ok((Expr::BoolLiteral(true, loc), loc))
+            }
+            Some((Token::False, loc)) => {
                 let _ = self.stream.next();
-                Ok((Expr::BoolLiteral(false, loc),loc))
-            },
-            
+                Ok((Expr::BoolLiteral(false, loc), loc))
+            }
+            Some((Token::Match, _)) => {
+                let match_ = self.match_().map_or_else(
+                    |e| {
+                        println!("{e:?}");
+                        (Expr::Error, e.span)
+                    },
+                    |(match_, loc)| (Expr::Match(match_), loc),
+                );
+                Ok(match_)
+            }
             _ => Err(ParseError {
                 span: (100000, 0),
                 reason: ParseErrorReason::UnknownError,
@@ -278,13 +295,19 @@ where
             Ok(cond) => cond.0,
         }
         .boxed();
-        if let Some((Token::Then,_)) = self.stream.peek() {
+        if let Some((Token::Then, _)) = self.stream.peek() {
             let _ = self.stream.next();
-        } else { 
-            let (token,loc) = self.stream.next().unwrap();
-            println!("Expected then but got {:?} at line:{} col:{}", token,loc.0,loc.1);
-            return Err(ParseError { span: loc, reason: ParseErrorReason::UnexpectedToken 
-        })};
+        } else {
+            let (token, loc) = self.stream.next().unwrap();
+            println!(
+                "Expected then but got {:?} at line:{} col:{}",
+                token, loc.0, loc.1
+            );
+            return Err(ParseError {
+                span: loc,
+                reason: ParseErrorReason::UnexpectedToken,
+            });
+        };
         let body = match self.stream.clone().next() {
             Some((Token::BeginBlock, _)) => {
                 let _ = self.stream.next();
@@ -331,7 +354,7 @@ where
         if let Some((Token::Else, _)) = self.stream.peek() {
             let _ = self.stream.next();
             let mut else_ifs = Vec::new();
-            
+
             while let Some((Token::If, _)) = self.stream.peek() {
                 let Some((Token::If,loc)) = self.stream.next() else { unreachable!() };
                 let cond = match self.next_expr() {
@@ -342,14 +365,20 @@ where
                     Ok(cond) => cond.0,
                 }
                 .boxed();
-                
-                if let Some((Token::Then,_)) = self.stream.peek() {
+
+                if let Some((Token::Then, _)) = self.stream.peek() {
                     let _ = self.stream.next();
-                } else { 
-                    let (token,loc) = self.stream.next().unwrap();
-                    println!("Expected then but got {:?} at line:{} col:{}", token,loc.0,loc.1);
-                    return Err(ParseError { span: loc, reason: ParseErrorReason::UnexpectedToken 
-                })};
+                } else {
+                    let (token, loc) = self.stream.next().unwrap();
+                    println!(
+                        "Expected then but got {:?} at line:{} col:{}",
+                        token, loc.0, loc.1
+                    );
+                    return Err(ParseError {
+                        span: loc,
+                        reason: ParseErrorReason::UnexpectedToken,
+                    });
+                };
                 let (body, ret) = match self.stream.clone().next() {
                     Some((Token::BeginBlock, _)) => {
                         let _ = self.stream.next();
@@ -369,7 +398,6 @@ where
                                     Statement::Error
                                 }
                             });
-                            
                         }
                         let ret = match self.next_expr() {
                             Ok(expr) => expr.0,
@@ -378,7 +406,7 @@ where
                                 Expr::Error
                             }
                         };
-                        
+
                         let _ = self.stream.next();
                         (body, ret)
                     }
@@ -394,17 +422,16 @@ where
                     ),
                 };
                 else_ifs.push((cond, body, ret.boxed()));
-                
+
                 let Some((Token::Else,_)) = self.stream.next() else {
                     return Err(ParseError { span: loc, reason: ParseErrorReason::NoElseBlock });
                 };
             }
-            
-            
+
             let else_branch = match self.stream.clone().next() {
                 Some((Token::BeginBlock, _)) => {
                     let _ = self.stream.next();
-                    
+
                     let mut body = Vec::new();
                     while self
                         .stream
@@ -421,7 +448,6 @@ where
                                 Statement::Error
                             }
                         });
-                        
                     }
                     let ret = match self.next_expr() {
                         Ok(expr) => expr.0,
@@ -431,7 +457,7 @@ where
                         }
                     }
                     .boxed();
-                    
+
                     let _ = self.stream.next();
                     (body, ret)
                 }
@@ -635,14 +661,20 @@ where
             Ok(cond) => cond.0,
         }
         .boxed();
-        if let Some((Token::Then,_)) = self.stream.peek() {
+        if let Some((Token::Then, _)) = self.stream.peek() {
             let _ = self.stream.next();
-        } else { 
-            let (token,loc) = self.stream.next().unwrap();
-            println!("Expected then but got {:?} at line:{} col:{}", token,loc.0,loc.1);
-            return Err(ParseError { span: loc, reason: ParseErrorReason::UnexpectedToken 
-        })};
-        
+        } else {
+            let (token, loc) = self.stream.next().unwrap();
+            println!(
+                "Expected then but got {:?} at line:{} col:{}",
+                token, loc.0, loc.1
+            );
+            return Err(ParseError {
+                span: loc,
+                reason: ParseErrorReason::UnexpectedToken,
+            });
+        };
+
         let body = match self.stream.peek() {
             Some((Token::BeginBlock, _)) => match self.collect_block() {
                 Ok(body) => body,
@@ -659,7 +691,7 @@ where
                 }
             }],
         };
-        
+
         if let Some((Token::Else, _)) = self.stream.peek() {
             let mut else_ifs = Vec::new();
             while let Some((Token::If, _)) = self.stream.clone().nth(1) {
@@ -673,13 +705,19 @@ where
                     Ok(cond) => cond.0,
                 }
                 .boxed();
-                if let Some((Token::Then,_)) = self.stream.peek() {
+                if let Some((Token::Then, _)) = self.stream.peek() {
                     let _ = self.stream.next();
-                } else { 
-                    let (token,loc) = self.stream.next().unwrap();
-                    println!("Expected then but got {:?} at line:{} col:{}", token,loc.0,loc.1);
-                    return Err(ParseError { span: loc, reason: ParseErrorReason::UnexpectedToken 
-                })};
+                } else {
+                    let (token, loc) = self.stream.next().unwrap();
+                    println!(
+                        "Expected then but got {:?} at line:{} col:{}",
+                        token, loc.0, loc.1
+                    );
+                    return Err(ParseError {
+                        span: loc,
+                        reason: ParseErrorReason::UnexpectedToken,
+                    });
+                };
                 let body = match self.stream.peek() {
                     Some((Token::BeginBlock, _)) => match self.collect_block() {
                         Ok(body) => body,
@@ -698,11 +736,10 @@ where
                 };
                 else_ifs.push((cond, body));
             }
-            
 
             let else_branch = if let Some((Token::Else, _)) = self.stream.clone().next() {
                 let _ = self.stream.next();
-                
+
                 match self.stream.peek() {
                     Some((Token::BeginBlock, _)) => match self.collect_block() {
                         Ok(body) => body,
@@ -839,7 +876,6 @@ where
     }
 
     fn declaration(&mut self) -> Result<ast::Declaration, ParseError> {
-        
         let generics = self.collect_generics()?;
         let next = self.stream.clone().next();
         match next {
@@ -932,7 +968,6 @@ where
             if let Some((Token::Comma, _)) = self.stream.clone().next() {
                 self.stream.next();
             } else {
-                
                 if let Some((Token::Ident(_), loc)) = self.stream.clone().next() {
                     println!("expected comma at line:{},col:{}", loc.0, loc.1);
                     while let Some((token, _)) = self.stream.clone().next() {
@@ -957,9 +992,7 @@ where
             }
             fields.push(ast::FieldDecl { name, ty, loc });
         }
-        while let Some((Token::EndBlock | Token::Comma, _)) =
-            self.stream.clone().next()
-        {
+        while let Some((Token::EndBlock | Token::Comma, _)) = self.stream.clone().next() {
             self.stream.next();
         }
         let Some((Token::CurlClose,_)) = self.stream.next() else { return Err(ParseError { span: (0,11111), reason: ParseErrorReason::DeclarationError }) };
@@ -1092,7 +1125,6 @@ where
                             let next = self.stream.next();
                             match next {
                                 Some((Token::Op(eq), _)) if eq == "=" => {
-                                    
                                     let value = match self.stream.clone().next() {
                                         Some((Token::BeginBlock, _)) => {
                                             ValueType::Function(self.collect_block()?)
@@ -1123,7 +1155,6 @@ where
                         } else {
                             match self.stream.next() {
                                 Some((Token::Op(eq), _)) if eq == "=" => {
-                                    
                                     let value = match self.stream.clone().next() {
                                         Some((Token::BeginBlock, _)) => {
                                             ValueType::Function(self.collect_block()?)
@@ -1303,7 +1334,6 @@ where
             loop {
                 let next = self.stream.peek();
                 if let Some((Token::EndBlock, _)) = next {
-                    
                     self.stream.next();
                     break;
                 } else if let Some((Token::EoF, _)) = next {
@@ -1467,6 +1497,193 @@ where
             Ok(final_expr.into_iter().next().unwrap())
         }
     }
+
+    fn match_(&mut self) -> Result<(Match, crate::Location), ParseError> {
+        let Some((Token::Match,match_loc)) = self.stream.next() else { unreachable!() };
+        let on = match self.next_expr() {
+            Ok(it) => it,
+            Err(e) => {
+                println!("{e:?}");
+                (ast::Expr::Error, e.span)
+            }
+        };
+        let Some((Token::Where, _)) = self.stream.next() else {
+            return Err(ParseError { span: on.1 , reason: ParseErrorReason::UnexpectedToken });
+        };
+        let expect_block = if let Some((Token::BeginBlock, _)) = self.stream.clone().next() {
+            let _ = self.stream.next();
+            true
+        } else {
+            false
+        };
+        let mut arms = Vec::new();
+        while let Some((Token::Op(op), _)) = self.stream.peek() {
+            if op != "|" {
+                break;
+            }
+            let _ = self.stream.next();
+            let (cond, loc) = match self.stream.peek() {
+                Some((Token::Ident(ident), _)) if ident != "_" => {
+                    let Some((Token::Ident(name),loc)) = self.stream.next() else { unreachable!() };
+                    //todo! detect patterns
+                    (Pattern::Read(name), loc)
+                }
+                Some((Token::Ident(_), _)) => {
+                    let Some((_,loc)) = self.stream.next() else {unreachable!()};
+                    (Pattern::Default, loc)
+                }
+                Some((Token::Integer(_, _), _)) => {
+                    let Some((Token::Integer(signed, value),loc)) = self.stream.next() else { unreachable!() };
+
+                    (
+                        Pattern::ConstNumber(format!("{}{}", if signed { "-" } else { "" }, value)),
+                        loc,
+                    )
+                }
+                Some((Token::FloatingPoint(_, _), _)) => {
+                    let Some((Token::FloatingPoint(signed, value),loc)) = self.stream.next() else { unreachable!() };
+
+                    (
+                        Pattern::ConstNumber(format!("{}{}", if signed { "-" } else { "" }, value)),
+                        loc,
+                    )
+                }
+                Some((Token::CharLiteral(_), _)) => {
+                    let Some((Token::CharLiteral(c),loc)) = self.stream.next() else { unreachable!() };
+                    (Pattern::ConstChar(c), loc)
+                }
+                Some((Token::StringLiteral(_), _)) => {
+                    let Some((Token::StringLiteral(c),loc)) = self.stream.next() else { unreachable!() };
+                    (Pattern::ConstStr(c), loc)
+                }
+                Some((Token::True, _)) => {
+                    let Some((_,loc)) = self.stream.next() else {unreachable!()};
+                    (Pattern::ConstBool(true), loc)
+                }
+                Some((Token::False, _)) => {
+                    let Some((_,loc)) = self.stream.next() else {unreachable!()};
+                    (Pattern::ConstBool(false), loc)
+                }
+                Some((t, loc)) => {
+                    println!("Unexpected token at line : {}, col : {}, epxected identifier or literal but got {:?}", loc.0,loc.1, t);
+                    let advanced_by = self
+                        .stream
+                        .clone()
+                        .skip_while(|(t, _)| match t {
+                            Token::Comma | Token::EndBlock => false,
+                            _ => true,
+                            //this will probably need to be more advance to recover from more situations but should do for now.
+                        })
+                        .collect_vec()
+                        .len();
+                    for _ in 0..advanced_by {
+                        let _ = self.stream.next();
+                    }
+                    continue;
+                }
+                None => {
+                    unreachable!();
+                }
+            };
+
+            if let Some((Token::Arrow, _)) = self.stream.peek() {
+                self.stream.next();
+            } else {
+                let Some((t,loc)) = self.stream.peek() else { unreachable!() };
+                println!(
+                    "expected -> but got {:?} at line: {}, col: {}",
+                    t, loc.0, loc.1
+                );
+            }
+            let (block, ret) = match self.stream.peek() {
+                Some((Token::BeginBlock, _)) => {
+                    let _ = self.stream.next();
+                    let mut body = Vec::new();
+                    while self
+                        .stream
+                        .clone()
+                        .skip_while(|(it, _)| it != &Token::Seq && it != &Token::EndBlock)
+                        .next()
+                        .map(|a| a.0 != Token::EndBlock && a.0 != Token::EoF)
+                        .unwrap_or(false)
+                    {
+                        body.push(match self.next_statement() {
+                            Ok(stmnt) => stmnt,
+                            Err(e) => {
+                                println!("{e:?}");
+                                Statement::Error
+                            }
+                        });
+                    }
+                    match self.stream.peek() {
+                        Some((Token::EndBlock, _)) => {
+                            let _ = self.stream.next();
+                            (body, None)
+                        }
+                        _ => {
+                            let ret = match self.next_expr() {
+                                Ok(expr) => expr.0,
+                                Err(e) => {
+                                    println!("{e:?}");
+                                    Expr::Error
+                                }
+                            }
+                            .boxed();
+                            if let Some((Token::EndBlock, _)) = self.stream.peek() {
+                                let _ = self.stream.next();
+                            } else {
+                                println!("did you mean to move back a block?");
+                            }
+                            (body, Some(ret))
+                        }
+                    }
+                }
+                _ => {
+                    let expr = match self.next_expr() {
+                        Ok(it) => it.0,
+                        Err(e) => {
+                            println!("{e:?}");
+                            ast::Expr::Error
+                        }
+                    }
+                    .boxed();
+                    if let Some((Token::Comma, _)) = self.stream.peek() {
+                        let _ = self.stream.next();
+                    } else {
+                        let Some((peeked,loc)) = self.stream.peek() else { unreachable!() };
+                        println!(
+                            "expected `,` but got {:?} at line : {}, col: {}",
+                            peeked, loc.0, loc.1
+                        )
+                    }
+                    (Vec::new(), Some(expr))
+                }
+            };
+            arms.push(ast::MatchArm {
+                block,
+                ret,
+                cond,
+                loc,
+            });
+        }
+
+        if expect_block {
+            if let Some((Token::EndBlock, _)) = self.stream.peek() {
+                let _ = self.stream.next();
+            } else {
+                println!("did you mean to go back to the containing block level?");
+            }
+        }
+
+        Ok((
+            Match {
+                loc: match_loc,
+                on: on.0.boxed(),
+                arms,
+            },
+            match_loc,
+        ))
+    }
 }
 
 fn make_literal(token: Token, span: (usize, usize)) -> Result<crate::ast::Expr, ParseError> {
@@ -1572,7 +1789,7 @@ impl std::fmt::Debug for ShuntingYardOptions {
 mod tests {
 
     use crate::{
-        ast::{ArgDeclation, IfBranching, IfExpr, StructDefinition},
+        ast::{ArgDeclation, IfBranching, IfExpr, MatchArm, StructDefinition},
         types::ResolvedType,
     };
 
@@ -1582,18 +1799,20 @@ mod tests {
     fn for_debugging_only() {
         let mut parser = Parser::from_source("(foo bar) && (baz quz)");
         assert_eq!(
-            ast::Expr::BinaryOpCall(BinaryOpCall { 
-                loc: (0,11),
+            ast::Expr::BinaryOpCall(BinaryOpCall {
+                loc: (0, 11),
                 lhs: ast::Expr::FnCall(FnCall {
-                    loc: (0,2),
-                    value: ast::Expr::ValueRead("foo".to_string(), (0,2)).boxed(),
-                    arg: Some(ast::Expr::ValueRead("bar".to_string(), (0,6)).boxed()) 
-                }).boxed(), 
+                    loc: (0, 6),
+                    value: ast::Expr::ValueRead("foo".to_string(), (0, 2)).boxed(),
+                    arg: Some(ast::Expr::ValueRead("bar".to_string(), (0, 6)).boxed())
+                })
+                .boxed(),
                 rhs: ast::Expr::FnCall(FnCall {
-                    loc: (0,19),
-                    value: ast::Expr::ValueRead("baz".to_string(), (0,15)).boxed(),
-                    arg: Some(ast::Expr::ValueRead("quz".to_string(), (0,19)).boxed()) 
-                }).boxed(),
+                    loc: (0, 19),
+                    value: ast::Expr::ValueRead("baz".to_string(), (0, 15)).boxed(),
+                    arg: Some(ast::Expr::ValueRead("quz".to_string(), (0, 19)).boxed())
+                })
+                .boxed(),
                 operator: "&&".to_string()
             }),
             parser.next_expr().unwrap().0,
@@ -2008,18 +2227,20 @@ let main _ : int32 -> int32 =
 
         let mut parser = Parser::from_source("(foo bar) && (baz quz)");
         assert_eq!(
-            ast::Expr::BinaryOpCall(BinaryOpCall { 
-                loc: (0,11),
+            ast::Expr::BinaryOpCall(BinaryOpCall {
+                loc: (0, 11),
                 lhs: ast::Expr::FnCall(FnCall {
-                    loc: (0,2),
-                    value: ast::Expr::ValueRead("foo".to_string(), (0,2)).boxed(),
-                    arg: Some(ast::Expr::ValueRead("bar".to_string(), (0,6)).boxed()) 
-                }).boxed(), 
+                    loc: (0, 6),
+                    value: ast::Expr::ValueRead("foo".to_string(), (0, 2)).boxed(),
+                    arg: Some(ast::Expr::ValueRead("bar".to_string(), (0, 6)).boxed())
+                })
+                .boxed(),
                 rhs: ast::Expr::FnCall(FnCall {
-                    loc: (0,19),
-                    value: ast::Expr::ValueRead("baz".to_string(), (0,15)).boxed(),
-                    arg: Some(ast::Expr::ValueRead("quz".to_string(), (0,19)).boxed()) 
-                }).boxed(),
+                    loc: (0, 19),
+                    value: ast::Expr::ValueRead("baz".to_string(), (0, 15)).boxed(),
+                    arg: Some(ast::Expr::ValueRead("quz".to_string(), (0, 19)).boxed())
+                })
+                .boxed(),
                 operator: "&&".to_string()
             }),
             parser.next_expr().unwrap().0,
@@ -2203,8 +2424,8 @@ for<T,U> type Tuple = {
     }
 
     #[test]
-    fn control_flow() {
-        let mut parser = Parser::from_source(include_str!("../../samples/control_flow.fb"));
+    fn control_flow_if() {
+        let mut parser = Parser::from_source(include_str!("../../samples/control_flow_if.fb"));
         assert_eq!(
             ast::Declaration::Value(ValueDeclaration {
                 loc: (0, 5),
@@ -2466,7 +2687,7 @@ for<T,U> type Tuple = {
                             (22, 9)
                         ),
                     ],
-                    loc: (17,5)
+                    loc: (17, 5)
                 })]),
                 generictypes: Vec::new(),
             }),
@@ -2523,7 +2744,7 @@ for<T,U> type Tuple = {
                         },
                         (30, 9)
                     )],
-                    loc: (25,5),
+                    loc: (25, 5),
                 })]),
                 generictypes: Vec::new(),
             }),
@@ -2555,28 +2776,263 @@ for<T,U> type Tuple = {
                     .boxed()
                 }),
                 value: ValueType::Expr(ast::Expr::If(IfExpr {
-                    cond: ast::Expr::ValueRead("a".to_string(), (32,61)).boxed(),
+                    cond: ast::Expr::ValueRead("a".to_string(), (32, 61)).boxed(),
                     true_branch: (
                         Vec::new(),
-                        ast::Expr::NumericLiteral { value: "0".to_string(), ty: types::INT32 }.boxed(),
+                        ast::Expr::NumericLiteral {
+                            value: "0".to_string(),
+                            ty: types::INT32
+                        }
+                        .boxed(),
                     ),
-                    else_ifs: vec![
-                        (
-                            ast::Expr::ValueRead("b".to_string(), (34,13)).boxed(),
-                            Vec::new(),
-                            ast::Expr::NumericLiteral { value: "1".to_string(), ty: types::INT32 }.boxed(),
-                        )
-                    ],
+                    else_ifs: vec![(
+                        ast::Expr::ValueRead("b".to_string(), (34, 13)).boxed(),
+                        Vec::new(),
+                        ast::Expr::NumericLiteral {
+                            value: "1".to_string(),
+                            ty: types::INT32
+                        }
+                        .boxed(),
+                    )],
                     else_branch: (
                         Vec::new(),
-                        ast::Expr::NumericLiteral { value: "2".to_string(), ty: types::INT32 }.boxed(),
+                        ast::Expr::NumericLiteral {
+                            value: "2".to_string(),
+                            ty: types::INT32
+                        }
+                        .boxed(),
                     ),
-                    loc: (32,58)
+                    loc: (32, 58)
                 })),
                 generictypes: Vec::new(),
             }),
             parser.declaration().unwrap(),
             "multi line expr with else if"
-        )
+        );
+    }
+
+    #[test]
+    fn control_flow_match() {
+        let mut parser = Parser::from_source(include_str!("../../samples/control_flow_match.fb"));
+        assert_eq!(
+            ast::Declaration::Value(ValueDeclaration {
+                loc: (0, 5),
+                is_op: false,
+                ident: "match_expr_ints".to_string(),
+                args: vec![ast::ArgDeclation {
+                    loc: (0, 21),
+                    ident: "x".to_string()
+                }],
+                ty: Some(ResolvedType::Function {
+                    arg: types::INT32.boxed(),
+                    returns: types::INT32.boxed(),
+                }),
+                value: ast::ValueType::Expr(ast::Expr::Match(Match {
+                    loc: (0, 42),
+                    on: ast::Expr::ValueRead("x".to_string(), (0, 48)).boxed(),
+                    arms: vec![
+                        MatchArm {
+                            block: Vec::new(),
+                            ret: Some(
+                                ast::Expr::NumericLiteral {
+                                    value: "1".to_string(),
+                                    ty: types::INT32
+                                }
+                                .boxed()
+                            ),
+                            cond: Pattern::ConstNumber("1".to_string()),
+                            loc: (1, 7)
+                        },
+                        MatchArm {
+                            block: Vec::new(),
+                            ret: Some(
+                                ast::Expr::NumericLiteral {
+                                    value: "3".to_string(),
+                                    ty: types::INT32
+                                }
+                                .boxed()
+                            ),
+                            cond: Pattern::ConstNumber("2".to_string()),
+                            loc: (2, 7)
+                        },
+                        MatchArm {
+                            block: Vec::new(),
+                            ret: Some(
+                                ast::Expr::NumericLiteral {
+                                    value: "4".to_string(),
+                                    ty: types::INT32
+                                }
+                                .boxed()
+                            ),
+                            cond: Pattern::Default,
+                            loc: (3, 7)
+                        },
+                    ]
+                })),
+                generictypes: Vec::new(),
+            }),
+            parser.declaration().unwrap(),
+            "match_expr_ints"
+        );
+
+        assert_eq!(
+            ast::Declaration::Value(ValueDeclaration {
+                loc: (5, 5),
+                is_op: false,
+                ident: "match_expr_with_block".to_string(),
+                args: vec![ArgDeclation {
+                    loc: (5, 27),
+                    ident: "x".to_string()
+                },],
+                ty: Some(ResolvedType::Function {
+                    arg: types::INT32.boxed(),
+                    returns: types::INT32.boxed(),
+                }),
+                value: ValueType::Expr(ast::Expr::Match(Match {
+                    loc: (5, 48),
+                    on: ast::Expr::ValueRead("x".to_string(), (5, 54)).boxed(),
+                    arms: vec![
+                        MatchArm {
+                            loc: (6, 7),
+                            block: vec![ast::Statement::Declaration(ValueDeclaration {
+                                loc: (7, 13),
+                                is_op: false,
+                                ident: "a".to_string(),
+                                args: Vec::new(),
+                                ty: Some(types::INT32),
+                                value: ValueType::Expr(ast::Expr::NumericLiteral {
+                                    value: "2".to_string(),
+                                    ty: types::INT32
+                                }),
+                                generictypes: Vec::new()
+                            })],
+                            ret: Some(
+                                ast::Expr::BinaryOpCall(BinaryOpCall {
+                                    loc: (8, 10),
+                                    lhs: ast::Expr::ValueRead("a".to_string(), (8, 9)).boxed(),
+                                    rhs: ast::Expr::NumericLiteral {
+                                        value: "3".to_string(),
+                                        ty: types::INT32
+                                    }
+                                    .boxed(),
+                                    operator: "*".to_string()
+                                })
+                                .boxed()
+                            ),
+                            cond: Pattern::ConstNumber("1".to_string()),
+                        },
+                        MatchArm {
+                            block: Vec::new(),
+                            ret: Some(
+                                ast::Expr::NumericLiteral {
+                                    value: "2".to_string(),
+                                    ty: types::INT32
+                                }
+                                .boxed()
+                            ),
+                            cond: Pattern::ConstNumber("2".to_string()),
+                            loc: (9, 7)
+                        },
+                        MatchArm {
+                            loc: (10, 7),
+                            block: Vec::new(),
+                            ret: Some(
+                                ast::Expr::BinaryOpCall(BinaryOpCall {
+                                    loc: (10, 13),
+                                    lhs: ast::Expr::ValueRead("a".to_string(), (10, 12)).boxed(),
+                                    rhs: ast::Expr::NumericLiteral {
+                                        value: "2".to_string(),
+                                        ty: types::INT32
+                                    }
+                                    .boxed(),
+                                    operator: "/".to_string()
+                                })
+                                .boxed()
+                            ),
+                            cond: Pattern::Read("a".to_string()),
+                        },
+                    ]
+                })),
+                generictypes: Vec::new(),
+            }),
+            parser.declaration().unwrap(),
+            "match_expr_with_block"
+        );
+        assert_eq!(
+            ast::Declaration::Value(ValueDeclaration {
+                loc: (12, 5),
+                is_op: false,
+                ident: "match_statement".to_string(),
+                args: vec![ArgDeclation {
+                    loc: (12, 21),
+                    ident: "x".to_string()
+                },],
+                ty: Some(ResolvedType::Function {
+                    arg: types::INT32.boxed(),
+                    returns: types::UNIT.boxed()
+                }),
+                value: ValueType::Function(vec![ast::Statement::Match(Match {
+                    loc: (13, 5),
+                    on: ast::Expr::ValueRead("x".to_string(), (13, 11)).boxed(),
+                    arms: vec![
+                        MatchArm {
+                            block: vec![ast::Statement::FnCall(FnCall {
+                                loc: (15, 9),
+                                value: ast::Expr::ValueRead("foo".to_string(), (15, 9)).boxed(),
+                                arg: Some(
+                                    ast::Expr::NumericLiteral {
+                                        value: "0".to_string(),
+                                        ty: types::INT32
+                                    }
+                                    .boxed()
+                                )
+                            })],
+                            ret: None,
+                            cond: Pattern::ConstNumber("1".to_string()),
+                            loc: (14, 7),
+                        },
+                        MatchArm {
+                            block: vec![ast::Statement::FnCall(FnCall {
+                                loc: (17, 9),
+                                value: ast::Expr::ValueRead("bar".to_string(), (17, 9)).boxed(),
+                                arg: Some(
+                                    ast::Expr::NumericLiteral {
+                                        value: "1".to_string(),
+                                        ty: types::INT32
+                                    }
+                                    .boxed()
+                                )
+                            })],
+                            ret: None,
+                            cond: Pattern::ConstNumber("2".to_string()),
+                            loc: (16, 7),
+                        },
+                        MatchArm {
+                            block: Vec::new(),
+                            ret: Some(
+                                ast::Expr::FnCall(FnCall {
+                                    loc: (18, 12),
+                                    value: ast::Expr::ValueRead("baz".to_string(), (18, 12))
+                                        .boxed(),
+                                    arg: Some(
+                                        ast::Expr::NumericLiteral {
+                                            value: "2".to_string(),
+                                            ty: types::INT32
+                                        }
+                                        .boxed()
+                                    )
+                                })
+                                .boxed()
+                            ),
+                            cond: Pattern::ConstNumber("3".to_string()),
+                            loc: (18, 7),
+                        },
+                    ]
+                })]),
+                generictypes: Vec::new()
+            }),
+            parser.declaration().unwrap(),
+            "match_statement",
+        );
     }
 }

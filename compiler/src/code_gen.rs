@@ -15,7 +15,7 @@ use inkwell::targets::TargetData;
 use inkwell::types::{AnyTypeEnum, BasicType};
 use inkwell::values::{
     AnyValue, AnyValueEnum, BasicValue, BasicValueEnum, CallableValue, FunctionValue, GlobalValue,
-    PointerValue,
+    PointerValue, IntValue,
 };
 use inkwell::{AddressSpace, IntPredicate};
 
@@ -26,7 +26,7 @@ use multimap::MultiMap;
 use crate::typed_ast::{
     collect_args, ResolvedTypeDeclaration, StructDefinition, TypedBinaryOpCall, TypedDeclaration,
     TypedExpr, TypedFnCall, TypedIfBranching, TypedIfExpr, TypedMemberRead, TypedStatement,
-    TypedValueDeclaration, TypedValueType,
+    TypedValueDeclaration, TypedValueType, TypedMatch, TypedMatchArm, TypedPattern,
 };
 use crate::types::{self, ResolvedType, TypeResolver};
 use crate::util::ExtraUtilFunctions;
@@ -111,7 +111,7 @@ impl<'ctx> CodeGen<'ctx> {
         #[cfg(debug_assertions)]
         let _ = self.module.print_to_file("./debug.llvm");
         let v = self.incomplete_functions.get(&decl.ident).unwrap().clone();
-        
+
         if let Some(dibuilder) = &self.dibuilder {
             let Some(difile) = self.difile.as_ref() else { unreachable!() };
             let fnty = {
@@ -188,13 +188,13 @@ impl<'ctx> CodeGen<'ctx> {
         } else {
             Some(
                 self.builder
-                    .build_alloca(self.type_resolver.resolve_type_as_basic(rt.clone()), ""),
+                    .build_alloca(self.type_resolver.resolve_type_as_basic(rt.clone()), "ret"),
             )
         };
         self.ret_target = ret_value;
         let arg_ts = collect_args(&decl.ty);
-        let arg_c = arg_ts.len(); 
-        let curried_args = arg_ts 
+        let arg_c = arg_ts.len();
+        let curried_args = arg_ts
             .into_iter()
             .take(arg_c - 1)
             .map(|it| self.type_resolver.resolve_arg_type(&it))
@@ -297,7 +297,7 @@ impl<'ctx> CodeGen<'ctx> {
             self.dilocals.insert(last_param_info.ident.clone(), local);
         }
 
-        let ret_block = self.ctx.append_basic_block(v, ""); //this is what will be used to return
+        let ret_block = self.ctx.append_basic_block(v, "ret"); //this is what will be used to return
         self.builder.position_at_end(ret_block);
         if rt.is_void_or_unit() || rt.is_user() {
             self.builder.build_return(None);
@@ -400,43 +400,46 @@ impl<'ctx> CodeGen<'ctx> {
                     }
                     (false, true) => {
                         //if then else if then
-                        let cond_blocks = std::iter::repeat_with(|| self.ctx.append_basic_block(fun, ""))
+                        let cond_blocks =
+                            std::iter::repeat_with(|| self.ctx.append_basic_block(fun, ""))
                                 .take(else_ifs.len())
                                 .collect_vec();
 
                         self.builder.build_conditional_branch(
-                            cond, 
-                            true_block, 
-                            *cond_blocks.first().unwrap()
+                            cond,
+                            true_block,
+                            *cond_blocks.first().unwrap(),
                         );
                         self.builder.position_at_end(true_block);
                         for stmnt in true_branch {
                             self.compile_statement(stmnt);
                         }
                         self.builder.position_at_end(true_block);
-                        
+
                         let else_ifs = else_ifs
                             .into_iter()
-                            .map(|(cond,stmnts)| {
+                            .map(|(cond, stmnts)| {
                                 let block = self.ctx.append_basic_block(fun, "");
                                 self.builder.position_at_end(block);
                                 for stmnt in stmnts {
                                     self.compile_statement(stmnt);
                                 }
                                 self.builder.build_unconditional_branch(end_block);
-                                (cond,block)
+                                (cond, block)
                             })
                             .zip(cond_blocks.iter().copied())
-                            .map(|((cond,block),cond_block)|{
+                            .map(|((cond, block), cond_block)| {
                                 let _ = block.move_after(cond_block);
-                                (cond,block,cond_block)
-                            }).collect_vec();
-                        let blocks = else_ifs.into_iter()
+                                (cond, block, cond_block)
+                            })
+                            .collect_vec();
+                        let blocks = else_ifs
+                            .into_iter()
                             .zip(cond_blocks.into_iter().skip(1).chain(once(end_block)))
-                            .map(|(it,false_block)|(it.0,it.1,it.2,false_block))
+                            .map(|(it, false_block)| (it.0, it.1, it.2, false_block))
                             .collect_vec();
                         let _ = end_block.move_after(blocks.last().map(|it| it.1).unwrap());
-                        for (cond,true_block,cond_block,false_block) in blocks {
+                        for (cond, true_block, cond_block, false_block) in blocks {
                             self.builder.position_at_end(cond_block);
                             let cond = match self.compile_expr(*cond) {
                                 AnyValueEnum::PointerValue(p) => {
@@ -445,19 +448,20 @@ impl<'ctx> CodeGen<'ctx> {
                                 AnyValueEnum::IntValue(i) => i,
                                 _ => unreachable!(),
                             };
-                            self.builder.build_conditional_branch(cond, true_block, false_block);
+                            self.builder
+                                .build_conditional_branch(cond, true_block, false_block);
                         }
                     }
                     (false, false) => {
-                        
-                        let cond_blocks = std::iter::repeat_with(|| self.ctx.append_basic_block(fun, ""))
+                        let cond_blocks =
+                            std::iter::repeat_with(|| self.ctx.append_basic_block(fun, ""))
                                 .take(else_ifs.len())
                                 .collect_vec();
 
                         self.builder.build_conditional_branch(
-                            cond, 
-                            true_block, 
-                            *cond_blocks.first().unwrap()
+                            cond,
+                            true_block,
+                            *cond_blocks.first().unwrap(),
                         );
                         self.builder.position_at_end(true_block);
                         for stmnt in true_branch {
@@ -467,26 +471,28 @@ impl<'ctx> CodeGen<'ctx> {
                         let else_block = self.ctx.append_basic_block(fun, "");
                         let else_ifs = else_ifs
                             .into_iter()
-                            .map(|(cond,stmnts)| {
+                            .map(|(cond, stmnts)| {
                                 let block = self.ctx.append_basic_block(fun, "");
                                 self.builder.position_at_end(block);
                                 for stmnt in stmnts {
                                     self.compile_statement(stmnt);
                                 }
                                 self.builder.build_unconditional_branch(end_block);
-                                (cond,block)
+                                (cond, block)
                             })
                             .zip(cond_blocks.iter().copied())
-                            .map(|((cond,block),cond_block)|{
+                            .map(|((cond, block), cond_block)| {
                                 let _ = block.move_after(cond_block);
-                                (cond,block,cond_block)
-                            }).collect_vec();
-                        let blocks = else_ifs.into_iter()
+                                (cond, block, cond_block)
+                            })
+                            .collect_vec();
+                        let blocks = else_ifs
+                            .into_iter()
                             .zip(cond_blocks.into_iter().skip(1).chain(once(else_block)))
-                            .map(|(it,false_block)|(it.0,it.1,it.2,false_block))
+                            .map(|(it, false_block)| (it.0, it.1, it.2, false_block))
                             .collect_vec();
                         let _ = else_block.move_after(blocks.last().map(|it| it.2).unwrap());
-                        for (cond,true_block,cond_block,false_block) in blocks {
+                        for (cond, true_block, cond_block, false_block) in blocks {
                             self.builder.position_at_end(cond_block);
                             let cond = match self.compile_expr(*cond) {
                                 AnyValueEnum::PointerValue(p) => {
@@ -495,7 +501,8 @@ impl<'ctx> CodeGen<'ctx> {
                                 AnyValueEnum::IntValue(i) => i,
                                 _ => unreachable!(),
                             };
-                            self.builder.build_conditional_branch(cond, true_block, false_block);
+                            self.builder
+                                .build_conditional_branch(cond, true_block, false_block);
                         }
                         self.builder.position_at_end(else_block);
                         for stmnt in else_branch {
@@ -609,7 +616,8 @@ impl<'ctx> CodeGen<'ctx> {
                     todo!("unsure here?")
                 }
             }
-
+            TypedStatement::Match(match_) => {self.compile_match(match_);},
+            TypedStatement::Discard(expr, _) => { self.compile_expr(expr); }
             _ => todo!(),
         }
     }
@@ -618,7 +626,7 @@ impl<'ctx> CodeGen<'ctx> {
         #[cfg(debug_assertions)]
         let _ = self.module.print_to_file("./debug.llvm");
         match expr {
-            TypedExpr::BoolLiteral(value, _loc) =>{
+            TypedExpr::BoolLiteral(value, _loc) => {
                 if value {
                     self.ctx.bool_type().const_int(1, false).as_any_value_enum()
                 } else {
@@ -770,7 +778,6 @@ impl<'ctx> CodeGen<'ctx> {
                 loc,
                 ..
             }) => {
-                
                 let lhs_t = lhs.get_ty();
                 let rhs_t = rhs.get_ty();
                 if lhs_t.is_user() || rhs_t.is_user() {
@@ -788,48 +795,66 @@ impl<'ctx> CodeGen<'ctx> {
                 }
                 match operator.as_str() {
                     "&&" => {
-                        
-
                         let result = self.builder.build_alloca(self.ctx.bool_type(), "");
                         let lhs = convert_to_basic_value(self.compile_expr(*lhs));
                         let lhs = self.value_or_load(lhs);
-                        let fun = self.builder.get_insert_block().unwrap().get_parent().unwrap();
+                        let fun = self
+                            .builder
+                            .get_insert_block()
+                            .unwrap()
+                            .get_parent()
+                            .unwrap();
                         let lhs_false = self.ctx.append_basic_block(fun, "");
                         let else_block = self.ctx.append_basic_block(fun, "");
                         let continue_block = self.ctx.append_basic_block(fun, "");
-                        self.builder.build_conditional_branch(lhs.into_int_value(), else_block,lhs_false);
+                        self.builder.build_conditional_branch(
+                            lhs.into_int_value(),
+                            else_block,
+                            lhs_false,
+                        );
                         self.builder.position_at_end(lhs_false);
-                        self.builder.build_store(result, self.ctx.bool_type().const_zero());
+                        self.builder
+                            .build_store(result, self.ctx.bool_type().const_zero());
                         self.builder.build_unconditional_branch(continue_block);
                         self.builder.position_at_end(else_block);
                         let rhs = convert_to_basic_value(self.compile_expr(*rhs));
                         let rhs = self.value_or_load(rhs);
-                        self.builder.build_store(result,rhs);
+                        self.builder.build_store(result, rhs);
                         self.builder.build_unconditional_branch(continue_block);
                         self.builder.position_at_end(continue_block);
-                        let result = self.builder.build_load(result,"");
+                        let result = self.builder.build_load(result, "");
                         result.as_any_value_enum()
-                    },
+                    }
 
                     "||" => {
                         let result = self.builder.build_alloca(self.ctx.bool_type(), "");
                         let lhs = convert_to_basic_value(self.compile_expr(*lhs));
                         let lhs = self.value_or_load(lhs);
-                        let fun = self.builder.get_insert_block().unwrap().get_parent().unwrap();
+                        let fun = self
+                            .builder
+                            .get_insert_block()
+                            .unwrap()
+                            .get_parent()
+                            .unwrap();
                         let lhs_true = self.ctx.append_basic_block(fun, "");
                         let else_block = self.ctx.append_basic_block(fun, "");
                         let continue_block = self.ctx.append_basic_block(fun, "");
-                        self.builder.build_conditional_branch(lhs.into_int_value(), lhs_true, else_block);
+                        self.builder.build_conditional_branch(
+                            lhs.into_int_value(),
+                            lhs_true,
+                            else_block,
+                        );
                         self.builder.position_at_end(lhs_true);
-                        self.builder.build_store(result, self.ctx.bool_type().const_int(1, false));
+                        self.builder
+                            .build_store(result, self.ctx.bool_type().const_int(1, false));
                         self.builder.build_unconditional_branch(continue_block);
                         self.builder.position_at_end(else_block);
                         let rhs = convert_to_basic_value(self.compile_expr(*rhs));
                         let rhs = self.value_or_load(rhs);
-                        self.builder.build_store(result,rhs);
+                        self.builder.build_store(result, rhs);
                         self.builder.build_unconditional_branch(continue_block);
                         self.builder.position_at_end(continue_block);
-                        let result = self.builder.build_load(result,"");
+                        let result = self.builder.build_load(result, "");
                         result.as_any_value_enum()
                     }
 
@@ -837,36 +862,64 @@ impl<'ctx> CodeGen<'ctx> {
                         let lhs = convert_to_basic_value(self.compile_expr(*lhs));
                         let lhs = self.value_or_load(lhs);
                         let rhs = convert_to_basic_value(self.compile_expr(*rhs));
-                        let rhs = self.value_or_load(rhs); 
+                        let rhs = self.value_or_load(rhs);
                         if lhs_t.is_user() || rhs_t.is_user() {
                             panic!("comparing user types is not supported");
                         }
                         let lhs = self.value_or_load(lhs);
                         let rhs = self.value_or_load(rhs);
                         if lhs_t == types::BOOL || lhs_t.is_int() {
-                            self.builder.build_int_compare(inkwell::IntPredicate::EQ, lhs.into_int_value(), rhs.into_int_value(), "").as_any_value_enum()
+                            self.builder
+                                .build_int_compare(
+                                    inkwell::IntPredicate::EQ,
+                                    lhs.into_int_value(),
+                                    rhs.into_int_value(),
+                                    "",
+                                )
+                                .as_any_value_enum()
                         } else {
                             //this should have warned.
-                            self.builder.build_float_compare(inkwell::FloatPredicate::OEQ, lhs.into_float_value(), rhs.into_float_value(), "").as_any_value_enum()
+                            self.builder
+                                .build_float_compare(
+                                    inkwell::FloatPredicate::OEQ,
+                                    lhs.into_float_value(),
+                                    rhs.into_float_value(),
+                                    "",
+                                )
+                                .as_any_value_enum()
                         }
-                    },
+                    }
                     "!=" => {
                         let lhs = convert_to_basic_value(self.compile_expr(*lhs));
                         let lhs = self.value_or_load(lhs);
                         let rhs = convert_to_basic_value(self.compile_expr(*rhs));
-                        let rhs = self.value_or_load(rhs); 
+                        let rhs = self.value_or_load(rhs);
                         if lhs_t.is_user() || rhs_t.is_user() {
                             panic!("comparing user types is not supported");
                         }
                         let lhs = self.value_or_load(lhs);
                         let rhs = self.value_or_load(rhs);
                         if lhs_t == types::BOOL || lhs_t.is_int() {
-                            self.builder.build_int_compare(inkwell::IntPredicate::NE, lhs.into_int_value(), rhs.into_int_value(), "").as_any_value_enum()
+                            self.builder
+                                .build_int_compare(
+                                    inkwell::IntPredicate::NE,
+                                    lhs.into_int_value(),
+                                    rhs.into_int_value(),
+                                    "",
+                                )
+                                .as_any_value_enum()
                         } else {
                             // this should have warned
-                            self.builder.build_float_compare(inkwell::FloatPredicate::UNE, lhs.into_float_value(), rhs.into_float_value(), "").as_any_value_enum()
+                            self.builder
+                                .build_float_compare(
+                                    inkwell::FloatPredicate::UNE,
+                                    lhs.into_float_value(),
+                                    rhs.into_float_value(),
+                                    "",
+                                )
+                                .as_any_value_enum()
                         }
-                    },
+                    }
                     "<=" => {
                         if lhs_t.is_user() || rhs_t.is_user() {
                             panic!("comparing user types is not supported");
@@ -874,26 +927,42 @@ impl<'ctx> CodeGen<'ctx> {
                         let lhs = convert_to_basic_value(self.compile_expr(*lhs));
                         let lhs = self.value_or_load(lhs);
                         let rhs = convert_to_basic_value(self.compile_expr(*rhs));
-                        let rhs = self.value_or_load(rhs); 
-                        
+                        let rhs = self.value_or_load(rhs);
+
                         if lhs_t.is_int() || rhs_t.is_int() {
-                            let lhs_s = if let ResolvedType::Int { signed, .. } = lhs_t { signed } else { false };
-                            let rhs_s = if let ResolvedType::Int { signed, .. } = rhs_t { signed } else { false };
-                            self.builder.build_int_compare(
-                                if lhs_s || rhs_s { IntPredicate::SLE } else { IntPredicate::ULE }, 
-                                lhs.into_int_value(),
-                                rhs.into_int_value(),
-                                ""
-                            ).as_any_value_enum()
+                            let lhs_s = if let ResolvedType::Int { signed, .. } = lhs_t {
+                                signed
+                            } else {
+                                false
+                            };
+                            let rhs_s = if let ResolvedType::Int { signed, .. } = rhs_t {
+                                signed
+                            } else {
+                                false
+                            };
+                            self.builder
+                                .build_int_compare(
+                                    if lhs_s || rhs_s {
+                                        IntPredicate::SLE
+                                    } else {
+                                        IntPredicate::ULE
+                                    },
+                                    lhs.into_int_value(),
+                                    rhs.into_int_value(),
+                                    "",
+                                )
+                                .as_any_value_enum()
                         } else {
-                            self.builder.build_float_compare(
-                                inkwell::FloatPredicate::OLE, 
-                                lhs.into_float_value(), 
-                                rhs.into_float_value(), 
-                                ""
-                            ).as_any_value_enum()
+                            self.builder
+                                .build_float_compare(
+                                    inkwell::FloatPredicate::OLE,
+                                    lhs.into_float_value(),
+                                    rhs.into_float_value(),
+                                    "",
+                                )
+                                .as_any_value_enum()
                         }
-                    },
+                    }
                     "<" => {
                         if lhs_t.is_user() || rhs_t.is_user() {
                             panic!("comparing user types is not supported");
@@ -901,26 +970,42 @@ impl<'ctx> CodeGen<'ctx> {
                         let lhs = convert_to_basic_value(self.compile_expr(*lhs));
                         let lhs = self.value_or_load(lhs);
                         let rhs = convert_to_basic_value(self.compile_expr(*rhs));
-                        let rhs = self.value_or_load(rhs); 
-                        
+                        let rhs = self.value_or_load(rhs);
+
                         if lhs_t.is_int() || rhs_t.is_int() {
-                            let lhs_s = if let ResolvedType::Int { signed, .. } = lhs_t { signed } else { false };
-                            let rhs_s = if let ResolvedType::Int { signed, .. } = rhs_t { signed } else { false };
-                            self.builder.build_int_compare(
-                                if lhs_s || rhs_s { IntPredicate::SLT } else { IntPredicate::ULE }, 
-                                lhs.into_int_value(),
-                                rhs.into_int_value(),
-                                ""
-                            ).as_any_value_enum()
+                            let lhs_s = if let ResolvedType::Int { signed, .. } = lhs_t {
+                                signed
+                            } else {
+                                false
+                            };
+                            let rhs_s = if let ResolvedType::Int { signed, .. } = rhs_t {
+                                signed
+                            } else {
+                                false
+                            };
+                            self.builder
+                                .build_int_compare(
+                                    if lhs_s || rhs_s {
+                                        IntPredicate::SLT
+                                    } else {
+                                        IntPredicate::ULE
+                                    },
+                                    lhs.into_int_value(),
+                                    rhs.into_int_value(),
+                                    "",
+                                )
+                                .as_any_value_enum()
                         } else {
-                            self.builder.build_float_compare(
-                                inkwell::FloatPredicate::OLT, 
-                                lhs.into_float_value(), 
-                                rhs.into_float_value(), 
-                                ""
-                            ).as_any_value_enum()
+                            self.builder
+                                .build_float_compare(
+                                    inkwell::FloatPredicate::OLT,
+                                    lhs.into_float_value(),
+                                    rhs.into_float_value(),
+                                    "",
+                                )
+                                .as_any_value_enum()
                         }
-                    },
+                    }
                     ">=" => {
                         if lhs_t.is_user() || rhs_t.is_user() {
                             panic!("comparing user types is not supported");
@@ -928,26 +1013,42 @@ impl<'ctx> CodeGen<'ctx> {
                         let lhs = convert_to_basic_value(self.compile_expr(*lhs));
                         let lhs = self.value_or_load(lhs);
                         let rhs = convert_to_basic_value(self.compile_expr(*rhs));
-                        let rhs = self.value_or_load(rhs); 
-                        
+                        let rhs = self.value_or_load(rhs);
+
                         if lhs_t.is_int() || rhs_t.is_int() {
-                            let lhs_s = if let ResolvedType::Int { signed, .. } = lhs_t { signed } else { false };
-                            let rhs_s = if let ResolvedType::Int { signed, .. } = rhs_t { signed } else { false };
-                            self.builder.build_int_compare(
-                                if lhs_s || rhs_s { IntPredicate::SGE } else { IntPredicate::ULE }, 
-                                lhs.into_int_value(),
-                                rhs.into_int_value(),
-                                ""
-                            ).as_any_value_enum()
+                            let lhs_s = if let ResolvedType::Int { signed, .. } = lhs_t {
+                                signed
+                            } else {
+                                false
+                            };
+                            let rhs_s = if let ResolvedType::Int { signed, .. } = rhs_t {
+                                signed
+                            } else {
+                                false
+                            };
+                            self.builder
+                                .build_int_compare(
+                                    if lhs_s || rhs_s {
+                                        IntPredicate::SGE
+                                    } else {
+                                        IntPredicate::ULE
+                                    },
+                                    lhs.into_int_value(),
+                                    rhs.into_int_value(),
+                                    "",
+                                )
+                                .as_any_value_enum()
                         } else {
-                            self.builder.build_float_compare(
-                                inkwell::FloatPredicate::OGE, 
-                                lhs.into_float_value(), 
-                                rhs.into_float_value(), 
-                                ""
-                            ).as_any_value_enum()
+                            self.builder
+                                .build_float_compare(
+                                    inkwell::FloatPredicate::OGE,
+                                    lhs.into_float_value(),
+                                    rhs.into_float_value(),
+                                    "",
+                                )
+                                .as_any_value_enum()
                         }
-                    },
+                    }
                     ">" => {
                         if lhs_t.is_user() || rhs_t.is_user() {
                             panic!("comparing user types is not supported");
@@ -955,36 +1056,53 @@ impl<'ctx> CodeGen<'ctx> {
                         let lhs = convert_to_basic_value(self.compile_expr(*lhs));
                         let lhs = self.value_or_load(lhs);
                         let rhs = convert_to_basic_value(self.compile_expr(*rhs));
-                        let rhs = self.value_or_load(rhs); 
-                        
+                        let rhs = self.value_or_load(rhs);
+
                         if lhs_t.is_int() || rhs_t.is_int() {
-                            let lhs_s = if let ResolvedType::Int { signed, .. } = lhs_t { signed } else { false };
-                            let rhs_s = if let ResolvedType::Int { signed, .. } = rhs_t { signed } else { false };
-                            self.builder.build_int_compare(
-                                if lhs_s || rhs_s { IntPredicate::SGT } else { IntPredicate::ULE }, 
-                                lhs.into_int_value(),
-                                rhs.into_int_value(),
-                                ""
-                            ).as_any_value_enum()
+                            let lhs_s = if let ResolvedType::Int { signed, .. } = lhs_t {
+                                signed
+                            } else {
+                                false
+                            };
+                            let rhs_s = if let ResolvedType::Int { signed, .. } = rhs_t {
+                                signed
+                            } else {
+                                false
+                            };
+                            self.builder
+                                .build_int_compare(
+                                    if lhs_s || rhs_s {
+                                        IntPredicate::SGT
+                                    } else {
+                                        IntPredicate::ULE
+                                    },
+                                    lhs.into_int_value(),
+                                    rhs.into_int_value(),
+                                    "",
+                                )
+                                .as_any_value_enum()
                         } else {
-                            self.builder.build_float_compare(
-                                inkwell::FloatPredicate::OGT, 
-                                lhs.into_float_value(), 
-                                rhs.into_float_value(), 
-                                ""
-                            ).as_any_value_enum()
+                            self.builder
+                                .build_float_compare(
+                                    inkwell::FloatPredicate::OGT,
+                                    lhs.into_float_value(),
+                                    rhs.into_float_value(),
+                                    "",
+                                )
+                                .as_any_value_enum()
                         }
-                    },
-                    "+" =>{
+                    }
+                    "+" => {
                         let lhs = convert_to_basic_value(self.compile_expr(*lhs));
                         let lhs = self.value_or_load(lhs);
                         let rhs = convert_to_basic_value(self.compile_expr(*rhs));
-                        let rhs = self.value_or_load(rhs); 
+                        let rhs = self.value_or_load(rhs);
                         match (lhs, rhs) {
-                            (BasicValueEnum::FloatValue(lhs), BasicValueEnum::FloatValue(rhs)) => self
-                                .builder
-                                .build_float_add(lhs, rhs, "")
-                                .as_any_value_enum(),
+                            (BasicValueEnum::FloatValue(lhs), BasicValueEnum::FloatValue(rhs)) => {
+                                self.builder
+                                    .build_float_add(lhs, rhs, "")
+                                    .as_any_value_enum()
+                            }
                             (BasicValueEnum::FloatValue(lhs), BasicValueEnum::IntValue(rhs)) => {
                                 let rhs =
                                     self.builder
@@ -1006,17 +1124,18 @@ impl<'ctx> CodeGen<'ctx> {
                             }
                             _ => unimplemented!("Operation is not currently supported."),
                         }
-                    },
-                    "-" =>{
+                    }
+                    "-" => {
                         let lhs = convert_to_basic_value(self.compile_expr(*lhs));
                         let lhs = self.value_or_load(lhs);
                         let rhs = convert_to_basic_value(self.compile_expr(*rhs));
-                        let rhs = self.value_or_load(rhs); 
+                        let rhs = self.value_or_load(rhs);
                         match (lhs, rhs) {
-                            (BasicValueEnum::FloatValue(lhs), BasicValueEnum::FloatValue(rhs)) => self
-                                .builder
-                                .build_float_sub(lhs, rhs, "")
-                                .as_any_value_enum(),
+                            (BasicValueEnum::FloatValue(lhs), BasicValueEnum::FloatValue(rhs)) => {
+                                self.builder
+                                    .build_float_sub(lhs, rhs, "")
+                                    .as_any_value_enum()
+                            }
                             (BasicValueEnum::FloatValue(lhs), BasicValueEnum::IntValue(rhs)) => {
                                 let rhs =
                                     self.builder
@@ -1038,17 +1157,18 @@ impl<'ctx> CodeGen<'ctx> {
                             }
                             _ => unimplemented!("Operation is not currently supported."),
                         }
-                    },
+                    }
                     "*" => {
                         let lhs = convert_to_basic_value(self.compile_expr(*lhs));
                         let lhs = self.value_or_load(lhs);
                         let rhs = convert_to_basic_value(self.compile_expr(*rhs));
-                        let rhs = self.value_or_load(rhs); 
+                        let rhs = self.value_or_load(rhs);
                         match (lhs, rhs) {
-                            (BasicValueEnum::FloatValue(lhs), BasicValueEnum::FloatValue(rhs)) => self
-                                .builder
-                                .build_float_mul(lhs, rhs, "")
-                                .as_any_value_enum(),
+                            (BasicValueEnum::FloatValue(lhs), BasicValueEnum::FloatValue(rhs)) => {
+                                self.builder
+                                    .build_float_mul(lhs, rhs, "")
+                                    .as_any_value_enum()
+                            }
                             (BasicValueEnum::FloatValue(lhs), BasicValueEnum::IntValue(rhs)) => {
                                 let rhs =
                                     self.builder
@@ -1070,17 +1190,18 @@ impl<'ctx> CodeGen<'ctx> {
                             }
                             _ => unimplemented!("Operation is not currently supported."),
                         }
-                    },
-                    "/" =>{
+                    }
+                    "/" => {
                         let lhs = convert_to_basic_value(self.compile_expr(*lhs));
                         let lhs = self.value_or_load(lhs);
                         let rhs = convert_to_basic_value(self.compile_expr(*rhs));
-                        let rhs = self.value_or_load(rhs); 
+                        let rhs = self.value_or_load(rhs);
                         match (lhs, rhs) {
-                            (BasicValueEnum::FloatValue(lhs), BasicValueEnum::FloatValue(rhs)) => self
-                                .builder
-                                .build_float_div(lhs, rhs, "")
-                                .as_any_value_enum(),
+                            (BasicValueEnum::FloatValue(lhs), BasicValueEnum::FloatValue(rhs)) => {
+                                self.builder
+                                    .build_float_div(lhs, rhs, "")
+                                    .as_any_value_enum()
+                            }
                             (BasicValueEnum::FloatValue(lhs), BasicValueEnum::IntValue(rhs)) => {
                                 let rhs =
                                     self.builder
@@ -1103,7 +1224,7 @@ impl<'ctx> CodeGen<'ctx> {
                                 .as_any_value_enum(),
                             _ => unimplemented!("Operation is not currently supported."),
                         }
-                    },
+                    }
                     _ => unreachable!(),
                 }
             }
@@ -1170,7 +1291,6 @@ impl<'ctx> CodeGen<'ctx> {
                                     );
                                     result.as_any_value_enum()
                                 } else {
-
                                     #[cfg(debug_assertions)]
                                     let _ = self.module.print_to_file("./debug.llvm");
                                     self.builder
@@ -1417,6 +1537,7 @@ impl<'ctx> CodeGen<'ctx> {
                     todo!("member functions")
                 }
             }
+            TypedExpr::Match(match_) => self.compile_match(match_),
             TypedExpr::ArrayLiteral { .. } => todo!(),
             TypedExpr::ListLiteral { .. } => todo!(),
             TypedExpr::TupleLiteral { .. } => todo!(),
@@ -1938,7 +2059,11 @@ impl<'ctx> CodeGen<'ctx> {
                     main,
                     &[
                         gs.as_basic_value_enum().into(),
-                        self.module.get_global("()").unwrap().as_pointer_value().into(),
+                        self.module
+                            .get_global("()")
+                            .unwrap()
+                            .as_pointer_value()
+                            .into(),
                     ],
                     "",
                 );
@@ -1949,15 +2074,105 @@ impl<'ctx> CodeGen<'ctx> {
         }
         self.module
     }
-    fn value_or_load(&mut self, value:BasicValueEnum<'ctx>) -> BasicValueEnum<'ctx> {
+    fn value_or_load(&mut self, value: BasicValueEnum<'ctx>) -> BasicValueEnum<'ctx> {
         if value.is_pointer_value() {
-            self.builder.build_load(value.into_pointer_value(),"")
+            self.builder.build_load(value.into_pointer_value(), "")
         } else {
             value
         }
     }
-}
 
+    fn compile_match(&mut self, match_: TypedMatch) -> AnyValueEnum<'ctx> {
+        let rt = match_.get_ty();
+        let TypedMatch { loc, on, mut arms } = match_;
+        let current_block = self.builder.get_insert_block().unwrap();
+        
+        if let Some(dibuilder) = &self.dibuilder {
+            let Some(scope) = &self.difunction else { unreachable!() };
+            let diloc = dibuilder.create_debug_location(self.ctx, loc.0 as _, loc.1 as _, scope.as_debug_info_scope(), None);
+            self.builder.set_current_debug_location(diloc);
+        }
+        let cond_ty = on.get_ty();
+        if !cond_ty.is_int() && cond_ty != types::CHAR {
+            unimplemented!("need to implement for strings and enums");
+        }
+        let on = self.compile_expr(*on).into_int_value(); //TODO handle if on is an enum.
+        let fun = current_block.get_parent().unwrap();
+        let ret_block = self.ctx.append_basic_block(fun, "");
+        let default_block = if let Some(arm) = arms.iter().position(|arm| matches!(arm.cond,TypedPattern::Default | TypedPattern::Read(_, _))) {
+            let arm = arms.remove(arm);
+            let (_,bb,ret) = self.compile_match_arm(arm, fun,&on.as_basic_value_enum(), &cond_ty, ret_block);
+            Some((bb,ret))
+        } else {
+            None
+        };
+        let arms = arms.into_iter()
+            .map(|arm| self.compile_match_arm(arm, fun,&on.as_basic_value_enum(), &cond_ty, ret_block))
+            .collect_vec();
+        if rt.is_void_or_unit() {
+            self.builder.position_at_end(current_block);
+            let arms = arms.into_iter().map(|(cond,bb,_)| (cond,bb)).collect_vec();
+            self.builder.build_switch(
+                on, 
+                default_block.map_or(ret_block, |(bb,_)| bb), 
+                &arms);
+            let _ = ret_block.move_after(*arms.last().map(|(_,bb)| bb).unwrap());
+            self.builder.position_at_end(ret_block);
+            self.module.get_global("()").unwrap().as_pointer_value().as_any_value_enum()
+        } else {
+            self.builder.position_at_end(ret_block);
+            let phi = self.builder.build_phi(self.type_resolver.resolve_type_as_basic(rt), "");
+            for (_,bb,ret) in &arms {
+                let Some(ret) = &ret else {unreachable!()};
+                let _ = ret_block.move_after(*bb);
+                phi.add_incoming(&[
+                    (ret,*bb)
+                ]);
+            }
+            let unreachable_bb = if let Some((bb,ret)) = default_block {
+                let Some(ret) = ret else {unreachable!()};
+                phi.add_incoming(&[
+                    (&ret,bb)
+                ]);
+                bb
+            } else { 
+                let bb = self.ctx.append_basic_block(fun, "");
+                self.builder.position_at_end(bb);
+                self.builder.build_unreachable();
+                bb
+            };
+            self.builder.position_at_end(current_block);
+            let arms = arms.into_iter().map(|(cond,bb,_)| (cond,bb)).collect_vec();
+            self.builder.build_switch(on, unreachable_bb, &arms);
+            self.builder.position_at_end(ret_block);
+            phi.as_any_value_enum()
+        }
+    }
+
+    fn compile_match_arm(&mut self, arm:TypedMatchArm, fun : FunctionValue<'ctx>, cond_v : &BasicValueEnum<'ctx>, cond_ty : &ResolvedType, ret_block:BasicBlock<'ctx>) -> (IntValue<'ctx>, BasicBlock<'ctx>, Option<BasicValueEnum<'ctx>>) {
+        let TypedMatchArm { loc, cond, block, ret } = arm;
+        let cond_ty = self.type_resolver.resolve_type_as_basic(cond_ty.clone()).into_int_type();
+        let cond = match cond {
+            TypedPattern::Const(_, ty) if ty == types::STR => todo!("string"),
+            TypedPattern::Const(value, _) => {
+                cond_ty.const_int(value.parse().unwrap(), false)
+            },
+            TypedPattern::Read(name, _) => {
+                self.known_values.insert(name, cond_v.clone());
+                cond_ty.const_zero()
+            },
+            TypedPattern::Default => cond_ty.const_zero(),
+        };
+        let bb = self.ctx.append_basic_block(fun, "");
+        self.builder.position_at_end(bb);
+        for stmnt in block {
+            self.compile_statement(stmnt);
+        }
+        let ret = ret.map(|ret| self.compile_expr(*ret)).map(convert_to_basic_value);
+        self.builder.build_unconditional_branch(ret_block);
+        (cond,bb,ret)
+    }
+}
 
 fn convert_to_basic_value<'ctx>(value: AnyValueEnum<'ctx>) -> BasicValueEnum<'ctx> {
     match value {

@@ -40,8 +40,9 @@ let show_short_curicuit _ : () -> () =
 
 let main _ : () -> () =
     let a : bool = true;
-    test_ifs a false;
-    test_ifs false true;
-    test_ifs false (eq_check 1.0 2.0);
+    match 0 where
+    | 1 -> print_str "one",
+    | 2 -> print_str "two",
+    print_str "main";
     show_short_curicuit ();
     return ();

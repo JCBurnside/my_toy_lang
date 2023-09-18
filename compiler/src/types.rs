@@ -4,6 +4,7 @@ use crate::{typed_ast, util::ExtraUtilFunctions};
 use inkwell::{
     context::Context,
     debug_info::{DIFile, DIFlags, DIFlagsConstants, DISubroutineType, DIType, DebugInfoBuilder},
+    targets::TargetData,
     types::{AnyType, AnyTypeEnum, BasicType, BasicTypeEnum, FunctionType},
     AddressSpace,
 };
@@ -75,7 +76,7 @@ impl FloatWidth {
     }
 }
 
-#[derive(Hash, PartialEq, Eq, Clone, Debug)]
+#[derive(Hash, Clone, Debug, PartialEq, Eq)]
 pub enum ResolvedType {
     Bool,
     Int {
@@ -123,6 +124,75 @@ pub enum ResolvedType {
     Error,
 }
 
+// impl PartialEq for ResolvedType {
+//     fn eq(&self, other: &Self) -> bool {
+//         if self.is_generic() || other.is_generic() {
+//             return true;
+//         }
+//         match (self, other) {
+//             (ResolvedType::Error, _) | (_, ResolvedType::Error) => true,
+//             (ResolvedType::Alias { actual }, other) => other == actual.as_ref(),
+//             (ResolvedType::Void, ResolvedType::Void)
+//             | (ResolvedType::Unit, ResolvedType::Unit)
+//             | (ResolvedType::Str, ResolvedType::Str)
+//             | (ResolvedType::Char, ResolvedType::Char)
+//             | (ResolvedType::Bool, ResolvedType::Bool) => true,
+//             (other, ResolvedType::Alias { actual }) => other == actual.as_ref(),
+//             (
+//                 ResolvedType::Int {
+//                     signed: lhs_signed,
+//                     width: lhs_wdith,
+//                 },
+//                 ResolvedType::Int {
+//                     signed: rhs_signed,
+//                     width: rhs_width,
+//                 },
+//             ) => lhs_signed == rhs_signed && lhs_wdith == rhs_width,
+//             (
+//                 ResolvedType::Float { width: lhs_width },
+//                 ResolvedType::Float { width: rhs_width },
+//             ) => lhs_width == rhs_width,
+//             (
+//                 ResolvedType::Array {
+//                     underlining: lhs_underlinging,
+//                     size: lhs_size,
+//                 },
+//                 ResolvedType::Array {
+//                     underlining: rhs_underlining,
+//                     size: rhs_size,
+//                 },
+//             ) => lhs_size == rhs_size && lhs_underlinging == rhs_underlining,
+//             (
+//                 ResolvedType::Pointer {
+//                     underlining: lhs_underling,
+//                 },
+//                 ResolvedType::Pointer {
+//                     underlining: rhs_underling,
+//                 },
+//             )
+//             | (
+//                 ResolvedType::Ref {
+//                     underlining: lhs_underling,
+//                 },
+//                 ResolvedType::Ref {
+//                     underlining: rhs_underling,
+//                 },
+//             ) => lhs_underling.as_ref() == rhs_underling.as_ref(),
+//             (
+//                 ResolvedType::Function {
+//                     arg: lhs_arg,
+//                     returns: lhs_ret,
+//                 },
+//                 ResolvedType::Function {
+//                     arg: rhs_arg,
+//                     returns: rhs_ret,
+//                 },
+//             ) => lhs_arg.as_ref() == rhs_ret.as_ref() && lhs_ret.as_ref() == rhs_ret.as_ref(),
+//             _ => false,
+//         }
+//     }
+// }
+// impl Eq for ResolvedType {}
 impl ResolvedType {
     pub fn is_void_or_unit(&self) -> bool {
         match self {
@@ -309,6 +379,13 @@ impl ResolvedType {
             returns.remove_args(arg - 1)
         }
     }
+
+    pub(crate) fn is_error(&self) -> bool {
+        match self {
+            Self::Error => true,
+            _ => false,
+        }
+    }
 }
 
 impl ToString for ResolvedType {
@@ -415,15 +492,15 @@ mod consts {
 pub use consts::*;
 use itertools::Itertools;
 
-#[derive(Clone)]
 pub struct TypeResolver<'ctx> {
     known: HashMap<ResolvedType, AnyTypeEnum<'ctx>>,
     ctx: &'ctx Context,
     ditypes: HashMap<ResolvedType, DIType<'ctx>>,
+    target_data: TargetData,
 }
 
 impl<'ctx> TypeResolver<'ctx> {
-    pub fn new(ctx: &'ctx Context) -> Self {
+    pub fn new(ctx: &'ctx Context, target_data: TargetData) -> Self {
         let unit = ctx.const_struct(&[], false);
         let unit_t = unit.get_type();
         let char_t = ctx.i8_type();
@@ -468,7 +545,13 @@ impl<'ctx> TypeResolver<'ctx> {
             known,
             ctx,
             ditypes: HashMap::new(),
+            target_data,
         }
+    }
+
+    pub fn get_size_in_bits(&mut self, ty: &ResolvedType) -> u64 {
+        let ty = self.resolve_type_as_any(ty.clone());
+        self.target_data.get_store_size(&ty)
     }
 
     pub fn has_type(&self, ty: &ResolvedType) -> bool {
@@ -601,7 +684,9 @@ impl<'ctx> TypeResolver<'ctx> {
                 .ptr_type(AddressSpace::default())
                 .as_basic_type_enum()
         } else if ty == &ResolvedType::Unit {
-            self.resolve_type_as_basic(ResolvedType::Pointer { underlining:UNIT.boxed() })
+            self.resolve_type_as_basic(ResolvedType::Pointer {
+                underlining: UNIT.boxed(),
+            })
         } else {
             self.resolve_type_as_basic(ty.clone())
         }
@@ -677,5 +762,25 @@ impl ResolvedType {
 
     pub fn is_int(&self) -> bool {
         matches!(self, Self::Int { .. })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::util::ExtraUtilFunctions;
+
+    #[test]
+    #[ignore = "for testing equality"]
+    fn eq() {
+        println!(
+            "{}",
+            super::ResolvedType::Function {
+                arg: super::INT32.boxed(),
+                returns: super::INT32.boxed()
+            } == super::ResolvedType::Function {
+                arg: super::INT32.boxed(),
+                returns: super::INT32.boxed()
+            }
+        )
     }
 }
