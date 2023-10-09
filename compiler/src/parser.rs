@@ -135,6 +135,10 @@ where
 
     pub fn next_expr(&mut self) -> Result<(crate::ast::Expr, crate::Location), ParseError> {
         match self.stream.clone().next() {
+            Some((Token::BracketOpen, _)) => {
+                let arr = self.array_literal()?;
+                Ok((arr.0, arr.1))
+            }
             Some((Token::If, loc)) => Ok((ast::Expr::If(self.ifexpr()?.0), loc)),
             Some((Token::GroupOpen, loc))
                 if matches!(self.stream.clone().nth(1), Some((Token::GroupClose, _))) =>
@@ -779,91 +783,160 @@ where
 
     pub(crate) fn collect_type(&mut self) -> Result<ResolvedType, ParseError> {
         let ty = self.stream.next();
-        if let Some((Token::Ident(ty), loc)) = ty {
-            let mut generic_args = Vec::new();
-            if self.stream.peek().map(|(a, _)| a) == Some(&Token::Op("<".to_string())) {
-                self.stream.next();
-                while {
-                    let ty = self.collect_type()?;
-                    generic_args.push(ty);
-                    #[cfg(debug_assertions)]
-                    let _peek = self.stream.peek();
-                    if self.stream.peek().map(|(a, _)| a) == Some(&Token::Comma) {
-                        let _ = self.stream.next();
-                        true
-                    } else {
-                        false
-                    }
-                } {}
-                if !generic_args.is_empty() {
-                    let mut should_pop = false;
-                    if let Some((Token::Op(s), _)) = self.stream.peek_mut() {
-                        if s.chars().all_equal_value() == Ok('>') {
-                            s.pop();
-                            if s.len() == 0 {
-                                should_pop = true;
-                            }
+        match ty {
+            Some((Token::Ident(ty), loc)) => {
+                let mut generic_args = Vec::new();
+                if self.stream.peek().map(|(a, _)| a) == Some(&Token::Op("<".to_string())) {
+                    self.stream.next();
+                    while {
+                        let ty = self.collect_type()?;
+                        generic_args.push(ty);
+                        #[cfg(debug_assertions)]
+                        let _peek = self.stream.peek();
+                        if self.stream.peek().map(|(a, _)| a) == Some(&Token::Comma) {
+                            let _ = self.stream.next();
+                            true
                         } else {
-                            return Err(ParseError {
-                                span: loc,
-                                reason: ParseErrorReason::UnbalancedBraces,
-                            });
+                            false
+                        }
+                    } {}
+                    if !generic_args.is_empty() {
+                        let mut should_pop = false;
+                        if let Some((Token::Op(s), _)) = self.stream.peek_mut() {
+                            if s.chars().all_equal_value() == Ok('>') {
+                                s.pop();
+                                if s.len() == 0 {
+                                    should_pop = true;
+                                }
+                            } else {
+                                return Err(ParseError {
+                                    span: loc,
+                                    reason: ParseErrorReason::UnbalancedBraces,
+                                });
+                            }
+                        }
+                        if should_pop {
+                            let _ = self.stream.next();
                         }
                     }
-                    if should_pop {
-                        let _ = self.stream.next();
-                    }
                 }
-            }
-            if let Some((Token::Arrow, _)) = self.stream.peek() {
-                self.stream.next();
-                let result = self.collect_type()?;
-
-                let ty = type_from_string(&ty, generic_args);
-                Ok(ResolvedType::Function {
-                    arg: ty.boxed(),
-                    returns: result.boxed(),
-                })
-            } else {
-                let ty = type_from_string(&ty, generic_args);
-                Ok(ty)
-            }
-        } else if let Some((Token::GroupOpen, span)) = ty {
-            if let Some((Token::GroupClose, _)) = self.stream.peek() {
-                self.stream.next();
-                return if let Some((Token::Arrow, _)) = self.stream.peek() {
-                    self.stream.next();
-                    Ok(ResolvedType::Function {
-                        arg: types::UNIT.boxed(),
-                        returns: self.collect_type()?.boxed(),
-                    })
-                } else {
-                    Ok(types::UNIT)
-                };
-            }
-            let ty = self.collect_type()?;
-            if let Some((Token::GroupClose, _)) = self.stream.next() {
                 if let Some((Token::Arrow, _)) = self.stream.peek() {
                     self.stream.next();
                     let result = self.collect_type()?;
+
+                    let ty = type_from_string(&ty, generic_args);
                     Ok(ResolvedType::Function {
                         arg: ty.boxed(),
                         returns: result.boxed(),
                     })
                 } else {
+                    let ty = type_from_string(&ty, generic_args);
                     Ok(ty)
                 }
-            } else {
-                Err(ParseError {
-                    span: span,
-                    reason: ParseErrorReason::TypeError,
-                })
             }
-        } else {
-            Err(ParseError {
+            Some((Token::GroupOpen, span)) => {
+                if let Some((Token::GroupClose, _)) = self.stream.peek() {
+                    self.stream.next();
+                    return if let Some((Token::Arrow, _)) = self.stream.peek() {
+                        self.stream.next();
+                        Ok(ResolvedType::Function {
+                            arg: types::UNIT.boxed(),
+                            returns: self.collect_type()?.boxed(),
+                        })
+                    } else {
+                        Ok(types::UNIT)
+                    };
+                }
+                let ty = self.collect_type()?;
+                if let Some((Token::GroupClose, _)) = self.stream.next() {
+                    if let Some((Token::Arrow, _)) = self.stream.peek() {
+                        self.stream.next();
+                        let result = self.collect_type()?;
+                        Ok(ResolvedType::Function {
+                            arg: ty.boxed(),
+                            returns: result.boxed(),
+                        })
+                    } else {
+                        Ok(ty)
+                    }
+                } else {
+                    Err(ParseError {
+                        span: span,
+                        reason: ParseErrorReason::TypeError,
+                    })
+                }
+            }
+            Some((Token::BracketOpen, loc)) => {
+                let ty = self.collect_type()?;
+                match self.stream.clone().next() {
+                    Some((Token::Seq, _)) => {
+                        let _ = self.stream.next();
+                        match self.stream.clone().next() {
+                            Some((Token::Integer(false, _), _)) => {
+                                let Some((Token::Integer(_, value),_)) = self.stream.next() else { unreachable!() };
+                                match self.stream.peek() {
+                                    Some((Token::BracketClose, _)) => {
+                                        let _ = self.stream.next();
+                                        Ok(ResolvedType::Array {
+                                            underlining: ty.boxed(),
+                                            size: value.parse().unwrap(),
+                                        })
+                                    }
+                                    Some((t, loc)) => {
+                                        println!(
+                                            "unexpected token:{t:?} at line:{}, col:{}",
+                                            loc.0, loc.1
+                                        );
+                                        Err(ParseError {
+                                            span: *loc,
+                                            reason: ParseErrorReason::UnbalancedBraces,
+                                        })
+                                    }
+                                    None => {
+                                        unreachable!("how did this happen.  this is an ice please report it.");
+                                    }
+                                }
+                            }
+                            Some((t, loc)) => {
+                                println!("unexpected token:{t:?} at line:{}, col:{}", loc.0, loc.1);
+                                Err(ParseError {
+                                    span: loc,
+                                    reason: ParseErrorReason::UnbalancedBraces,
+                                })
+                            }
+                            None => {
+                                unreachable!(
+                                    "how did this happen.  this is an ice please report it."
+                                );
+                            }
+                        }
+                    }
+                    Some((Token::BracketClose, _)) => {
+                        let _ = self.stream.next();
+                        Ok(ResolvedType::Slice {
+                            underlining: ty.boxed(),
+                        })
+                    }
+                    Some((t, loc)) => {
+                        println!("unexpected token:{t:?} at line:{}, col:{}", loc.0, loc.1);
+                        Err(ParseError {
+                            span: loc,
+                            reason: ParseErrorReason::UnbalancedBraces,
+                        })
+                    }
+                    None => {
+                        unreachable!("how did this happen.  this is an ICE please report it.");
+                    }
+                }
+            }
+            Some((_, span)) => Err(ParseError {
+                span,
+                reason: ParseErrorReason::TypeError,
+            }),
+            None => Err(ParseError {
                 span: (0, 0),
                 reason: ParseErrorReason::TypeError,
-            })
+            }),
         }
     }
 
@@ -1684,6 +1757,61 @@ where
             match_loc,
         ))
     }
+
+    fn array_literal(&mut self) -> Result<(ast::Expr, crate::Location), ParseError> {
+        let Some((Token::BracketOpen,loc)) = self.stream.next() else {unreachable!()};
+        let mut values = Vec::new();
+        let expect_block = if let Some((Token::BeginBlock, _)) = self.stream.peek() {
+            let _ = self.stream.next();
+            true
+        } else {
+            false
+        };
+        loop {
+            let expr = match self.next_expr() {
+                Ok(it) => it.0,
+                Err(e) => {
+                    println!("{e:?}");
+                    ast::Expr::Error
+                }
+            };
+            values.push(expr);
+            match self.stream.clone().next() {
+                Some((Token::Comma, _)) => {
+                    let _ = self.stream.next();
+                    continue;
+                }
+                Some(_) => break,
+                None => {
+                    unreachable!("somehow not even got EoF");
+                }
+            }
+        }
+
+        if expect_block {
+            if let Some((Token::EndBlock, _)) = self.stream.peek() {
+                let _ = self.stream.next();
+            } else {
+                println!("did you mean to have the closing ] on the same level as the opening?")
+            }
+        }
+
+        if let Some((Token::BracketClose, _)) = self.stream.peek() {
+            let _ = self.stream.next();
+            Ok((
+                ast::Expr::ArrayLiteral {
+                    contents: values,
+                    loc,
+                },
+                loc,
+            ))
+        } else {
+            Err(ParseError {
+                span: loc,
+                reason: ParseErrorReason::UnbalancedBraces,
+            })
+        }
+    }
 }
 
 fn make_literal(token: Token, span: (usize, usize)) -> Result<crate::ast::Expr, ParseError> {
@@ -1792,6 +1920,102 @@ mod tests {
         ast::{ArgDeclation, IfBranching, IfExpr, MatchArm, StructDefinition},
         types::ResolvedType,
     };
+
+    #[test]
+    fn types() {
+        assert_eq!(
+            Parser::from_source("int64").collect_type().unwrap(),
+            types::INT64
+        );
+        assert_eq!(
+            Parser::from_source("int32").collect_type().unwrap(),
+            types::INT32
+        );
+        assert_eq!(
+            Parser::from_source("int16").collect_type().unwrap(),
+            types::INT16
+        );
+        assert_eq!(
+            Parser::from_source("int8").collect_type().unwrap(),
+            types::INT8
+        );
+        assert_eq!(
+            Parser::from_source("str").collect_type().unwrap(),
+            types::STR
+        );
+        assert_eq!(
+            Parser::from_source("char").collect_type().unwrap(),
+            types::CHAR
+        );
+        assert_eq!(
+            Parser::from_source("float64").collect_type().unwrap(),
+            types::FLOAT64
+        );
+        assert_eq!(
+            Parser::from_source("float32").collect_type().unwrap(),
+            types::FLOAT32
+        );
+        assert_eq!(
+            Parser::from_source("()").collect_type().unwrap(),
+            types::UNIT
+        );
+
+        assert_eq!(
+            Parser::from_source("[int32;5]").collect_type().unwrap(),
+            ResolvedType::Array {
+                underlining: types::INT32.boxed(),
+                size: 5
+            }
+        );
+
+        //fuctions
+        assert_eq!(
+            Parser::from_source("int32->int32").collect_type().unwrap(),
+            ResolvedType::Function {
+                arg: types::INT32.boxed(),
+                returns: types::INT32.boxed()
+            }
+        );
+        assert_eq!(
+            Parser::from_source("int32->int32->int32")
+                .collect_type()
+                .unwrap(),
+            ResolvedType::Function {
+                arg: types::INT32.boxed(),
+                returns: ResolvedType::Function {
+                    arg: types::INT32.boxed(),
+                    returns: types::INT32.boxed()
+                }
+                .boxed()
+            }
+        );
+        assert_eq!(
+            Parser::from_source("int32->(int32->int32)")
+                .collect_type()
+                .unwrap(),
+            ResolvedType::Function {
+                arg: types::INT32.boxed(),
+                returns: ResolvedType::Function {
+                    arg: types::INT32.boxed(),
+                    returns: types::INT32.boxed()
+                }
+                .boxed()
+            }
+        );
+        assert_eq!(
+            Parser::from_source("(int32->int32)->int32")
+                .collect_type()
+                .unwrap(),
+            ResolvedType::Function {
+                arg: ResolvedType::Function {
+                    arg: types::INT32.boxed(),
+                    returns: types::INT32.boxed()
+                }
+                .boxed(),
+                returns: types::INT32.boxed(),
+            }
+        );
+    }
 
     use super::*;
     #[test]
@@ -3033,6 +3257,62 @@ for<T,U> type Tuple = {
             }),
             parser.declaration().unwrap(),
             "match_statement",
+        );
+    }
+
+    #[test]
+    fn arrays() {
+        let mut parser = Parser::from_source(
+            "
+let make_arr _ : () -> [int32;5] = [5,4,3,2,1]
+",
+        );
+        assert_eq!(
+            ast::Declaration::Value(ValueDeclaration {
+                loc: (1, 5),
+                is_op: false,
+                ident: "make_arr".to_string(),
+                args: vec![ast::ArgDeclation {
+                    loc: (1, 14),
+                    ident: "_".to_string()
+                }],
+                ty: Some(ResolvedType::Function {
+                    arg: types::UNIT.boxed(),
+                    returns: ResolvedType::Array {
+                        underlining: types::INT32.boxed(),
+                        size: 5
+                    }
+                    .boxed()
+                }),
+                value: ValueType::Expr(ast::Expr::ArrayLiteral {
+                    contents: vec![
+                        ast::Expr::NumericLiteral {
+                            value: "5".to_string(),
+                            ty: types::INT32
+                        },
+                        ast::Expr::NumericLiteral {
+                            value: "4".to_string(),
+                            ty: types::INT32
+                        },
+                        ast::Expr::NumericLiteral {
+                            value: "3".to_string(),
+                            ty: types::INT32
+                        },
+                        ast::Expr::NumericLiteral {
+                            value: "2".to_string(),
+                            ty: types::INT32
+                        },
+                        ast::Expr::NumericLiteral {
+                            value: "1".to_string(),
+                            ty: types::INT32
+                        },
+                    ],
+                    loc: (1, 36)
+                }),
+                generictypes: Vec::new(),
+            }),
+            parser.declaration().unwrap(),
+            "make array"
         );
     }
 }

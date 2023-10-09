@@ -349,9 +349,6 @@ pub enum Expr {
     /// basically an ident on it's own
     ValueRead(String, crate::Location),
 
-    /// NOT IMPLEMENTED YET
-    /// defined like [ expr, expr, expr, ... ]
-    /// type [T;N]
     ArrayLiteral {
         contents: Vec<Expr>,
         loc: crate::Location,

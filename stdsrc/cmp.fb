@@ -1,0 +1,42 @@
+public enum Ordering = | Less | Equal | Greater
+public let == (lhs:Ordering) (rhs:Ordering) = 
+    match (lhs,rhs) where
+    | (Ordering::Less,Ordering::Less)
+    | (Ordering::Equal,Ordering::Equal)
+    | (Ordering::Greater,Ordering::Greater) -> true,
+    | _ -> false,
+
+for<U=Self> public concept Eq =
+    let == : Self -> U -> bool;
+    let != self (rhs:U) = !(self==rhs);
+
+for<U=Self> public concept Ord where Self : Eq<U> =
+    let <  : Self -> U -> bool;
+    let <= : Self -> U -> bool;
+    let >  : Self -> U -> bool;
+    let >= : Self -> U -> bool;
+
+
+for<U = Self> public concept SimpleOrd =
+    let <=> : &Self -> &U -> Ordering;
+
+for<T,U> let < (lhs:T) (rhs:U) where T:SimpleOrd<U> = 
+    match lhs <=> rhs where
+    | Ordering::Less -> true,
+    | _ -> false,
+for<T,U> let <= (lhs:T) (rhs:U) where T:SimpleOrd<U> = 
+    match lhs <=> rhs where
+    | Ordering::Less | Ordering::Equal -> true,
+    | _ -> false, 
+for<T,U> let > (lhs:T) (rhs:U) where T:SimpleOrd<U> =     
+    match lhs <=> rhs where
+    | Ordering::Greater -> true,
+    | _ -> false,
+for<T,U> let >= (lhs:T) (rhs:U) where T:SimpleOrd<U> = 
+    match lhs <=> rhs where
+    | Ordering::Greater | Ordering::Equal -> true,
+    | _ -> false,
+for<T,U> let == (lhs:T) (rhs:U) where T:SimpleOrd<U> = (lhs <=> rhs) == Ordering::Equal;
+
+for<T:Ord> let max (a:T) (b:T) = if a > b then a else b;
+

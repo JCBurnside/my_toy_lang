@@ -997,9 +997,6 @@ pub enum TypedExpr {
     /// basically an ident on it's own
     /// (ident,type)
     ValueRead(String, ResolvedType, crate::Location),
-    /// NOT IMPLEMENTED YET
-    /// defined like [ expr, expr, expr, ... ]
-    /// type [T;N]
     ArrayLiteral {
         contents: Vec<TypedExpr>,
     },
@@ -2307,7 +2304,12 @@ impl TypedMatchArm {
         }
     }
 
-    fn as_statement(arm: ast::MatchArm, known_values: &HashMap<String, ResolvedType>, known_types: &HashMap<String, ast::TypeDefinition>, expected_comp: &ResolvedType) -> TypedMatchArm {
+    fn as_statement(
+        arm: ast::MatchArm,
+        known_values: &HashMap<String, ResolvedType>,
+        known_types: &HashMap<String, ast::TypeDefinition>,
+        expected_comp: &ResolvedType,
+    ) -> TypedMatchArm {
         let ast::MatchArm {
             block,
             ret,
@@ -2352,7 +2354,7 @@ impl TypedMatchArm {
             loc,
             cond,
             block: new_block,
-            ret:None,
+            ret: None,
         }
     }
 }
@@ -3601,8 +3603,8 @@ let as_statement a b : int32 -> int32 -> () =
                                             "1".to_string(),
                                             types::INT32
                                         ),
-                                        block: vec![
-                                            TypedStatement::Discard(TypedExpr::FnCall(TypedFnCall {
+                                        block: vec![TypedStatement::Discard(
+                                            TypedExpr::FnCall(TypedFnCall {
                                                 loc: (16, 16),
                                                 value: TypedExpr::ValueRead(
                                                     "foo".to_string(),
@@ -3622,8 +3624,9 @@ let as_statement a b : int32 -> int32 -> () =
                                                 ),
                                                 rt: types::INT32,
                                                 arg_t: types::INT32,
-                                            }),(16,16))
-                                        ],
+                                            }),
+                                            (16, 16)
+                                        )],
                                         ret: None
                                     },
                                     TypedMatchArm {
@@ -3693,5 +3696,59 @@ let as_statement a b : int32 -> int32 -> () =
             statement,
             "in a statement and nested in itself"
         )
+    }
+    #[test]
+    fn arrays() {
+        let module = Parser::from_source(
+            "
+let simple _ : () -> [int32;5] = [5,4,3,2,1]
+
+let should_fail _ : () -> [int32;5] = [1,2,3,4]
+
+let not_so_simple a : int32 -> [int32;4] =
+    return [
+        a,
+        bar,
+        if a == 0 then 3 else 4,
+        foo a
+    ];
+",
+        )
+        .module("foo".to_string());
+        let module = TypedModuleDeclaration::from(module, &PREDEFINED_VALUES);
+
+        let [simple, should_error, not_so_simple] = &module.declarations[..] else { unreachable!("not three declarations?")};
+
+        assert_eq!(
+            &TypedDeclaration::Value(TypedValueDeclaration {
+                loc: (1,5),
+                is_op: false,
+                ident: "simple".to_string(),
+                args: vec![
+                    ArgDeclation {
+                        ident: "_".to_string(),
+                        loc: (1, 12)
+                    }
+                ],
+                value: TypedValueType::Expr(TypedExpr::ArrayLiteral {
+                    contents:vec![
+                        TypedExpr::IntegerLiteral { value: "5".to_string(), size: types::IntWidth::ThirtyTwo },
+                        TypedExpr::IntegerLiteral { value: "4".to_string(), size: types::IntWidth::ThirtyTwo },
+                        TypedExpr::IntegerLiteral { value: "3".to_string(), size: types::IntWidth::ThirtyTwo },
+                        TypedExpr::IntegerLiteral { value: "2".to_string(), size: types::IntWidth::ThirtyTwo },
+                        TypedExpr::IntegerLiteral { value: "1".to_string(), size: types::IntWidth::ThirtyTwo },
+                    ]
+                }),
+                ty: ResolvedType::Function { 
+                    arg: types::UNIT.boxed(), 
+                    returns: ResolvedType::Array { underlining: types::INT32.boxed(), size:5 }.boxed()
+                },
+                generictypes: Vec::new(),
+                is_curried: false
+            }),
+            simple,
+            "simple"
+        );
+        println!("{should_error:?}");
     }
 }

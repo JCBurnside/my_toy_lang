@@ -85,6 +85,8 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
             }
 
             match c {
+                '[' => (Token::BracketOpen, (self.curr_line, self.curr_col)),
+                ']' => (Token::BracketClose, (self.curr_line, self.curr_col)),
                 ';' => (Token::Seq, (self.curr_line, self.curr_col)),
                 ',' => (Token::Comma, (self.curr_line, self.curr_col)),
                 '(' => (Token::GroupOpen, (self.curr_line, self.curr_col)),
@@ -489,6 +491,23 @@ let match_expr_with_block x : int32 -> int32 = match x where
     }
 
     #[test]
+    fn array() {
+        use Token::*;
+        assert_eq!(
+            TokenStream::from_source("[int32;3]").map(fst).collect_vec(),
+            [
+                BracketOpen,
+                Ident("int32".to_string()),
+                Seq,
+                Integer(false, "3".to_string()),
+                BracketClose,
+                EoF
+            ],
+            "array of 3 int32s"
+        );
+    }
+
+    #[test]
     #[rustfmt::skip]
     fn complex_type() {
         use Token::*;
@@ -654,7 +673,7 @@ let match_expr_with_block x : int32 -> int32 = match x where
                 .collect_vec(),
             [Token::False, Token::EoF],
             "false"
-        )
+        );
     }
 
     #[test]
