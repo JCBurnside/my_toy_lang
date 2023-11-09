@@ -5,7 +5,9 @@ use std::path::PathBuf;
 pub mod ast;
 // mod langstd;
 mod code_gen;
+mod inference;
 mod lexer;
+mod ops;
 mod parser;
 mod tokens;
 pub mod typed_ast;
@@ -75,10 +77,12 @@ pub fn from_file<'ctx>(
         MultiMap::new(),
         target_machine.get_target_data(),
     );
-
     let mut ast = parser.module(file_name.to_str().unwrap().to_string());
     ast.canonialize(vec![project_name]);
-    let mut ast = TypedModuleDeclaration::from(ast, &fwd_declarations); //TODO: foward declare std lib
+    let mut dependency_graph = dbg!(ast.get_dependencies());
+
+    let mut ast =
+        TypedModuleDeclaration::from(ast, &fwd_declarations, &HashMap::new(), &dependency_graph); //TODO: foward declare std lib
 
     ast.lower_generics(&HashMap::new());
     ast.declarations.retain(|it| match it {

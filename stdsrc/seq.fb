@@ -28,7 +28,7 @@ public let map func s = Map { base:s, func }
 for<TLeft,TRTLeft,TRight,TRTRight,S:Seq<(TLeft,TRight>)>>
 public let bimap funcleft funcright s : (TLeft->TRTLeft)->(TRight->TRTRight) -> S -> Map<(TLeft,TRight),S,(TRTLeft,TRTRight)> =
     Map {
-        base: S,
+        base: s,
         fun : ((left,right) -> (funcleft left,funcright right))
     }
 

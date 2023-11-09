@@ -21,14 +21,6 @@ let test_ifexpr a b : bool -> bool -> int32 = if a then
     else
         4
 
-let show_something _ : () -> bool =
-    print_str "hello there\n";
-    return true;
-
-let show_something_else _ : () -> bool =
-    print_str "general kenobi\n";
-    return false;
-
 let show_short_curicuit _ : () -> () =
     if (show_something ()) && (show_something_else ()) then
         print_str "this is a seperator\n";
@@ -37,6 +29,14 @@ let show_short_curicuit _ : () -> () =
     if (show_something_else ()) || (show_something ()) then
         print_str "yet another seperator\n";
     return ();
+
+let show_something _ : () -> bool =
+    print_str "hello there\n";
+    return true;
+
+let show_something_else _ : () -> bool =
+    print_str "general kenobi\n";
+    return false;
 
 let main _ : () -> () =
     let a : bool = true;

@@ -15,7 +15,7 @@ use inkwell::targets::TargetData;
 use inkwell::types::{AnyTypeEnum, BasicType};
 use inkwell::values::{
     AnyValue, AnyValueEnum, BasicValue, BasicValueEnum, CallableValue, FunctionValue, GlobalValue,
-    PointerValue, IntValue,
+    IntValue, PointerValue,
 };
 use inkwell::{AddressSpace, IntPredicate};
 
@@ -25,8 +25,8 @@ use multimap::MultiMap;
 
 use crate::typed_ast::{
     collect_args, ResolvedTypeDeclaration, StructDefinition, TypedBinaryOpCall, TypedDeclaration,
-    TypedExpr, TypedFnCall, TypedIfBranching, TypedIfExpr, TypedMemberRead, TypedStatement,
-    TypedValueDeclaration, TypedValueType, TypedMatch, TypedMatchArm, TypedPattern,
+    TypedExpr, TypedFnCall, TypedIfBranching, TypedIfExpr, TypedMatch, TypedMatchArm,
+    TypedMemberRead, TypedPattern, TypedStatement, TypedValueDeclaration, TypedValueType,
 };
 use crate::types::{self, ResolvedType, TypeResolver};
 use crate::util::ExtraUtilFunctions;
@@ -175,7 +175,7 @@ impl<'ctx> CodeGen<'ctx> {
                 fun_scope.as_debug_info_scope(),
                 None,
             );
-            self.builder.set_current_debug_location(loc);
+            // self.builder.set_current_debug_location(loc);
             self.difunction = Some(fun_scope);
         }
         let args_block = self.ctx.append_basic_block(v, "arg_declarations");
@@ -526,7 +526,7 @@ impl<'ctx> CodeGen<'ctx> {
                         difun.as_debug_info_scope(),
                         None,
                     );
-                    self.builder.set_current_debug_location(loc);
+                    // self.builder.set_current_debug_location(loc);
                 }
                 let ret_bb = self
                     .builder
@@ -557,7 +557,7 @@ impl<'ctx> CodeGen<'ctx> {
                         difun.as_debug_info_scope(),
                         None,
                     );
-                    self.builder.set_current_debug_location(loc);
+                    // self.builder.set_current_debug_location(loc);
                 }
                 self.compile_expr(TypedExpr::FnCall(data));
             }
@@ -616,8 +616,12 @@ impl<'ctx> CodeGen<'ctx> {
                     todo!("unsure here?")
                 }
             }
-            TypedStatement::Match(match_) => {self.compile_match(match_);},
-            TypedStatement::Discard(expr, _) => { self.compile_expr(expr); }
+            TypedStatement::Match(match_) => {
+                self.compile_match(match_);
+            }
+            TypedStatement::Discard(expr, _) => {
+                self.compile_expr(expr);
+            }
             _ => todo!(),
         }
     }
@@ -791,7 +795,7 @@ impl<'ctx> CodeGen<'ctx> {
                         self.difunction.as_ref().unwrap().as_debug_info_scope(),
                         None,
                     );
-                    self.builder.set_current_debug_location(loc);
+                    // self.builder.set_current_debug_location(loc);
                 }
                 match operator.as_str() {
                     "&&" => {
@@ -1261,7 +1265,7 @@ impl<'ctx> CodeGen<'ctx> {
                         self.difunction.as_ref().unwrap().as_debug_info_scope(),
                         None,
                     );
-                    self.builder.set_current_debug_location(loc);
+                    // self.builder.set_current_debug_location(loc);
                 }
                 match value {
                     AnyValueEnum::PointerValue(target) => {
@@ -1378,7 +1382,7 @@ impl<'ctx> CodeGen<'ctx> {
                         self.difunction.as_ref().unwrap().as_debug_info_scope(),
                         None,
                     );
-                    self.builder.set_current_debug_location(loc);
+                    // self.builder.set_current_debug_location(loc);
                 }
                 let TypedExpr::ValueRead(ident,_, _) = *value else { unreachable!("not a function name?") };
                 let Some(gv)= self.known_functions.get(&ident) else { unreachable!("function not found") };
@@ -1606,7 +1610,6 @@ impl<'ctx> CodeGen<'ctx> {
     }
     pub fn compile_decl(&mut self, decl: TypedDeclaration) -> Module<'ctx> {
         match decl {
-            TypedDeclaration::Mod(_) => todo!(),
             TypedDeclaration::Value(data) => {
                 self.compile_function(data);
             }
@@ -1650,7 +1653,6 @@ impl<'ctx> CodeGen<'ctx> {
 
     fn create_define(&mut self, decl: &TypedDeclaration) {
         match decl {
-            TypedDeclaration::Mod(_) => todo!(),
             TypedDeclaration::Value(decl) => {
                 if decl.ty.is_function() {
                     let fun = self.create_curry_list(decl);
@@ -2086,11 +2088,17 @@ impl<'ctx> CodeGen<'ctx> {
         let rt = match_.get_ty();
         let TypedMatch { loc, on, mut arms } = match_;
         let current_block = self.builder.get_insert_block().unwrap();
-        
+
         if let Some(dibuilder) = &self.dibuilder {
             let Some(scope) = &self.difunction else { unreachable!() };
-            let diloc = dibuilder.create_debug_location(self.ctx, loc.0 as _, loc.1 as _, scope.as_debug_info_scope(), None);
-            self.builder.set_current_debug_location(diloc);
+            let diloc = dibuilder.create_debug_location(
+                self.ctx,
+                loc.0 as _,
+                loc.1 as _,
+                scope.as_debug_info_scope(),
+                None,
+            );
+            // self.builder.set_current_debug_location(diloc);
         }
         let cond_ty = on.get_ty();
         if !cond_ty.is_int() && cond_ty != types::CHAR {
@@ -2099,68 +2107,98 @@ impl<'ctx> CodeGen<'ctx> {
         let on = self.compile_expr(*on).into_int_value(); //TODO handle if on is an enum.
         let fun = current_block.get_parent().unwrap();
         let ret_block = self.ctx.append_basic_block(fun, "");
-        let default_block = if let Some(arm) = arms.iter().position(|arm| matches!(arm.cond,TypedPattern::Default | TypedPattern::Read(_, _))) {
+        let default_block = if let Some(arm) = arms
+            .iter()
+            .position(|arm| matches!(arm.cond, TypedPattern::Default | TypedPattern::Read(_, _)))
+        {
             let arm = arms.remove(arm);
-            let (_,bb,ret) = self.compile_match_arm(arm, fun,&on.as_basic_value_enum(), &cond_ty, ret_block);
-            Some((bb,ret))
+            let (_, bb, ret) =
+                self.compile_match_arm(arm, fun, &on.as_basic_value_enum(), &cond_ty, ret_block);
+            Some((bb, ret))
         } else {
             None
         };
-        let arms = arms.into_iter()
-            .map(|arm| self.compile_match_arm(arm, fun,&on.as_basic_value_enum(), &cond_ty, ret_block))
+        let arms = arms
+            .into_iter()
+            .map(|arm| {
+                self.compile_match_arm(arm, fun, &on.as_basic_value_enum(), &cond_ty, ret_block)
+            })
             .collect_vec();
         if rt.is_void_or_unit() {
             self.builder.position_at_end(current_block);
-            let arms = arms.into_iter().map(|(cond,bb,_)| (cond,bb)).collect_vec();
-            self.builder.build_switch(
-                on, 
-                default_block.map_or(ret_block, |(bb,_)| bb), 
-                &arms);
-            let _ = ret_block.move_after(*arms.last().map(|(_,bb)| bb).unwrap());
+            let arms = arms
+                .into_iter()
+                .map(|(cond, bb, _)| (cond, bb))
+                .collect_vec();
+            self.builder
+                .build_switch(on, default_block.map_or(ret_block, |(bb, _)| bb), &arms);
+            let _ = ret_block.move_after(*arms.last().map(|(_, bb)| bb).unwrap());
             self.builder.position_at_end(ret_block);
-            self.module.get_global("()").unwrap().as_pointer_value().as_any_value_enum()
+            self.module
+                .get_global("()")
+                .unwrap()
+                .as_pointer_value()
+                .as_any_value_enum()
         } else {
             self.builder.position_at_end(ret_block);
-            let phi = self.builder.build_phi(self.type_resolver.resolve_type_as_basic(rt), "");
-            for (_,bb,ret) in &arms {
+            let phi = self
+                .builder
+                .build_phi(self.type_resolver.resolve_type_as_basic(rt), "");
+            for (_, bb, ret) in &arms {
                 let Some(ret) = &ret else {unreachable!()};
                 let _ = ret_block.move_after(*bb);
-                phi.add_incoming(&[
-                    (ret,*bb)
-                ]);
+                phi.add_incoming(&[(ret, *bb)]);
             }
-            let unreachable_bb = if let Some((bb,ret)) = default_block {
+            let unreachable_bb = if let Some((bb, ret)) = default_block {
                 let Some(ret) = ret else {unreachable!()};
-                phi.add_incoming(&[
-                    (&ret,bb)
-                ]);
+                phi.add_incoming(&[(&ret, bb)]);
                 bb
-            } else { 
+            } else {
                 let bb = self.ctx.append_basic_block(fun, "");
                 self.builder.position_at_end(bb);
                 self.builder.build_unreachable();
                 bb
             };
             self.builder.position_at_end(current_block);
-            let arms = arms.into_iter().map(|(cond,bb,_)| (cond,bb)).collect_vec();
+            let arms = arms
+                .into_iter()
+                .map(|(cond, bb, _)| (cond, bb))
+                .collect_vec();
             self.builder.build_switch(on, unreachable_bb, &arms);
             self.builder.position_at_end(ret_block);
             phi.as_any_value_enum()
         }
     }
 
-    fn compile_match_arm(&mut self, arm:TypedMatchArm, fun : FunctionValue<'ctx>, cond_v : &BasicValueEnum<'ctx>, cond_ty : &ResolvedType, ret_block:BasicBlock<'ctx>) -> (IntValue<'ctx>, BasicBlock<'ctx>, Option<BasicValueEnum<'ctx>>) {
-        let TypedMatchArm { loc, cond, block, ret } = arm;
-        let cond_ty = self.type_resolver.resolve_type_as_basic(cond_ty.clone()).into_int_type();
+    fn compile_match_arm(
+        &mut self,
+        arm: TypedMatchArm,
+        fun: FunctionValue<'ctx>,
+        cond_v: &BasicValueEnum<'ctx>,
+        cond_ty: &ResolvedType,
+        ret_block: BasicBlock<'ctx>,
+    ) -> (
+        IntValue<'ctx>,
+        BasicBlock<'ctx>,
+        Option<BasicValueEnum<'ctx>>,
+    ) {
+        let TypedMatchArm {
+            loc,
+            cond,
+            block,
+            ret,
+        } = arm;
+        let cond_ty = self
+            .type_resolver
+            .resolve_type_as_basic(cond_ty.clone())
+            .into_int_type();
         let cond = match cond {
             TypedPattern::Const(_, ty) if ty == types::STR => todo!("string"),
-            TypedPattern::Const(value, _) => {
-                cond_ty.const_int(value.parse().unwrap(), false)
-            },
+            TypedPattern::Const(value, _) => cond_ty.const_int(value.parse().unwrap(), false),
             TypedPattern::Read(name, _) => {
                 self.known_values.insert(name, cond_v.clone());
                 cond_ty.const_zero()
-            },
+            }
             TypedPattern::Default => cond_ty.const_zero(),
         };
         let bb = self.ctx.append_basic_block(fun, "");
@@ -2168,9 +2206,11 @@ impl<'ctx> CodeGen<'ctx> {
         for stmnt in block {
             self.compile_statement(stmnt);
         }
-        let ret = ret.map(|ret| self.compile_expr(*ret)).map(convert_to_basic_value);
+        let ret = ret
+            .map(|ret| self.compile_expr(*ret))
+            .map(convert_to_basic_value);
         self.builder.build_unconditional_branch(ret_block);
-        (cond,bb,ret)
+        (cond, bb, ret)
     }
 }
 

@@ -1,4 +1,9 @@
-use std::{collections::HashMap, mem::size_of};
+use std::{
+    collections::{HashMap, HashSet},
+    mem::size_of,
+    ops::{Range, RangeFrom},
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use crate::{typed_ast, util::ExtraUtilFunctions};
 use inkwell::{
@@ -78,6 +83,7 @@ impl FloatWidth {
 
 #[derive(Hash, Clone, Debug, PartialEq, Eq)]
 pub enum ResolvedType {
+    Unknown(usize),
     Bool,
     Int {
         signed: bool,
@@ -203,6 +209,35 @@ impl ResolvedType {
 
     pub fn is_user(&self) -> bool {
         matches!(self, Self::User { .. })
+    }
+
+    pub fn get_all_types(&self) -> HashSet<String> {
+        match self {
+            ResolvedType::User { .. }
+            | ResolvedType::Bool
+            | ResolvedType::Int { .. }
+            | ResolvedType::Float { .. }
+            | ResolvedType::Char
+            | ResolvedType::Str => [self.to_string()].into(),
+            ResolvedType::Ref { underlining }
+            | ResolvedType::Pointer { underlining }
+            | ResolvedType::Slice { underlining }
+            | ResolvedType::Array { underlining, .. } => {
+                let mut tys = underlining.get_all_types();
+                tys
+            }
+            ResolvedType::Function { arg, returns } => {
+                let mut tys = arg.get_all_types();
+                tys.extend(returns.get_all_types().into_iter());
+                tys
+            }
+            ResolvedType::Alias { actual } => actual.get_all_types(),
+            ResolvedType::Unit
+            | ResolvedType::Void
+            | ResolvedType::Generic { .. }
+            | ResolvedType::Unknown(_) => HashSet::new(),
+            ResolvedType::Error => todo!(),
+        }
     }
 
     pub fn as_c_function(&self) -> (Vec<Self>, Self) {
@@ -341,7 +376,7 @@ impl ResolvedType {
                 *name = new_name;
                 *generics = Vec::new();
             }
-            ResolvedType::Error => (),
+            ResolvedType::Unknown(_) | ResolvedType::Error => (),
         }
     }
 
@@ -384,6 +419,22 @@ impl ResolvedType {
         match self {
             Self::Error => true,
             _ => false,
+        }
+    }
+
+    pub(crate) fn is_unknown(&self) -> bool {
+        match self {
+            Self::Unknown(_) => true,
+            Self::Function { arg, returns } => arg.is_unknown() || returns.is_unknown(),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn get_nth_arg(&self, idx: usize) -> Self {
+        match self {
+            Self::Function { arg, .. } if idx == 0 => arg.as_ref().clone(),
+            Self::Function { returns, .. } => returns.get_nth_arg(idx - 1),
+            _ => Self::Error,
         }
     }
 }
@@ -438,7 +489,7 @@ impl ToString for ResolvedType {
             } => {
                 format!("[{};{}]", underlying.to_string(), size)
             }
-            ResolvedType::Error => "<ERROR>".to_string(),
+            ResolvedType::Unknown(_) | ResolvedType::Error => "<ERROR>".to_string(),
         }
     }
 }
@@ -491,6 +542,7 @@ mod consts {
 }
 pub use consts::*;
 use itertools::Itertools;
+use lazy_static::lazy_static;
 
 pub struct TypeResolver<'ctx> {
     known: HashMap<ResolvedType, AnyTypeEnum<'ctx>>,
