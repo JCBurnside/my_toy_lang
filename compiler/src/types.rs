@@ -1,6 +1,7 @@
 use std::{collections::HashMap, mem::size_of};
 
 use crate::{typed_ast, util::ExtraUtilFunctions};
+#[cfg(feature = "full")]
 use inkwell::{
     context::Context,
     debug_info::{DIFile, DIFlags, DIFlagsConstants, DISubroutineType, DIType, DebugInfoBuilder},
@@ -9,6 +10,8 @@ use inkwell::{
     AddressSpace,
 };
 
+
+use itertools::Itertools;
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
 pub enum IntWidth {
     Eight,
@@ -490,14 +493,16 @@ mod consts {
     pub const UNIT: ResolvedType = ResolvedType::Unit;
 }
 pub use consts::*;
-use itertools::Itertools;
 
+#[cfg(feature="full")]
 pub struct TypeResolver<'ctx> {
     known: HashMap<ResolvedType, AnyTypeEnum<'ctx>>,
     ctx: &'ctx Context,
     ditypes: HashMap<ResolvedType, DIType<'ctx>>,
     target_data: TargetData,
 }
+
+#[cfg(feature="full")]
 
 impl<'ctx> TypeResolver<'ctx> {
     pub fn new(ctx: &'ctx Context, target_data: TargetData) -> Self {
