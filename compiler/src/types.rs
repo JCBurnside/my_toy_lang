@@ -85,6 +85,7 @@ impl FloatWidth {
 pub enum ResolvedType {
     Unknown(usize),
     Bool,
+    Number,
     Int {
         signed: bool,
         width: IntWidth,
@@ -130,75 +131,6 @@ pub enum ResolvedType {
     Error,
 }
 
-// impl PartialEq for ResolvedType {
-//     fn eq(&self, other: &Self) -> bool {
-//         if self.is_generic() || other.is_generic() {
-//             return true;
-//         }
-//         match (self, other) {
-//             (ResolvedType::Error, _) | (_, ResolvedType::Error) => true,
-//             (ResolvedType::Alias { actual }, other) => other == actual.as_ref(),
-//             (ResolvedType::Void, ResolvedType::Void)
-//             | (ResolvedType::Unit, ResolvedType::Unit)
-//             | (ResolvedType::Str, ResolvedType::Str)
-//             | (ResolvedType::Char, ResolvedType::Char)
-//             | (ResolvedType::Bool, ResolvedType::Bool) => true,
-//             (other, ResolvedType::Alias { actual }) => other == actual.as_ref(),
-//             (
-//                 ResolvedType::Int {
-//                     signed: lhs_signed,
-//                     width: lhs_wdith,
-//                 },
-//                 ResolvedType::Int {
-//                     signed: rhs_signed,
-//                     width: rhs_width,
-//                 },
-//             ) => lhs_signed == rhs_signed && lhs_wdith == rhs_width,
-//             (
-//                 ResolvedType::Float { width: lhs_width },
-//                 ResolvedType::Float { width: rhs_width },
-//             ) => lhs_width == rhs_width,
-//             (
-//                 ResolvedType::Array {
-//                     underlining: lhs_underlinging,
-//                     size: lhs_size,
-//                 },
-//                 ResolvedType::Array {
-//                     underlining: rhs_underlining,
-//                     size: rhs_size,
-//                 },
-//             ) => lhs_size == rhs_size && lhs_underlinging == rhs_underlining,
-//             (
-//                 ResolvedType::Pointer {
-//                     underlining: lhs_underling,
-//                 },
-//                 ResolvedType::Pointer {
-//                     underlining: rhs_underling,
-//                 },
-//             )
-//             | (
-//                 ResolvedType::Ref {
-//                     underlining: lhs_underling,
-//                 },
-//                 ResolvedType::Ref {
-//                     underlining: rhs_underling,
-//                 },
-//             ) => lhs_underling.as_ref() == rhs_underling.as_ref(),
-//             (
-//                 ResolvedType::Function {
-//                     arg: lhs_arg,
-//                     returns: lhs_ret,
-//                 },
-//                 ResolvedType::Function {
-//                     arg: rhs_arg,
-//                     returns: rhs_ret,
-//                 },
-//             ) => lhs_arg.as_ref() == rhs_ret.as_ref() && lhs_ret.as_ref() == rhs_ret.as_ref(),
-//             _ => false,
-//         }
-//     }
-// }
-// impl Eq for ResolvedType {}
 impl ResolvedType {
     pub fn is_void_or_unit(&self) -> bool {
         match self {
@@ -223,7 +155,7 @@ impl ResolvedType {
             | ResolvedType::Pointer { underlining }
             | ResolvedType::Slice { underlining }
             | ResolvedType::Array { underlining, .. } => {
-                let mut tys = underlining.get_all_types();
+                let tys = underlining.get_all_types();
                 tys
             }
             ResolvedType::Function { arg, returns } => {
@@ -233,6 +165,7 @@ impl ResolvedType {
             }
             ResolvedType::Alias { actual } => actual.get_all_types(),
             ResolvedType::Unit
+            | ResolvedType::Number
             | ResolvedType::Void
             | ResolvedType::Generic { .. }
             | ResolvedType::Unknown(_) => HashSet::new(),
@@ -376,7 +309,7 @@ impl ResolvedType {
                 *name = new_name;
                 *generics = Vec::new();
             }
-            ResolvedType::Unknown(_) | ResolvedType::Error => (),
+            ResolvedType::Unknown(_) | ResolvedType::Number | ResolvedType::Error => (),
         }
     }
 
@@ -437,6 +370,27 @@ impl ResolvedType {
             _ => Self::Error,
         }
     }
+    pub fn is_float(&self) -> bool {
+        matches!(self, Self::Float { .. })
+    }
+
+    pub fn is_int(&self) -> bool {
+        matches!(self, Self::Int { .. })
+    }
+
+    pub fn replace_by_id(&mut self, x: usize, new_ty: Self) {
+        match self {
+            Self::Unknown(id) if id == &x => *self = new_ty,
+            Self::Slice { underlining }
+            | Self::Ref { underlining }
+            | Self::Array { underlining, .. } => underlining.replace_by_id(x, new_ty),
+            Self::Function { arg, returns } => {
+                arg.replace_by_id(x, new_ty.clone());
+                returns.replace_by_id(x, new_ty);
+            }
+            _ => (),
+        }
+    }
 }
 
 impl ToString for ResolvedType {
@@ -472,6 +426,7 @@ impl ToString for ResolvedType {
             ResolvedType::Str => "str".to_string(),
             ResolvedType::Unit => "()".to_string(),
             ResolvedType::Void => "".to_string(),
+            ResolvedType::Number => "{number}".to_string(),
             ResolvedType::User { name, generics } => {
                 if generics.len() > 0 {
                     format!(
@@ -804,16 +759,6 @@ impl<'ctx> TypeResolver<'ctx> {
     pub fn resolve_type_as_any(&mut self, ty: ResolvedType) -> AnyTypeEnum<'ctx> {
         self.resolve_type(ty.clone());
         *self.known.get(&ty).unwrap()
-    }
-}
-
-impl ResolvedType {
-    pub fn is_float(&self) -> bool {
-        matches!(self, Self::Float { .. })
-    }
-
-    pub fn is_int(&self) -> bool {
-        matches!(self, Self::Int { .. })
     }
 }
 

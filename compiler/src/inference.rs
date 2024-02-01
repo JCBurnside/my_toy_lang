@@ -20,6 +20,7 @@ pub(crate) struct Context {
     known_generic_types: HashMap<String, untyped_ast::TypeDefinition>,
     known_ops: HashMap<String, Vec<ResolvedType>>,
     known_values: BiMap<usize, ResolvedType>,
+    known_locals : HashMap<String, ResolvedType>,
     equations: HashMap<usize, ResolvedType>, //? unsure of type here yet.
 }
 impl Context {
@@ -39,6 +40,7 @@ impl Context {
             known_generic_types,
             known_ops,
             known_values: BiMap::new(),
+            known_locals : HashMap::new(),
             equations: HashMap::new(),
         }
     }
@@ -117,6 +119,7 @@ impl Context {
                     }
                 });
                 let id = self.get_next_expr_id();
+                self.known_locals.insert(ident.clone(),ty.clone());
                 self.known_values.insert(id, ty.clone());
                 ast::ArgDeclaration { loc, ident, ty, id }
             })
@@ -293,6 +296,7 @@ impl Context {
                     rhs,
                     operator,
                 } = op;
+                let id = self.get_next_expr_id();
                 let lhs = self.assign_ids_expr(*lhs, None);
                 let rhs = self.assign_ids_expr(*rhs, None);
                 ast::Expr::BinaryOpCall(ast::BinaryOpCall {
@@ -300,7 +304,7 @@ impl Context {
                     lhs: lhs.boxed(),
                     rhs: rhs.boxed(),
                     operator,
-                    id: self.get_next_expr_id(),
+                    id,
                     result: self.get_next_type_id(),
                 })
             }
@@ -379,9 +383,40 @@ impl Context {
             untyped_ast::Expr::Match(match_) => ast::Expr::Match(self.assign_ids_match(match_)),
         }
     }
-    // phase 2.  write type equations
+    fn try_to_infer(&mut self, module:ast::ModuleDeclaration) {
+        
+    }
 
-    // phase 3.  solve phase 2 equations/unify
+    fn get_actual_type(&mut self, expr:&mut ast::Expr) ->  ResolvedType {
+        match expr {
+            ast::Expr::Error(_) =>ResolvedType::Error,
+            ast::Expr::NumericLiteral { value, id, ty } => ResolvedType::Number,
+            ast::Expr::StringLiteral(_) => ResolvedType::Str,
+            ast::Expr::CharLiteral(_) => ResolvedType::Char,
+            ast::Expr::UnitLiteral => ResolvedType::Unit,
+            ast::Expr::BinaryOpCall(_) => todo!(),
+            ast::Expr::FnCall(ast::FnCall{  value, arg, ..}) => if let ResolvedType::Function { arg:arg_t, returns } = self.get_actual_type(value.as_mut()){
+                if !arg_t.is_generic() && *arg_t != self.get_actual_type(arg.as_mut()) {
+                    ResolvedType::Error
+                } else {
+                    *returns
+                }
+            } else {
+                ResolvedType::Error
+            },
+            ast::Expr::ValueRead(ident, _, _) => self.known_locals.get(ident).cloned().or_else(|| {
+                self.known_types.get(ident).cloned()
+            }).unwrap_or(ResolvedType::Error),
+            ast::Expr::ArrayLiteral { contents, loc, id } => todo!(),
+            ast::Expr::ListLiteral { contents, loc, id } => todo!(),
+            ast::Expr::StructConstruction(strct) => {
+                
+            },
+            ast::Expr::BoolLiteral(_, _, _) => todo!(),
+            ast::Expr::If(_) => todo!(),
+            ast::Expr::Match(_) => todo!(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -551,27 +586,50 @@ let foo a = match a where
                                 arms: vec![
                                     super::ast::MatchArm {
                                         block: Vec::new(),
-                                        ret: Some(super::ast::Expr::CharLiteral("a".to_string()).boxed()),
-                                        cond:(super::untyped_ast::Pattern::ConstNumber("0".to_string()),4),
-                                        loc: (2,7)
+                                        ret: Some(
+                                            super::ast::Expr::CharLiteral("a".to_string()).boxed()
+                                        ),
+                                        cond: (
+                                            super::untyped_ast::Pattern::ConstNumber(
+                                                "0".to_string()
+                                            ),
+                                            4
+                                        ),
+                                        loc: (2, 7)
                                     },
                                     super::ast::MatchArm {
                                         block: Vec::new(),
-                                        ret: Some(super::ast::Expr::CharLiteral("b".to_string()).boxed()),
-                                        cond:(super::untyped_ast::Pattern::ConstNumber("1".to_string()),5),
-                                        loc: (3,7)
+                                        ret: Some(
+                                            super::ast::Expr::CharLiteral("b".to_string()).boxed()
+                                        ),
+                                        cond: (
+                                            super::untyped_ast::Pattern::ConstNumber(
+                                                "1".to_string()
+                                            ),
+                                            5
+                                        ),
+                                        loc: (3, 7)
                                     },
                                     super::ast::MatchArm {
                                         block: Vec::new(),
-                                        ret: Some(super::ast::Expr::CharLiteral("c".to_string()).boxed()),
-                                        cond:(super::untyped_ast::Pattern::ConstNumber("2".to_string()),6),
-                                        loc: (4,7)
+                                        ret: Some(
+                                            super::ast::Expr::CharLiteral("c".to_string()).boxed()
+                                        ),
+                                        cond: (
+                                            super::untyped_ast::Pattern::ConstNumber(
+                                                "2".to_string()
+                                            ),
+                                            6
+                                        ),
+                                        loc: (4, 7)
                                     },
                                     super::ast::MatchArm {
                                         block: Vec::new(),
-                                        ret: Some(super::ast::Expr::CharLiteral("d".to_string()).boxed()),
-                                        cond:(super::untyped_ast::Pattern::Default,7),
-                                        loc: (5,7)
+                                        ret: Some(
+                                            super::ast::Expr::CharLiteral("d".to_string()).boxed()
+                                        ),
+                                        cond: (super::untyped_ast::Pattern::Default, 7),
+                                        loc: (5, 7)
                                     },
                                 ],
                                 id: 2
@@ -582,6 +640,48 @@ let foo a = match a where
                     }
                 )]
             }
+        );
+        ctx.reset();
+        let ast = crate::Parser::from_source("let foo a = a == 3").module("foo".to_string());
+        assert_eq!(
+            ctx.assign_ids_module(ast),
+            super::ast::ModuleDeclaration {
+                loc: (0, 0),
+                name: "foo".to_string(),
+                decls: vec![super::ast::Declaration::Value(
+                    super::ast::ValueDeclaration {
+                        loc: (0, 5),
+                        is_op: false,
+                        ident: "foo".to_string(),
+                        args: vec![super::ast::ArgDeclaration {
+                            loc: (0, 9),
+                            ident: "a".to_string(),
+                            ty: ResolvedType::Unknown(1),
+                            id: 1
+                        }],
+                        ty: ResolvedType::Unknown(0),
+                        value: super::ast::ValueType::Expr(super::ast::Expr::BinaryOpCall(
+                            super::ast::BinaryOpCall {
+                                loc: (0, 15),
+                                lhs: super::ast::Expr::ValueRead("a".to_string(), (0, 13), 3)
+                                    .boxed(),
+                                rhs: super::ast::Expr::NumericLiteral {
+                                    value: "3".to_string(),
+                                    id: 4,
+                                    ty: types::ResolvedType::Unknown(2),
+                                }
+                                .boxed(),
+                                operator: "==".to_string(),
+                                id: 2,
+                                result: types::ResolvedType::Unknown(3),
+                            }
+                        )),
+                        generics: Vec::new(),
+                        id: 0
+                    }
+                )]
+            },
+            "binary op"
         );
     }
 }

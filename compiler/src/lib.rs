@@ -28,6 +28,7 @@ use types::{ResolvedType, TypeResolver};
 use inkwell::context::Context;
 use multimap::MultiMap;
 type Location = (usize, usize);
+
 pub fn from_file<'ctx>(
     file: &PathBuf,
     ctx: &'ctx Context,
