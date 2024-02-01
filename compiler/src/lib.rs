@@ -26,6 +26,13 @@ use types::{ResolvedType, TypeResolver};
 use inkwell::context::Context;
 use multimap::MultiMap;
 type Location = (usize, usize);
+
+pub fn get_untyped_ast(input:&str,file_name:&str) -> ast::ModuleDeclaration{
+    let ts = TokenStream::from_source(input);
+    Parser::from_stream(ts).module(file_name.to_string())
+} 
+
+#[cfg(feature = "full")]
 pub fn from_file<'ctx>(
     file: &PathBuf,
     ctx: &'ctx Context,
@@ -78,7 +85,7 @@ pub fn from_file<'ctx>(
 
     let mut ast = parser.module(file_name.to_str().unwrap().to_string());
     ast.canonialize(vec![project_name]);
-    let mut ast = TypedModuleDeclaration::from(ast, &fwd_declarations); //TODO: foward declare std lib
+    let mut ast = TypedModuleDeclaration::from(ast, &fwd_declarations,&HashMap::new(), &HashMap::new()); //TODO: foward declare std lib
 
     ast.lower_generics(&HashMap::new());
     ast.declarations.retain(|it| match it {
