@@ -34,3 +34,37 @@ let Result::is_ok &self =
 
 let Result::is_err &self = !self.is_ok
 
+for<T,E> implements Result<T,E> =
+    // Result<T,E> -> (T->U) -> Result<U,E>
+    for<U> let map self (func:T->U) =
+        match self where
+        | Result::Ok t -> func t |> Result::Ok
+        | Result::Err e -> Result::Err e
+    // Result<T,E> -> (E->ENew) -> Result<T,ENew>
+    for<ENew> let map_err self (func:E->ENew)  =
+        match self where
+        | Result::Ok t -> Result::Ok t
+        | Result::Err e -> func e |> Result::Err
+    // Result<T,E> -> Option<T>
+    let ok self =
+        match self where
+        | Result::Ok t -> Option::Some t
+        | Result::Err _ -> Option::None
+    // Result<T,E> -> Option<E>
+    let err self =
+        match self
+        | Result::Ok _ -> Option::None
+        | Result::Err e -> Option::Some e
+    // &Result<T,E> -> bool
+    let is_ok &self =
+        match self where
+        | Result::Ok _ -> true
+        | Result::Err _ -> false
+    // &Result<T,E> -> bool
+    let is_err &self = !self.is_ok
+    /* */
+    // Result<T,E> -> (T->TNew) -> (E->ENew) -> Result<TNew,ENew>
+    for<TNew,ENew> let map_else self (ok_fun:T->TNew) (err_fun:E->ENew) =
+        match self where
+        | Result::Ok t -> ok_fun t |> Result::Ok
+        | Result::Err e -> err_fun e |> Result::Err
