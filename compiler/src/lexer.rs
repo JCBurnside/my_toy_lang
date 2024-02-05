@@ -172,7 +172,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     if inside.contains('.') {
                         (
                             Token::FloatingPoint(c == '-', inside),
-                            (self.curr_line, start),
+                            (self.curr_line, start_col),
                         )
                     } else {
                         (Token::Integer(c == '-', inside), (self.curr_line, start_col))
@@ -237,7 +237,6 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     for _ in 0..4 {
                         let _ = self.source_stream.next();
                     }
-                    let curr_col = self.curr_col;
                     self.curr_col += 4;
                     (Token::False, (self.curr_line, start_col))
                 }
@@ -380,7 +379,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
         } else {
             (
                 Token::Error("Unknown Lexer Error"),
-                (self.curr_line, start_col),
+                (self.curr_line, self.curr_col),
             )
         }
     }
@@ -390,7 +389,7 @@ fn ident_char(c: &char) -> bool {
     c.is_alphanumeric() || c == &'_'
 }
 
-#[derive(Clone)]a
+#[derive(Clone)]
 pub struct TokenStream<I: Clone> {
     lexer: Lexer<I>,
     ended: bool,

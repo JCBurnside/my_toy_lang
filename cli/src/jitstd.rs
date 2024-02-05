@@ -48,7 +48,7 @@ pub fn add_printstr<'ctx>(
         fun.as_global_value().as_pointer_value(),
         ctx.i8_type().ptr_type(AddressSpace::default()),
         "",
-    );
+    ).unwrap();
     gs.set_initializer(&ctx.const_struct(&[bits], false));
     // let bb = ctx.append_basic_block(fun, "");
     // builder.position_at_end(bb);

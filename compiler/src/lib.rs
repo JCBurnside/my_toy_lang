@@ -43,9 +43,7 @@ pub fn from_file<'ctx>(
 ) -> Result<Module<'ctx>, Vec<Box<dyn Display>>> {
     
     use code_gen::CodeGen;
-    use inkwell::{
-        targets::{CodeModel, Target, TargetMachine},
-    };
+    use inkwell::targets::{CodeModel, Target, TargetMachine};
     // TODO: I would like to make this work for now I will read the whole file to a string then
     // let file = File::open(file).map_err(Box::new).map_err(|err| vec![err as Box<dyn Display>])?;
     // let file = BufReader::new(file);
@@ -98,6 +96,7 @@ pub fn from_file<'ctx>(
         TypedDeclaration::Value(it) => it.generictypes.is_none(),
         TypedDeclaration::TypeDefinition(it) => match it {
             ResolvedTypeDeclaration::Struct(strct) => strct.generics.is_none(),
+            #[allow(unreachable_patterns)]
             _ => true,
         },
         _ => true,

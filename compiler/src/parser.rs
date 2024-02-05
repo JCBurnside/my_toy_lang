@@ -8,7 +8,7 @@ use itertools::Itertools;
 
 use crate::{
     ast::{
-        self, BinaryOpCall, Expr, FnCall, GenericsDecl, Match, Pattern, Statement, StructConstruction, ValueDeclaration, ValueType
+        self, BinaryOpCall, Expr, FnCall, Match, Pattern, Statement, StructConstruction, ValueDeclaration, ValueType
     },
     lexer::TokenStream,
     tokens::Token,
@@ -695,7 +695,7 @@ where
             let mut else_ifs = Vec::new();
             while let Some((Token::If, _)) = self.stream.clone().nth(1) {
                 let Some((Token::Else,_)) = self.stream.next() else { unreachable!() };
-                let Some((Token::If,loc)) = self.stream.next() else { unreachable!() };
+                let Some((Token::If,_loc)) = self.stream.next() else { unreachable!() };
                 let cond = match self.next_expr() {
                     Err(e) => {
                         println!("{e:?}");
@@ -1836,11 +1836,11 @@ mod tests {
     }
     #[test]
     fn individual_simple_expressions() {
-        let mut parser = Parser::from_source("let foo : int32 = 5");
+        let mut parser = Parser::from_source("let foo : int32 = 5;");
 
         assert_eq!(
             Statement::Declaration(ValueDeclaration {
-                loc: (0, 5),
+                loc: (0, 4),
                 is_op: false,
                 ident: "foo".to_owned(),
                 ty: Some(types::INT32),
@@ -1860,7 +1860,7 @@ mod tests {
         );
         assert_eq!(
             ast::Declaration::Value(ValueDeclaration {
-                loc: (0, 5),
+                loc: (0, 4),
                 is_op: false,
                 ident: "foo".to_owned(),
                 ty: Some(ResolvedType::Function {
@@ -1868,7 +1868,7 @@ mod tests {
                     returns: types::INT32.boxed()
                 }),
                 args: vec![ArgDeclation {
-                    loc: (0, 9),
+                    loc: (0, 8),
                     ident: "_".to_string()
                 }],
                 value: ValueType::Function(vec![Statement::Return(
@@ -1876,7 +1876,7 @@ mod tests {
                         value: "5".to_string(),
                         ty: types::INT32
                     },
-                    (1, 5)
+                    (1, 4)
                 )]),
                 generictypes: None,
             }),
@@ -1893,7 +1893,7 @@ let foo _ : ( int32 -> int32 ) -> int32 =
         let mut parser = Parser::from_source(ARG);
         assert_eq!(
             Statement::Declaration(ValueDeclaration {
-                loc: (1, 5),
+                loc: (1, 4),
                 is_op: false,
                 ident: "foo".to_owned(),
                 ty: Some(ResolvedType::Function {
@@ -1906,14 +1906,14 @@ let foo _ : ( int32 -> int32 ) -> int32 =
                 }),
                 args: vec![ast::ArgDeclation {
                     ident: "_".to_string(),
-                    loc: (1, 9)
+                    loc: (1, 8)
                 }],
                 value: ValueType::Function(vec![Statement::Return(
                     Expr::NumericLiteral {
                         value: "0".to_string(),
                         ty: types::INT32
                     },
-                    (2, 5)
+                    (2, 4)
                 )]),
                 generictypes: None,
             }),
@@ -1922,12 +1922,12 @@ let foo _ : ( int32 -> int32 ) -> int32 =
         );
         const RT: &'static str = r#"
 let foo _ : int32 -> ( int32 -> int32 ) =
-    return 0
+    return 0;
 "#;
         let mut parser = Parser::from_source(RT);
         assert_eq!(
             Statement::Declaration(ValueDeclaration {
-                loc: (1, 5),
+                loc: (1, 4),
                 is_op: false,
                 ident: "foo".to_owned(),
                 ty: Some(ResolvedType::Function {
@@ -1940,14 +1940,14 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                 }),
                 args: vec![ast::ArgDeclation {
                     ident: "_".to_string(),
-                    loc: (1, 9)
+                    loc: (1, 8)
                 }],
                 value: ValueType::Function(vec![Statement::Return(
                     Expr::NumericLiteral {
                         value: "0".to_owned(),
                         ty: types::INT32,
                     },
-                    (2, 5)
+                    (2, 4)
                 )]),
                 generictypes:None,
             }),
@@ -1962,7 +1962,7 @@ let foo _ : int32 -> ( int32 -> int32 ) =
         let mut parser = Parser::from_source(SRC);
         assert_eq!(
             ast::Declaration::Value(ValueDeclaration {
-                loc: (0, 5),
+                loc: (0, 4),
                 is_op: false,
                 ident: "foo".to_owned(),
                 ty: Some(types::INT32),
@@ -1978,7 +1978,7 @@ let foo _ : int32 -> ( int32 -> int32 ) =
         );
         assert_eq!(
             ast::Declaration::Value(ValueDeclaration {
-                loc: (2, 5),
+                loc: (2, 4),
                 is_op: false,
                 ident: "bar".to_owned(),
                 ty: Some(ResolvedType::Function {
@@ -1987,11 +1987,11 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                 }),
                 args: vec![ast::ArgDeclation {
                     ident: "quz".to_string(),
-                    loc: (2, 9)
+                    loc: (2, 8)
                 }],
                 value: ValueType::Function(vec![
                     Statement::Declaration(ValueDeclaration {
-                        loc: (3, 9),
+                        loc: (3, 8),
                         is_op: false,
                         ident: "baz".to_owned(),
                         ty: Some(types::STR),
@@ -2004,7 +2004,7 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                             value: "2".to_owned(),
                             ty: types::INT32
                         },
-                        (4, 5)
+                        (4, 4)
                     )
                 ]),
                 generictypes: None,
@@ -2014,7 +2014,7 @@ let foo _ : int32 -> ( int32 -> int32 ) =
         );
         assert_eq!(
             ast::Declaration::Value(ValueDeclaration {
-                loc: (6, 5),
+                loc: (6, 4),
                 is_op: true,
                 ident: "^^".to_owned(),
                 ty: Some(ResolvedType::Function {
@@ -2028,25 +2028,25 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                 args: vec![
                     ast::ArgDeclation {
                         ident: "lhs".to_string(),
-                        loc: (6, 8)
+                        loc: (6, 7)
                     },
                     ast::ArgDeclation {
                         ident: "rhs".to_string(),
-                        loc: (6, 12)
+                        loc: (6, 11)
                     },
                 ],
                 value: ValueType::Function(vec![
                     Statement::FnCall(FnCall {
-                        loc: (7, 9), // TODO there is an error here.  somewhere in lexer
-                        value: Expr::ValueRead("bar".to_string(), (7, 5)).boxed(),
-                        arg: Some(Expr::ValueRead("foo".to_string(), (7, 9)).boxed()),
+                        loc: (7, 8), // TODO there is an error here.  somewhere in lexer
+                        value: Expr::ValueRead("bar".to_string(), (7, 4)).boxed(),
+                        arg: Some(Expr::ValueRead("foo".to_string(), (7, 8)).boxed()),
                     }),
                     Statement::Return(
                         Expr::NumericLiteral {
                             value: "1".to_owned(),
                             ty: types::INT32
                         },
-                        (8, 5)
+                        (8, 4)
                     )
                 ]),
                 generictypes: None,
@@ -2068,7 +2068,7 @@ let main _ : int32 -> int32 =
         assert_eq!(
             parser.next_statement().unwrap(),
             Statement::Declaration(ValueDeclaration {
-                loc: (1, 5),
+                loc: (1, 4),
                 is_op: false,
                 ident: "main".to_string(),
                 ty: Some(ResolvedType::Function {
@@ -2077,12 +2077,12 @@ let main _ : int32 -> int32 =
                 }),
                 args: vec![ast::ArgDeclation {
                     ident: "_".to_string(),
-                    loc: (1, 10)
+                    loc: (1, 9)
                 }],
                 value: ValueType::Function(vec![
                     Statement::FnCall(FnCall {
-                        loc: (2, 5),
-                        value: Expr::ValueRead("put_int32".to_string(), (2, 5)).boxed(),
+                        loc: (2, 4),
+                        value: Expr::ValueRead("put_int32".to_string(), (2, 4)).boxed(),
                         arg: Some(
                             Expr::NumericLiteral {
                                 value: "100".to_owned(),
@@ -2092,8 +2092,8 @@ let main _ : int32 -> int32 =
                         )
                     }),
                     Statement::FnCall(FnCall {
-                        loc: (3, 5),
-                        value: Expr::ValueRead("print_str".to_string(), (3, 5)).boxed(),
+                        loc: (3, 4),
+                        value: Expr::ValueRead("print_str".to_string(), (3, 4)).boxed(),
                         arg: Some(Expr::StringLiteral("v".to_string()).boxed())
                     }),
                     Statement::Return(
@@ -2101,7 +2101,7 @@ let main _ : int32 -> int32 =
                             value: "32".to_string(),
                             ty: types::INT32,
                         },
-                        (4, 5)
+                        (4, 4)
                     )
                 ]),
                 generictypes: None,
@@ -2116,27 +2116,27 @@ let main _ : int32 -> int32 =
 
         assert_eq!(
             Expr::BinaryOpCall(BinaryOpCall {
-                loc: (0, 5),
+                loc: (0, 4),
                 lhs: Expr::NumericLiteral {
                     value: "100".to_string(),
                     ty: types::INT32
                 }
                 .boxed(),
                 rhs: Expr::BinaryOpCall(BinaryOpCall {
-                    loc: (0, 17),
+                    loc: (0, 16),
                     lhs: Expr::BinaryOpCall(BinaryOpCall {
-                        loc: (0, 11),
+                        loc: (0, 10),
                         lhs: Expr::NumericLiteral {
                             value: "100".to_string(),
                             ty: types::INT32
                         }
                         .boxed(),
-                        rhs: Expr::ValueRead("foo".to_string(), (0, 13)).boxed(),
+                        rhs: Expr::ValueRead("foo".to_string(), (0, 12)).boxed(),
                         operator: "*".to_string()
                     })
                     .boxed(),
                     rhs: Expr::BinaryOpCall(BinaryOpCall {
-                        loc: (0, 24),
+                        loc: (0, 23),
                         lhs: Expr::NumericLiteral {
                             value: "10".to_string(),
                             ty: types::INT32
@@ -2163,21 +2163,21 @@ let main _ : int32 -> int32 =
         let mut parser = Parser::from_source(SRC);
         assert_eq!(
             Statement::Declaration(ValueDeclaration {
-                loc: (0, 5),
+                loc: (0, 4),
                 is_op: false,
                 ident: "main".to_owned(),
                 ty: None,
                 args: vec![ast::ArgDeclation {
                     ident: "_".to_string(),
-                    loc: (0, 10)
+                    loc: (0, 9)
                 }],
                 value: ValueType::Function(vec![
                     Statement::FnCall(FnCall {
-                        loc: (1, 21),
-                        value: Expr::ValueRead("print_int32".to_owned(), (1, 5)).boxed(),
+                        loc: (1, 20),
+                        value: Expr::ValueRead("print_int32".to_owned(), (1, 4)).boxed(),
                         arg: Some(
                             Expr::BinaryOpCall(BinaryOpCall {
-                                loc: (1, 21),
+                                loc: (1, 20),
                                 operator: "+".to_owned(),
                                 lhs: Expr::NumericLiteral {
                                     value: "100".to_owned(),
@@ -2198,7 +2198,7 @@ let main _ : int32 -> int32 =
                             value: "0".to_owned(),
                             ty: types::INT32
                         },
-                        (2, 5)
+                        (2, 4)
                     )
                 ]),
                 generictypes: None,
@@ -2210,13 +2210,13 @@ let main _ : int32 -> int32 =
         let mut parser = Parser::from_source(SRC_MEMBER_ACCESS);
         assert_eq!(
             ast::Expr::BinaryOpCall(BinaryOpCall {
-                loc: (0, 9),
+                loc: (0, 8),
                 lhs: ast::Expr::BinaryOpCall(BinaryOpCall {
-                    loc: (0, 5),
+                    loc: (0, 4),
                     lhs: ast::Expr::BinaryOpCall(BinaryOpCall {
-                        loc: (0, 2),
-                        lhs: ast::Expr::ValueRead("a".to_string(), (0, 1)).boxed(),
-                        rhs: ast::Expr::ValueRead("b".to_string(), (0, 3)).boxed(),
+                        loc: (0, 1),
+                        lhs: ast::Expr::ValueRead("a".to_string(), (0, 0)).boxed(),
+                        rhs: ast::Expr::ValueRead("b".to_string(), (0, 2)).boxed(),
                         operator: ".".to_string()
                     })
                     .boxed(),
@@ -2229,9 +2229,9 @@ let main _ : int32 -> int32 =
                 })
                 .boxed(),
                 rhs: ast::Expr::BinaryOpCall(BinaryOpCall {
-                    loc: (0, 12),
-                    lhs: ast::Expr::ValueRead("c".to_string(), (0, 11)).boxed(),
-                    rhs: ast::Expr::ValueRead("d".to_string(), (0, 13)).boxed(),
+                    loc: (0, 11),
+                    lhs: ast::Expr::ValueRead("c".to_string(), (0, 10)).boxed(),
+                    rhs: ast::Expr::ValueRead("d".to_string(), (0, 12)).boxed(),
                     operator: ".".to_string()
                 })
                 .boxed(),
@@ -2243,17 +2243,17 @@ let main _ : int32 -> int32 =
         let mut parser = Parser::from_source("(foo bar) && (baz quz)");
         assert_eq!(
             ast::Expr::BinaryOpCall(BinaryOpCall {
-                loc: (0, 11),
+                loc: (0, 10),
                 lhs: ast::Expr::FnCall(FnCall {
-                    loc: (0, 6),
-                    value: ast::Expr::ValueRead("foo".to_string(), (0, 2)).boxed(),
-                    arg: Some(ast::Expr::ValueRead("bar".to_string(), (0, 6)).boxed())
+                    loc: (0, 5),
+                    value: ast::Expr::ValueRead("foo".to_string(), (0, 1)).boxed(),
+                    arg: Some(ast::Expr::ValueRead("bar".to_string(), (0, 5)).boxed())
                 })
                 .boxed(),
                 rhs: ast::Expr::FnCall(FnCall {
-                    loc: (0, 19),
-                    value: ast::Expr::ValueRead("baz".to_string(), (0, 15)).boxed(),
-                    arg: Some(ast::Expr::ValueRead("quz".to_string(), (0, 19)).boxed())
+                    loc: (0, 18),
+                    value: ast::Expr::ValueRead("baz".to_string(), (0, 14)).boxed(),
+                    arg: Some(ast::Expr::ValueRead("quz".to_string(), (0, 18)).boxed())
                 })
                 .boxed(),
                 operator: "&&".to_string()
@@ -2268,11 +2268,11 @@ let main _ : int32 -> int32 =
         let mut parser = Parser::from_source("for<T> let test a : T -> T = a");
         assert_eq!(
             ast::Declaration::Value(ValueDeclaration {
-                loc: (0, 12),
+                loc: (0, 11),
                 is_op: false,
                 ident: "test".to_string(),
                 args: vec![ast::ArgDeclation {
-                    loc: (0, 17),
+                    loc: (0, 16),
                     ident: "a".to_string(),
                 }],
                 ty: Some(ResolvedType::Function {
@@ -2285,10 +2285,10 @@ let main _ : int32 -> int32 =
                     }
                     .boxed(),
                 }),
-                value: ast::ValueType::Expr(ast::Expr::ValueRead("a".to_string(), (0, 30))),
+                value: ast::ValueType::Expr(ast::Expr::ValueRead("a".to_string(), (0, 29))),
                 generictypes: Some(ast::GenericsDecl {
                     for_loc:(0,0),
-                    decls:[((0,5),"T".to_string())].into_iter().collect(),
+                    decls:[((0,4),"T".to_string())].into_iter().collect(),
                 }),
             }),
             parser.declaration().unwrap(),
@@ -2312,9 +2312,9 @@ for<T,U> type Tuple = {
                 values: vec![ast::FieldDecl {
                     name: "a".to_string(),
                     ty: types::INT32,
-                    loc: (1, 5),
+                    loc: (1, 4),
                 }],
-                loc: (0, 6)
+                loc: (0, 5)
             },)),
             parser.declaration().unwrap(),
             "basic"
@@ -2323,8 +2323,8 @@ for<T,U> type Tuple = {
             ast::Declaration::TypeDefinition(ast::TypeDefinition::Struct(StructDefinition {
                 ident: "Tuple".to_string(),
                 generics: Some(ast::GenericsDecl {
-                    for_loc : (0,0),
-                    decls:vec![((0,5),"T".to_string()), ((0,0),"U".to_string())],
+                    for_loc : (3,0),
+                    decls:vec![((3,4),"T".to_string()), ((3,6),"U".to_string())],
                 }),
                 values: vec![
                     ast::FieldDecl {
@@ -2332,17 +2332,17 @@ for<T,U> type Tuple = {
                         ty: ResolvedType::Generic {
                             name: "T".to_string()
                         },
-                        loc: (4, 5)
+                        loc: (4, 4)
                     },
                     ast::FieldDecl {
                         name: "second".to_string(),
                         ty: ResolvedType::Generic {
                             name: "U".to_string()
                         },
-                        loc: (5, 5)
+                        loc: (5, 4)
                     },
                 ],
-                loc: (3, 15)
+                loc: (3, 14)
             })),
             parser.declaration().unwrap(),
             "generic"
@@ -2357,16 +2357,16 @@ for<T,U> type Tuple = {
         let mut parser = Parser::from_source(SRC);
         assert_eq!(
             ast::Declaration::Value(ValueDeclaration {
-                loc: (0, 5),
+                loc: (0, 4),
                 is_op: false,
                 ident: "foo".to_string(),
                 args: vec![
                     ArgDeclation {
-                        loc: (0, 9),
+                        loc: (0, 8),
                         ident: "a".to_string()
                     },
                     ArgDeclation {
-                        loc: (0, 11),
+                        loc: (0, 10),
                         ident: "b".to_string()
                     },
                 ],
@@ -2391,7 +2391,7 @@ for<T,U> type Tuple = {
                         value: "0".to_string(),
                         ty: types::INT32
                     },
-                    (1, 5)
+                    (1, 4)
                 )]),
                 generictypes: None
             }),
@@ -2405,7 +2405,7 @@ for<T,U> type Tuple = {
         let mut parser = Parser::from_source(SRC);
         assert_eq!(
             ast::Expr::StructConstruction(StructConstruction {
-                loc: (0, 5),
+                loc: (0, 4),
                 fields: HashMap::from([(
                     "a".to_string(),
                     (
@@ -2413,7 +2413,7 @@ for<T,U> type Tuple = {
                             value: "0".to_string(),
                             ty: types::INT32
                         },
-                        (0, 7)
+                        (0, 6)
                     )
                 )]),
                 generics: Vec::new(),
@@ -2423,7 +2423,7 @@ for<T,U> type Tuple = {
         );
         assert_eq!(
             ast::Expr::StructConstruction(StructConstruction {
-                loc: (0, 15),
+                loc: (0, 14),
                 fields: HashMap::from([(
                     "a".to_string(),
                     (
@@ -2431,7 +2431,7 @@ for<T,U> type Tuple = {
                             value: "0".to_string(),
                             ty: types::INT32
                         },
-                        (0, 17)
+                        (0, 16)
                     )
                 )]),
                 generics: vec![types::INT32],
@@ -2449,19 +2449,19 @@ for<T,U> type Tuple = {
         let mut parser = Parser::from_source(include_str!("../../samples/control_flow_if.fb"));
         assert_eq!(
             ast::Declaration::Value(ValueDeclaration {
-                loc: (0, 5),
+                loc: (0, 4),
                 is_op: false,
                 ident: "inline_expr".to_string(),
                 args: vec![ast::ArgDeclation {
                     ident: "a".to_string(),
-                    loc: (0, 17)
+                    loc: (0, 16)
                 }],
                 ty: Some(ResolvedType::Function {
                     arg: types::BOOL.boxed(),
                     returns: types::INT32.boxed()
                 }),
                 value: ast::ValueType::Expr(ast::Expr::If(IfExpr {
-                    cond: ast::Expr::ValueRead("a".to_string(), (0, 40)).boxed(),
+                    cond: ast::Expr::ValueRead("a".to_string(), (0, 39)).boxed(),
                     true_branch: (
                         Vec::new(),
                         ast::Expr::NumericLiteral {
@@ -2479,7 +2479,7 @@ for<T,U> type Tuple = {
                         }
                         .boxed()
                     ),
-                    loc: (0, 37)
+                    loc: (0, 36)
                 })),
                 generictypes: None
             }),
@@ -2489,24 +2489,24 @@ for<T,U> type Tuple = {
 
         assert_eq!(
             ast::Declaration::Value(ValueDeclaration {
-                loc: (2, 5),
+                loc: (2, 4),
                 is_op: false,
                 ident: "out_of_line_expr".to_string(),
                 args: vec![ast::ArgDeclation {
                     ident: "a".to_string(),
-                    loc: (2, 22)
+                    loc: (2, 21)
                 }],
                 ty: Some(ResolvedType::Function {
                     arg: types::BOOL.boxed(),
                     returns: types::INT32.boxed()
                 }),
                 value: ast::ValueType::Expr(ast::Expr::If(IfExpr {
-                    cond: ast::Expr::ValueRead("a".to_string(), (2, 45)).boxed(),
+                    cond: ast::Expr::ValueRead("a".to_string(), (2, 44)).boxed(),
                     true_branch: (
                         Vec::new(),
                         ast::Expr::FnCall(ast::FnCall {
-                            loc: (3, 9),
-                            value: ast::Expr::ValueRead("fun".to_string(), (3, 9)).boxed(),
+                            loc: (3, 8),
+                            value: ast::Expr::ValueRead("fun".to_string(), (3, 8)).boxed(),
                             arg: Some(
                                 ast::Expr::NumericLiteral {
                                     value: "0".to_string(),
@@ -2526,7 +2526,7 @@ for<T,U> type Tuple = {
                         }
                         .boxed()
                     ),
-                    loc: (2, 42)
+                    loc: (2, 41)
                 })),
                 generictypes: None
             }),
@@ -2536,11 +2536,11 @@ for<T,U> type Tuple = {
 
         assert_eq!(
             ast::Declaration::Value(ValueDeclaration {
-                loc: (7, 5),
+                loc: (7, 4),
                 is_op: false,
                 ident: "expr_with_statement".to_string(),
                 args: vec![ast::ArgDeclation {
-                    loc: (7, 25),
+                    loc: (7, 24),
                     ident: "a".to_string()
                 }],
                 ty: Some(ResolvedType::Function {
@@ -2548,11 +2548,11 @@ for<T,U> type Tuple = {
                     returns: types::INT32.boxed()
                 }),
                 value: ast::ValueType::Expr(ast::Expr::If(IfExpr {
-                    cond: ast::Expr::ValueRead("a".to_string(), (7, 48)).boxed(),
+                    cond: ast::Expr::ValueRead("a".to_string(), (7, 47)).boxed(),
                     true_branch: (
                         vec![ast::Statement::FnCall(FnCall {
-                            loc: (8, 9),
-                            value: ast::Expr::ValueRead("bar".to_string(), (8, 9)).boxed(),
+                            loc: (8, 8),
+                            value: ast::Expr::ValueRead("bar".to_string(), (8, 8)).boxed(),
                             arg: Some(
                                 ast::Expr::NumericLiteral {
                                     value: "3".to_string(),
@@ -2570,8 +2570,8 @@ for<T,U> type Tuple = {
                     else_ifs: Vec::new(),
                     else_branch: (
                         vec![ast::Statement::FnCall(FnCall {
-                            loc: (11, 9),
-                            value: ast::Expr::ValueRead("baz".to_string(), (11, 9)).boxed(),
+                            loc: (11, 8),
+                            value: ast::Expr::ValueRead("baz".to_string(), (11, 8)).boxed(),
                             arg: Some(
                                 ast::Expr::NumericLiteral {
                                     value: "4".to_string(),
@@ -2586,7 +2586,7 @@ for<T,U> type Tuple = {
                         }
                         .boxed()
                     ),
-                    loc: (7, 45)
+                    loc: (7, 44)
                 })),
                 generictypes: None,
             }),
@@ -2596,16 +2596,16 @@ for<T,U> type Tuple = {
 
         assert_eq!(
             ast::Declaration::Value(ValueDeclaration {
-                loc: (14, 5),
+                loc: (14, 4),
                 is_op: false,
                 ident: "expr_with_else_if".to_string(),
                 args: vec![
                     ast::ArgDeclation {
-                        loc: (14, 23),
+                        loc: (14, 22),
                         ident: "a".to_string()
                     },
                     ast::ArgDeclation {
-                        loc: (14, 25),
+                        loc: (14, 24),
                         ident: "b".to_string()
                     },
                 ],
@@ -2618,7 +2618,7 @@ for<T,U> type Tuple = {
                     .boxed()
                 }),
                 value: ValueType::Expr(ast::Expr::If(IfExpr {
-                    cond: ast::Expr::ValueRead("a".to_string(), (14, 56)).boxed(),
+                    cond: ast::Expr::ValueRead("a".to_string(), (14, 55)).boxed(),
                     true_branch: (
                         Vec::new(),
                         ast::Expr::NumericLiteral {
@@ -2628,7 +2628,7 @@ for<T,U> type Tuple = {
                         .boxed()
                     ),
                     else_ifs: vec![(
-                        ast::Expr::ValueRead("b".to_string(), (14, 73)).boxed(),
+                        ast::Expr::ValueRead("b".to_string(), (14, 72)).boxed(),
                         Vec::new(),
                         ast::Expr::NumericLiteral {
                             value: "1".to_string(),
@@ -2644,7 +2644,7 @@ for<T,U> type Tuple = {
                         }
                         .boxed()
                     ),
-                    loc: (14, 53)
+                    loc: (14, 52)
                 })),
                 generictypes: None
             }),
@@ -2654,11 +2654,11 @@ for<T,U> type Tuple = {
 
         assert_eq!(
             ast::Declaration::Value(ValueDeclaration {
-                loc: (16, 5),
+                loc: (16, 4),
                 is_op: false,
                 ident: "statement".to_string(),
                 args: vec![ast::ArgDeclation {
-                    loc: (16, 15),
+                    loc: (16, 14),
                     ident: "a".to_string()
                 }],
                 ty: Some(ResolvedType::Function {
@@ -2666,11 +2666,11 @@ for<T,U> type Tuple = {
                     returns: types::INT32.boxed()
                 }),
                 value: ast::ValueType::Function(vec![ast::Statement::IfStatement(IfBranching {
-                    cond: ast::Expr::ValueRead("a".to_string(), (17, 8)).boxed(),
+                    cond: ast::Expr::ValueRead("a".to_string(), (17, 7)).boxed(),
                     true_branch: vec![
                         ast::Statement::FnCall(FnCall {
-                            loc: (18, 9),
-                            value: ast::Expr::ValueRead("foo".to_string(), (18, 9)).boxed(),
+                            loc: (18, 8),
+                            value: ast::Expr::ValueRead("foo".to_string(), (18, 8)).boxed(),
                             arg: Some(
                                 ast::Expr::NumericLiteral {
                                     value: "3".to_string(),
@@ -2684,14 +2684,14 @@ for<T,U> type Tuple = {
                                 value: "0".to_string(),
                                 ty: types::INT32
                             },
-                            (19, 9)
+                            (19, 8)
                         ),
                     ],
                     else_ifs: Vec::new(),
                     else_branch: vec![
                         ast::Statement::FnCall(FnCall {
-                            loc: (21, 9),
-                            value: ast::Expr::ValueRead("bar".to_string(), (21, 9)).boxed(),
+                            loc: (21, 8),
+                            value: ast::Expr::ValueRead("bar".to_string(), (21, 8)).boxed(),
                             arg: Some(
                                 ast::Expr::NumericLiteral {
                                     value: "4".to_string(),
@@ -2705,10 +2705,10 @@ for<T,U> type Tuple = {
                                 value: "1".to_string(),
                                 ty: types::INT32
                             },
-                            (22, 9)
+                            (22, 8)
                         ),
                     ],
-                    loc: (17, 5)
+                    loc: (17, 4)
                 })]),
                 generictypes: None,
             }),
@@ -2718,16 +2718,16 @@ for<T,U> type Tuple = {
 
         assert_eq!(
             ast::Declaration::Value(ValueDeclaration {
-                loc: (24, 5),
+                loc: (24, 4),
                 is_op: false,
                 ident: "statement_with_else_if".to_string(),
                 args: vec![
                     ast::ArgDeclation {
-                        loc: (24, 28),
+                        loc: (24, 27),
                         ident: "a".to_string()
                     },
                     ast::ArgDeclation {
-                        loc: (24, 30),
+                        loc: (24, 29),
                         ident: "b".to_string()
                     },
                 ],
@@ -2740,22 +2740,22 @@ for<T,U> type Tuple = {
                     .boxed(),
                 }),
                 value: ast::ValueType::Function(vec![ast::Statement::IfStatement(IfBranching {
-                    cond: ast::Expr::ValueRead("a".to_string(), (25, 8)).boxed(),
+                    cond: ast::Expr::ValueRead("a".to_string(), (25, 7)).boxed(),
                     true_branch: vec![ast::Statement::Return(
                         ast::Expr::NumericLiteral {
                             value: "0".to_string(),
                             ty: types::INT32
                         },
-                        (26, 9)
+                        (26, 8)
                     )],
                     else_ifs: vec![(
-                        ast::Expr::ValueRead("b".to_string(), (27, 13)).boxed(),
+                        ast::Expr::ValueRead("b".to_string(), (27, 12)).boxed(),
                         vec![ast::Statement::Return(
                             ast::Expr::NumericLiteral {
                                 value: "1".to_string(),
                                 ty: types::INT32
                             },
-                            (28, 9)
+                            (28, 8)
                         )]
                     )],
                     else_branch: vec![ast::Statement::Return(
@@ -2763,9 +2763,9 @@ for<T,U> type Tuple = {
                             value: "2".to_string(),
                             ty: types::INT32
                         },
-                        (30, 9)
+                        (30, 8)
                     )],
-                    loc: (25, 5),
+                    loc: (25, 4),
                 })]),
                 generictypes: None,
             }),
@@ -2775,16 +2775,16 @@ for<T,U> type Tuple = {
 
         assert_eq!(
             ast::Declaration::Value(ValueDeclaration {
-                loc: (32, 5),
+                loc: (32, 4),
                 is_op: false,
                 ident: "expr_multi_with_elseif".to_string(),
                 args: vec![
                     ast::ArgDeclation {
-                        loc: (32, 28),
+                        loc: (32, 27),
                         ident: "a".to_string()
                     },
                     ast::ArgDeclation {
-                        loc: (32, 30),
+                        loc: (32, 29),
                         ident: "b".to_string()
                     },
                 ],
@@ -2797,7 +2797,7 @@ for<T,U> type Tuple = {
                     .boxed()
                 }),
                 value: ValueType::Expr(ast::Expr::If(IfExpr {
-                    cond: ast::Expr::ValueRead("a".to_string(), (32, 61)).boxed(),
+                    cond: ast::Expr::ValueRead("a".to_string(), (32, 60)).boxed(),
                     true_branch: (
                         Vec::new(),
                         ast::Expr::NumericLiteral {
@@ -2807,7 +2807,7 @@ for<T,U> type Tuple = {
                         .boxed(),
                     ),
                     else_ifs: vec![(
-                        ast::Expr::ValueRead("b".to_string(), (34, 13)).boxed(),
+                        ast::Expr::ValueRead("b".to_string(), (34, 12)).boxed(),
                         Vec::new(),
                         ast::Expr::NumericLiteral {
                             value: "1".to_string(),
@@ -2823,7 +2823,7 @@ for<T,U> type Tuple = {
                         }
                         .boxed(),
                     ),
-                    loc: (32, 58)
+                    loc: (32, 57)
                 })),
                 generictypes: None,
             }),
@@ -2837,11 +2837,11 @@ for<T,U> type Tuple = {
         let mut parser = Parser::from_source(include_str!("../../samples/control_flow_match.fb"));
         assert_eq!(
             ast::Declaration::Value(ValueDeclaration {
-                loc: (0, 5),
+                loc: (0, 4),
                 is_op: false,
                 ident: "match_expr_ints".to_string(),
                 args: vec![ast::ArgDeclation {
-                    loc: (0, 21),
+                    loc: (0, 20),
                     ident: "x".to_string()
                 }],
                 ty: Some(ResolvedType::Function {
@@ -2849,8 +2849,8 @@ for<T,U> type Tuple = {
                     returns: types::INT32.boxed(),
                 }),
                 value: ast::ValueType::Expr(ast::Expr::Match(Match {
-                    loc: (0, 42),
-                    on: ast::Expr::ValueRead("x".to_string(), (0, 48)).boxed(),
+                    loc: (0, 41),
+                    on: ast::Expr::ValueRead("x".to_string(), (0, 47)).boxed(),
                     arms: vec![
                         MatchArm {
                             block: Vec::new(),
@@ -2862,7 +2862,7 @@ for<T,U> type Tuple = {
                                 .boxed()
                             ),
                             cond: Pattern::ConstNumber("1".to_string()),
-                            loc: (1, 7)
+                            loc: (1, 6)
                         },
                         MatchArm {
                             block: Vec::new(),
@@ -2874,7 +2874,7 @@ for<T,U> type Tuple = {
                                 .boxed()
                             ),
                             cond: Pattern::ConstNumber("2".to_string()),
-                            loc: (2, 7)
+                            loc: (2, 6)
                         },
                         MatchArm {
                             block: Vec::new(),
@@ -2886,7 +2886,7 @@ for<T,U> type Tuple = {
                                 .boxed()
                             ),
                             cond: Pattern::Default,
-                            loc: (3, 7)
+                            loc: (3, 6)
                         },
                     ]
                 })),
@@ -2898,11 +2898,11 @@ for<T,U> type Tuple = {
 
         assert_eq!(
             ast::Declaration::Value(ValueDeclaration {
-                loc: (5, 5),
+                loc: (5, 4),
                 is_op: false,
                 ident: "match_expr_with_block".to_string(),
                 args: vec![ArgDeclation {
-                    loc: (5, 27),
+                    loc: (5, 26),
                     ident: "x".to_string()
                 },],
                 ty: Some(ResolvedType::Function {
@@ -2910,13 +2910,13 @@ for<T,U> type Tuple = {
                     returns: types::INT32.boxed(),
                 }),
                 value: ValueType::Expr(ast::Expr::Match(Match {
-                    loc: (5, 48),
-                    on: ast::Expr::ValueRead("x".to_string(), (5, 54)).boxed(),
+                    loc: (5, 47),
+                    on: ast::Expr::ValueRead("x".to_string(), (5, 53)).boxed(),
                     arms: vec![
                         MatchArm {
-                            loc: (6, 7),
+                            loc: (6, 6),
                             block: vec![ast::Statement::Declaration(ValueDeclaration {
-                                loc: (7, 13),
+                                loc: (7, 12),
                                 is_op: false,
                                 ident: "a".to_string(),
                                 args: Vec::new(),
@@ -2929,8 +2929,8 @@ for<T,U> type Tuple = {
                             })],
                             ret: Some(
                                 ast::Expr::BinaryOpCall(BinaryOpCall {
-                                    loc: (8, 10),
-                                    lhs: ast::Expr::ValueRead("a".to_string(), (8, 9)).boxed(),
+                                    loc: (8, 9),
+                                    lhs: ast::Expr::ValueRead("a".to_string(), (8, 8)).boxed(),
                                     rhs: ast::Expr::NumericLiteral {
                                         value: "3".to_string(),
                                         ty: types::INT32
@@ -2952,15 +2952,15 @@ for<T,U> type Tuple = {
                                 .boxed()
                             ),
                             cond: Pattern::ConstNumber("2".to_string()),
-                            loc: (9, 7)
+                            loc: (9, 6)
                         },
                         MatchArm {
-                            loc: (10, 7),
+                            loc: (10, 6),
                             block: Vec::new(),
                             ret: Some(
                                 ast::Expr::BinaryOpCall(BinaryOpCall {
-                                    loc: (10, 13),
-                                    lhs: ast::Expr::ValueRead("a".to_string(), (10, 12)).boxed(),
+                                    loc: (10, 12),
+                                    lhs: ast::Expr::ValueRead("a".to_string(), (10, 11)).boxed(),
                                     rhs: ast::Expr::NumericLiteral {
                                         value: "2".to_string(),
                                         ty: types::INT32
@@ -2981,11 +2981,11 @@ for<T,U> type Tuple = {
         );
         assert_eq!(
             ast::Declaration::Value(ValueDeclaration {
-                loc: (12, 5),
+                loc: (12, 4),
                 is_op: false,
                 ident: "match_statement".to_string(),
                 args: vec![ArgDeclation {
-                    loc: (12, 21),
+                    loc: (12, 20),
                     ident: "x".to_string()
                 },],
                 ty: Some(ResolvedType::Function {
@@ -2993,13 +2993,13 @@ for<T,U> type Tuple = {
                     returns: types::UNIT.boxed()
                 }),
                 value: ValueType::Function(vec![ast::Statement::Match(Match {
-                    loc: (13, 5),
-                    on: ast::Expr::ValueRead("x".to_string(), (13, 11)).boxed(),
+                    loc: (13, 4),
+                    on: ast::Expr::ValueRead("x".to_string(), (13, 10)).boxed(),
                     arms: vec![
                         MatchArm {
                             block: vec![ast::Statement::FnCall(FnCall {
-                                loc: (15, 9),
-                                value: ast::Expr::ValueRead("foo".to_string(), (15, 9)).boxed(),
+                                loc: (15, 8),
+                                value: ast::Expr::ValueRead("foo".to_string(), (15, 8)).boxed(),
                                 arg: Some(
                                     ast::Expr::NumericLiteral {
                                         value: "0".to_string(),
@@ -3010,12 +3010,12 @@ for<T,U> type Tuple = {
                             })],
                             ret: None,
                             cond: Pattern::ConstNumber("1".to_string()),
-                            loc: (14, 7),
+                            loc: (14, 6),
                         },
                         MatchArm {
                             block: vec![ast::Statement::FnCall(FnCall {
-                                loc: (17, 9),
-                                value: ast::Expr::ValueRead("bar".to_string(), (17, 9)).boxed(),
+                                loc: (17, 8),
+                                value: ast::Expr::ValueRead("bar".to_string(), (17, 8)).boxed(),
                                 arg: Some(
                                     ast::Expr::NumericLiteral {
                                         value: "1".to_string(),
@@ -3026,14 +3026,14 @@ for<T,U> type Tuple = {
                             })],
                             ret: None,
                             cond: Pattern::ConstNumber("2".to_string()),
-                            loc: (16, 7),
+                            loc: (16, 6),
                         },
                         MatchArm {
                             block: Vec::new(),
                             ret: Some(
                                 ast::Expr::FnCall(FnCall {
-                                    loc: (18, 12),
-                                    value: ast::Expr::ValueRead("baz".to_string(), (18, 12))
+                                    loc: (18, 11),
+                                    value: ast::Expr::ValueRead("baz".to_string(), (18, 11))
                                         .boxed(),
                                     arg: Some(
                                         ast::Expr::NumericLiteral {
@@ -3046,7 +3046,7 @@ for<T,U> type Tuple = {
                                 .boxed()
                             ),
                             cond: Pattern::ConstNumber("3".to_string()),
-                            loc: (18, 7),
+                            loc: (18, 6),
                         },
                     ]
                 })]),

@@ -1168,8 +1168,8 @@ impl TypedExpr {
 
     pub(crate) fn get_loc(&self) -> crate::Location {
         match self {
-            Self::IntegerLiteral { value, size } => todo!(),
-            Self::FloatLiteral { value, size } => todo!(),
+            Self::IntegerLiteral { value:_, size: _ } => todo!(),
+            Self::FloatLiteral { value: _, size:_ } => todo!(),
             Self::StringLiteral(_) => todo!(),
             Self::CharLiteral(_) => todo!(),
             Self::UnitLiteral => todo!(),
@@ -1178,9 +1178,9 @@ impl TypedExpr {
             Self::UnaryOpCall(_) => todo!(),
             Self::FnCall(call) => call.loc,
             Self::BoolLiteral(_, loc) | Self::ValueRead(_, _, loc) => *loc,
-            Self::ArrayLiteral { contents } => todo!(),
-            Self::ListLiteral { contents } => todo!(),
-            Self::TupleLiteral { contents } => todo!(),
+            Self::ArrayLiteral { contents: _ } => todo!(),
+            Self::ListLiteral { contents: _ } => todo!(),
+            Self::TupleLiteral { contents: _ } => todo!(),
             Self::StructConstruction(con) => con.loc,
             Self::IfExpr(ifexpr) => ifexpr.loc,
             Self::Match(match_) => match_.loc,
@@ -1527,8 +1527,10 @@ impl TypedIfExpr {
         ) {
             Ok(ret) => {
                 if expected_ty == ResolvedType::Error {
-                    //hopefully this only happens if there is only if/else and the if branch doesn't have a valid expression
+                    #[allow(unused_assignments)]//here to supress a warning for now.
+                    {//hopefully this only happens if there is only if/else and the if branch doesn't have a valid expression
                     expected_ty = ret.get_ty();
+                    }
                     // not sure what to report here tbh.
                 } else if ret.get_ty() != expected_ty {
                     let loc = ret.get_loc();
@@ -1907,8 +1909,8 @@ impl TypedBinaryOpCall {
                         (lhs, _) if lhs.is_float() => lhs,
                         (_, rhs) if rhs.is_float() => rhs,
                         (lhs, rhs) => {
-                            let ResolvedType::Int { signed : lhs_signed, width : lhs_w } = lhs else { unreachable!() };
-                            let ResolvedType::Int { signed : rhs_signed, width : rhs_w } = rhs else { unreachable!() };
+                            let ResolvedType::Int { signed : _lhs_signed, width : lhs_w } = lhs else { unreachable!() };
+                            let ResolvedType::Int { signed : _rhs_signed, width : rhs_w } = rhs else { unreachable!() };
                             let max = lhs_w.max(rhs_w);
                             ResolvedType::Float {
                                 width: match max {
@@ -2121,8 +2123,8 @@ impl TypedBinaryOpCall {
                             (lhs, _) if lhs.is_float() => lhs,
                             (_, rhs) if rhs.is_float() => rhs,
                             (lhs, rhs) => {
-                                let ResolvedType::Int { signed : lhs_signed, width : lhs_w } = lhs else { unreachable!() };
-                                let ResolvedType::Int { signed : rhs_signed, width : rhs_w } = rhs else { unreachable!() };
+                                let ResolvedType::Int { signed : _lhs_signed, width : lhs_w } = lhs else { unreachable!() };
+                                let ResolvedType::Int { signed : _rhs_signed, width : rhs_w } = rhs else { unreachable!() };
                                 let max = lhs_w.max(rhs_w);
                                 ResolvedType::Float {
                                     width: match max {

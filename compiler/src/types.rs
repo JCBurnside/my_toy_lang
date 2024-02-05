@@ -1,10 +1,10 @@
-use std::{collections::HashMap, mem::size_of};
+use std::collections::HashMap;
 
 use crate::{typed_ast, util::ExtraUtilFunctions};
 #[cfg(feature = "full")]
 use inkwell::{
     context::Context,
-    debug_info::{DIFile, DIFlags, DIFlagsConstants, DISubroutineType, DIType, DebugInfoBuilder},
+    debug_info::DIType,
     targets::TargetData,
     types::{AnyType, AnyTypeEnum, BasicType, BasicTypeEnum, FunctionType},
     AddressSpace,
@@ -30,7 +30,7 @@ impl IntWidth {
             _ => unimplemented!("custom width ints not supported currently"),
         }
     }
-
+    #[allow(unused)]
     fn as_bits(&self) -> u64 {
         match self {
             Self::Eight => 8,
@@ -63,7 +63,7 @@ impl FloatWidth {
             _ => unimplemented!("custom width floats not supported"),
         }
     }
-
+    #[allow(unused)]
     fn as_bits(&self) -> u64 {
         match self {
             Self::ThirtyTwo => 32,
@@ -498,7 +498,7 @@ pub use consts::*;
 pub struct TypeResolver<'ctx> {
     known: HashMap<ResolvedType, AnyTypeEnum<'ctx>>,
     ctx: &'ctx Context,
-    ditypes: HashMap<ResolvedType, DIType<'ctx>>,
+    _ditypes: HashMap<ResolvedType, DIType<'ctx>>,
     target_data: TargetData,
 }
 
@@ -549,7 +549,7 @@ impl<'ctx> TypeResolver<'ctx> {
         Self {
             known,
             ctx,
-            ditypes: HashMap::new(),
+            _ditypes: HashMap::new(),
             target_data,
         }
     }
