@@ -39,9 +39,10 @@ impl TypedModuleDeclaration {
                             name: strct.ident.clone(),
                             generics: strct
                                 .generics
-                                .iter()
-                                .map(|it| ResolvedType::Generic { name: it.clone() })
-                                .collect(),
+                                .clone()
+                                .map(ResolvedGenericsDecl::from)
+                                .map(|g| g.decls.into_iter().map(|(_,ty)| ty).collect())
+                                .unwrap_or_else(Vec::new),
                         },
                     )),
                 },
@@ -97,6 +98,29 @@ impl TypedModuleDeclaration {
     }
 }
 
+#[derive(Debug,PartialEq,Clone)]
+pub struct ResolvedGenericsDecl {
+    for_loc : crate::Location,
+    decls : Vec<(crate::Location,ResolvedType)>
+}
+
+impl ResolvedGenericsDecl {
+    fn from(
+        other : ast::GenericsDecl
+    ) -> Self {
+        let ast::GenericsDecl { for_loc, decls} = other;
+        Self {
+            for_loc,
+            decls: decls.into_iter().map(|(loc,name)| {
+                (
+                    loc,
+                    ResolvedType::Generic { name }
+                )
+            }).collect()
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum TypedDeclaration {
     Mod(TypedModuleDeclaration),
@@ -149,7 +173,10 @@ impl TypedDeclaration {
     pub(crate) fn get_generics(&self) -> Vec<String> {
         match self {
             TypedDeclaration::Mod(_) => Vec::new(),
-            TypedDeclaration::Value(v) => v.generictypes.clone(),
+            TypedDeclaration::Value(v) => v.generictypes.as_ref().map(|g| g.decls.iter().map(|(_,it)|{
+                let ResolvedType::Generic { name } = it else {unreachable!()};
+                name.clone()
+            }).collect()).unwrap_or_else(Vec::new),
             TypedDeclaration::TypeDefinition(define) => define.get_generics(),
         }
     }
@@ -218,7 +245,18 @@ impl ResolvedTypeDeclaration {
 
     fn get_generics(&self) -> Vec<String> {
         match self {
-            ResolvedTypeDeclaration::Struct(strct) => strct.generics.clone(),
+            ResolvedTypeDeclaration::Struct(strct) => strct.generics
+            .as_ref()
+            .map(|g| 
+                g.decls.iter()
+                .map(|(_,name)|{
+                    let ResolvedType::Generic { name } = name else { unreachable!() };
+                    name.clone()
+                }
+                )
+                .collect()
+            )
+            .unwrap_or_else(Vec::new),
         }
     }
 
@@ -232,7 +270,7 @@ impl ResolvedTypeDeclaration {
 #[derive(Debug, PartialEq, Clone)]
 pub struct StructDefinition {
     pub(crate) ident: String,
-    pub(crate) generics: Vec<String>,
+    pub(crate) generics: Option<ResolvedGenericsDecl>,
     pub(crate) fields: Vec<ast::FieldDecl>,
     pub(crate) loc: crate::Location,
 }
@@ -248,22 +286,24 @@ impl StructDefinition {
             mut values,
             loc,
         } = data;
-        for generic in &generics {
-            values.iter_mut().for_each(|field| {
-                field.ty = field.ty.clone().replace_user_with_generic(&generic);
-            })
+        if let Some(generics) = &generics {
+            for (_,generic) in &generics.decls {
+                values.iter_mut().for_each(|field| {
+                    field.ty = field.ty.clone().replace_user_with_generic(&generic);
+                })
+            }
         }
 
         Ok(Self {
             ident,
-            generics,
+            generics:generics.map(ResolvedGenericsDecl::from),
             fields: values,
             loc,
         })
     }
 
     fn lower_generics(&mut self, context: &mut LoweringContext) {
-        if self.generics.is_empty() {
+        if self.generics.is_none() {
             for field in &mut self.fields {
                 field.ty.lower_generics(context)
             }
@@ -271,17 +311,21 @@ impl StructDefinition {
     }
 
     fn replace_types(&mut self, types: &[(String, ResolvedType)], context: &mut LoweringContext) {
-        if self.generics.len() == 0 {
+        if self.generics.is_none() {
             return;
         }
-        self.generics = self
-            .generics
+        
+        let generics = 
+            self.generics.as_ref().unwrap().decls
             .iter()
             .cloned()
-            .filter(|name| !types.iter().map(|(n, _)| n).contains(name))
-            .collect();
+            .filter(|(_,it)| match it {
+                ResolvedType::Generic { name }  => !types.iter().map(|(n,_)| n).contains(name),
+                _ => true,
+            })
+            .collect::<Vec<_>>();
         assert_eq!(
-            self.generics.len(),
+            generics.len(),
             0,
             "generic not completed.  should not be reached!"
         );
@@ -307,7 +351,7 @@ pub struct TypedValueDeclaration {
     pub(crate) args: Vec<ArgDeclation>,
     pub(crate) value: TypedValueType,
     pub(crate) ty: ResolvedType,
-    pub(crate) generictypes: Vec<String>,
+    pub(crate) generictypes: Option<ResolvedGenericsDecl>,
     pub(crate) is_curried: bool,
 }
 pub(crate) fn collect_args(t: &ResolvedType) -> Vec<ResolvedType> {
@@ -375,7 +419,7 @@ impl TypedValueDeclaration {
             is_curried,
             ty: if is_curried { value.get_ty() } else { ty },
             value,
-            generictypes,
+            generictypes : generictypes.map(ResolvedGenericsDecl::from),
         })
     }
     fn lower_generics(&mut self, context: &mut LoweringContext) {
@@ -1710,7 +1754,13 @@ fn modify_declaration(
         }
         to_lower
             .generictypes
-            .retain(|g| !replaced.iter().any(|(r, _)| r == g))
+            .as_mut()
+            .unwrap()
+            .decls
+            .retain(|(_,g)| match g {
+                ResolvedType::Generic { name } =>!replaced.iter().any(|(r, _)| r == name),
+                _=>false
+            })
     }
     match &mut to_lower {
         TypedDeclaration::Mod(_) => unreachable!(),
@@ -2432,9 +2482,7 @@ mod tests {
     use crate::ast::{self, ArgDeclation};
     use crate::parser::Parser;
     use crate::typed_ast::{
-        ResolvedTypeDeclaration, StructDefinition, TypedBinaryOpCall, TypedDeclaration,
-        TypedFnCall, TypedIfBranching, TypedIfExpr, TypedMatch, TypedMatchArm,
-        TypedModuleDeclaration, TypedStatement, TypedValueDeclaration, TypedValueType,
+        ResolvedGenericsDecl, ResolvedTypeDeclaration, StructDefinition, TypedBinaryOpCall, TypedDeclaration, TypedFnCall, TypedIfBranching, TypedIfExpr, TypedMatch, TypedMatchArm, TypedModuleDeclaration, TypedStatement, TypedValueDeclaration, TypedValueType
     };
     use crate::types::{self, ResolvedType};
     use crate::util::ExtraUtilFunctions;
@@ -2691,7 +2739,7 @@ let main _ : () -> () =
                         value: "1".to_string(),
                         ty: types::INT32
                     }),
-                    generictypes: Vec::new()
+                    generictypes: None
                 }),
                 &HashMap::new(),
                 &HashMap::new(),
@@ -2707,7 +2755,7 @@ let main _ : () -> () =
                     size: types::IntWidth::ThirtyTwo
                 }),
                 ty: types::INT32,
-                generictypes: Vec::new(),
+                generictypes: None,
                 is_curried: false,
             }),
             "decl statement"
@@ -2785,7 +2833,7 @@ let main _ : () -> () =
                         },
                         (0, 0)
                     )]),
-                    generictypes: Vec::new(),
+                    generictypes: None,
                 }),
                 &HashMap::new(),
                 &HashMap::new(),
@@ -2810,7 +2858,7 @@ let main _ : () -> () =
                     },
                     (0, 0)
                 )]),
-                generictypes: Vec::new(),
+                generictypes: None,
                 is_curried: false
             }),
             r#"let test a : int32 -> int32 = 
@@ -2827,7 +2875,7 @@ let main _ : () -> () =
 for<T> let test a : T -> T = a
 
 let main _ : () -> () =
-    test 3
+    test 3;
 "#,
         );
         let module = parser.module("test".to_string());
@@ -2859,7 +2907,10 @@ let main _ : () -> () =
                     }
                     .boxed()
                 },
-                generictypes: vec!["T".to_string()],
+                generictypes: Some(ResolvedGenericsDecl {
+                    for_loc : (1,3),
+                    decls: vec![((1,5),ResolvedType::Generic { name:"T".to_string() })],
+                }),
                 is_curried: false,
             }),
             generic,
@@ -2907,7 +2958,7 @@ let main _ : () -> () =
                     arg: types::UNIT.boxed(),
                     returns: types::UNIT.boxed()
                 },
-                generictypes: Vec::new(),
+                generictypes: None,
                 is_curried: false,
             }),
             main,
@@ -2938,7 +2989,10 @@ let first a : Tuple<int32,float64> -> int32 =
             &TypedDeclaration::TypeDefinition(crate::typed_ast::ResolvedTypeDeclaration::Struct(
                 StructDefinition {
                     ident: "Tuple".to_string(),
-                    generics: vec!["T".to_string(), "U".to_string()],
+                    generics: Some(ResolvedGenericsDecl {
+                        for_loc : (0,0),
+                        decls:vec![((0,0), ResolvedType::Generic{ name: "T".to_string()}), ((0,0), ResolvedType::Generic{ name: "U".to_string()})]
+                    }),
                     fields: vec![
                         crate::ast::FieldDecl {
                             name: "first".to_string(),
@@ -2989,7 +3043,7 @@ let first a : Tuple<int32,float64> -> int32 =
                     .boxed(),
                     returns: types::INT32.boxed()
                 },
-                generictypes: Vec::new(),
+                generictypes: None,
                 is_curried: false,
             }),
             "post lowering function"
@@ -2999,7 +3053,7 @@ let first a : Tuple<int32,float64> -> int32 =
             generated_strct,
             &TypedDeclaration::TypeDefinition(ResolvedTypeDeclaration::Struct(StructDefinition {
                 ident: "Tuple<int32,float64>".to_string(),
-                generics: vec![],
+                generics: None,
                 fields: vec![
                     crate::ast::FieldDecl {
                         name: "first".to_string(),
@@ -3065,7 +3119,10 @@ let main _ : int32 -> int32 =
                     }
                     .boxed()
                 },
-                generictypes: vec!["T".to_string()],
+                generictypes: Some(ResolvedGenericsDecl {
+                    for_loc:(1,0),
+                    decls:vec![((1,5), ResolvedType::Generic{ name: "T".to_string()})],
+                }),
                 is_curried: false,
             }),
             "generic should be untouched"
@@ -3114,7 +3171,7 @@ let main _ : int32 -> int32 =
                     arg: types::INT32.boxed(),
                     returns: types::INT32.boxed()
                 },
-                generictypes: Vec::new(),
+                generictypes: None,
                 is_curried: false,
             }),
             "main should have the value read changed"
@@ -3137,7 +3194,7 @@ let main _ : int32 -> int32 =
                     arg: types::INT32.boxed(),
                     returns: types::INT32.boxed()
                 },
-                generictypes: Vec::new(),
+                generictypes: None,
                 is_curried: false,
             }),
             "this should be generated"
@@ -3242,7 +3299,7 @@ let statement_with_else_if a b : bool -> bool -> int32 =
                     arg: types::BOOL.boxed(),
                     returns: types::INT32.boxed()
                 },
-                generictypes: Vec::new(),
+                generictypes: None,
                 is_curried: false,
             }),
             expr,
@@ -3301,7 +3358,7 @@ let statement_with_else_if a b : bool -> bool -> int32 =
                         loc: (9, 5)
                     }
                 )]),
-                generictypes: Vec::new(),
+                generictypes: None,
                 is_curried: false,
             }),
             stmnt,
@@ -3446,7 +3503,7 @@ let as_statement a b : int32 -> int32 -> () =
                     }
                     .boxed()
                 },
-                generictypes: Vec::new(),
+                generictypes: None,
                 is_curried: false,
             }),
             simple,
@@ -3558,7 +3615,7 @@ let as_statement a b : int32 -> int32 -> () =
                     }
                     .boxed()
                 },
-                generictypes: Vec::new(),
+                generictypes: None,
                 is_curried: false,
             }),
             nest_in_call,
@@ -3687,7 +3744,7 @@ let as_statement a b : int32 -> int32 -> () =
                     }
                     .boxed(),
                 },
-                generictypes: Vec::new(),
+                generictypes: None,
                 is_curried: false,
             }),
             statement,

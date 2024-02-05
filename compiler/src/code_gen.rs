@@ -1612,7 +1612,7 @@ impl<'ctx> CodeGen<'ctx> {
             }
             TypedDeclaration::TypeDefinition(def) => match def {
                 crate::typed_ast::ResolvedTypeDeclaration::Struct(def) => {
-                    if !def.generics.is_empty() {
+                    if def.generics.is_some() {
                         return self.module.clone();
                     }
                     let strct = self.ctx.get_struct_type(&def.ident).unwrap();
@@ -1659,7 +1659,7 @@ impl<'ctx> CodeGen<'ctx> {
             }
             TypedDeclaration::TypeDefinition(def) => match def {
                 crate::typed_ast::ResolvedTypeDeclaration::Struct(decl) => {
-                    if decl.generics.len() != 0 {
+                    if decl.generics.is_some() {
                         return;
                     }
                     let _strct = self.ctx.opaque_struct_type(&decl.ident);

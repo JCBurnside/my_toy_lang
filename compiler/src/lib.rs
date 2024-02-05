@@ -95,9 +95,9 @@ pub fn from_file<'ctx>(
 
     ast.lower_generics(&HashMap::new());
     ast.declarations.retain(|it| match it {
-        TypedDeclaration::Value(it) => it.generictypes.is_empty(),
+        TypedDeclaration::Value(it) => it.generictypes.is_none(),
         TypedDeclaration::TypeDefinition(it) => match it {
-            ResolvedTypeDeclaration::Struct(strct) => strct.generics.is_empty(),
+            ResolvedTypeDeclaration::Struct(strct) => strct.generics.is_none(),
             _ => true,
         },
         _ => true,

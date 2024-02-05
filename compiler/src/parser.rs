@@ -8,8 +8,7 @@ use itertools::Itertools;
 
 use crate::{
     ast::{
-        self, BinaryOpCall, Expr, FnCall, Match, Pattern, Statement, StructConstruction,
-        ValueDeclaration, ValueType,
+        self, BinaryOpCall, Expr, FnCall, GenericsDecl, Match, Pattern, Statement, StructConstruction, ValueDeclaration, ValueType
     },
     lexer::TokenStream,
     tokens::Token,
@@ -891,7 +890,7 @@ where
         }
     }
 
-    fn type_decl(&mut self, generics: Vec<String>) -> Result<ast::TypeDefinition, ParseError> {
+    fn type_decl(&mut self, generics: Option<ast::GenericsDecl>) -> Result<ast::TypeDefinition, ParseError> {
         let Some((t,loc)) = self.stream.next() else {unreachable!()};
         match t {
             Token::Type => {
@@ -947,7 +946,7 @@ where
     fn struct_declaration(
         &mut self,
         ident: String,
-        generics: Vec<String>,
+        generics: Option<ast::GenericsDecl>,
         loc: crate::Location,
     ) -> Result<ast::StructDefinition, ParseError> {
         let Some((Token::CurlOpen,_)) = self.stream.next() else { unreachable!() };
@@ -962,9 +961,14 @@ where
                     return Err(ParseError { span: (0,10000), reason: ParseErrorReason::DeclarationError })
                 };
             let Some((Token::Colon,_)) = self.stream.next() else { return Err(ParseError { span: (0,10000), reason: ParseErrorReason::DeclarationError }) };
-            let ty = generics.iter().fold(self.collect_type()?, |result, it| {
-                result.replace_user_with_generic(&it)
-            });
+            let ty = self.collect_type()?;
+            let ty = if let Some(generics) = &generics {
+                generics.decls.iter().fold(ty, |result, (_,it)| {
+                    result.replace_user_with_generic(it)
+                })
+            } else {
+                ty
+            };
             if let Some((Token::Comma, _)) = self.stream.clone().next() {
                 self.stream.next();
             } else {
@@ -1004,9 +1008,9 @@ where
         })
     }
 
-    fn collect_generics(&mut self) -> Result<Vec<String>, ParseError> {
-        let generics = if let Some((Token::For, _)) = self.stream.peek() {
-            let Some((_,span)) = self.stream.next() else { unreachable!() };
+    fn collect_generics(&mut self) -> Result<Option<ast::GenericsDecl>, ParseError> {
+        let generics = if let Some((Token::For, _)) = self.stream.clone().next() {
+            let Some((_,for_loc)) = self.stream.next() else { unreachable!() };
             match self.stream.next() {
                 Some((Token::Op(op), _)) if op == "<" => {
                     let mut out = self
@@ -1019,12 +1023,15 @@ where
                     let num = out.len();
                     out.dedup();
                     if out.len() == num {
-                        out.into_iter()
-                            .filter_map(|(t, _)| {
+                        Some(ast::GenericsDecl {
+                            for_loc,
+                            decls:out.into_iter()
+                            .filter_map(|(t, loc)| {
                                 let Token::Ident(name) = t else { return None };
-                                Some(name)
+                                Some((loc,name))
                             })
                             .collect()
+                        })
                     } else {
                         return Err(ParseError {
                             span: first_span,
@@ -1034,15 +1041,15 @@ where
                 }
                 _ => {
                     return Err(ParseError {
-                        span,
+                        span:for_loc,
                         reason: ParseErrorReason::DeclarationError,
                     });
                 }
             }
         } else {
-            Vec::new()
+            None
         };
-        if generics.len() != 0 {
+        if generics.is_some() {
             while let Some((token, _)) = self.stream.clone().next() {
                 match token {
                     Token::Op(op) if op == ">" => {
@@ -1058,7 +1065,7 @@ where
         Ok(generics)
     }
 
-    fn fn_declaration(&mut self, generics: Vec<String>) -> Result<ValueDeclaration, ParseError> {
+    fn fn_declaration(&mut self, generics: Option<ast::GenericsDecl>) -> Result<ValueDeclaration, ParseError> {
         if let Some((Token::Let, start)) = self.stream.next() {
             let (token, ident_span) = self.stream.next().unwrap();
             return match token {
@@ -1085,7 +1092,7 @@ where
                                     ty: Some(ty),
                                     args: Vec::new(),
                                     value,
-                                    generictypes: Vec::new(),
+                                    generictypes: None,
                                 })
                             }
                             _ => Err(ParseError {
@@ -1119,9 +1126,13 @@ where
                         if let Some((Token::Colon, _next)) = self.stream.peek() {
                             self.stream.next();
                             let ty = self.collect_type()?;
-                            let ty = generics
+                            let ty = if let Some(generics) = &generics {
+                                generics.decls
                                 .iter()
-                                .fold(ty, |ty, name| ty.replace_user_with_generic(&name));
+                                .fold(ty, |ty, (_,name)| ty.replace_user_with_generic(&name))
+                            } else {
+                                ty
+                            };
                             let next = self.stream.next();
                             match next {
                                 Some((Token::Op(eq), _)) if eq == "=" => {
@@ -1251,9 +1262,13 @@ where
                         if let Some((Token::Colon, _next)) = self.stream.peek() {
                             self.stream.next();
                             let ty = self.collect_type()?;
-                            let ty = generics
+                            let ty = if let Some(generics) = &generics {
+                                generics.decls
                                 .iter()
-                                .fold(ty, |ty, name| ty.replace_user_with_generic(&name));
+                                .fold(ty, |ty, (_,name)| ty.replace_user_with_generic(name))
+                            } else {
+                                ty
+                            };
                             match self.stream.next() {
                                 Some((Token::Op(eq), _)) if eq == "=" => {
                                     let value = match self.stream.clone().nth(0) {
@@ -1834,13 +1849,13 @@ mod tests {
                     value: "5".to_string(),
                     ty: types::INT32
                 }),
-                generictypes: Vec::new(),
+                generictypes: None,
             }),
             parser.next_statement().expect("failed to parse")
         );
         let mut parser = Parser::from_source(
             r#"let foo _ : int32 -> int32 =
-    return 5
+    return 5;
 "#,
         );
         assert_eq!(
@@ -1863,7 +1878,7 @@ mod tests {
                     },
                     (1, 5)
                 )]),
-                generictypes: Vec::new(),
+                generictypes: None,
             }),
             parser.declaration().expect("failed to parse")
         )
@@ -1873,7 +1888,7 @@ mod tests {
     fn higher_kinded() {
         const ARG: &'static str = r#"
 let foo _ : ( int32 -> int32 ) -> int32 =
-    return 0
+    return 0;
 "#;
         let mut parser = Parser::from_source(ARG);
         assert_eq!(
@@ -1900,7 +1915,7 @@ let foo _ : ( int32 -> int32 ) -> int32 =
                     },
                     (2, 5)
                 )]),
-                generictypes: Vec::new(),
+                generictypes: None,
             }),
             parser.next_statement().expect("failed to parse"),
             "function as arg"
@@ -1934,7 +1949,7 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                     },
                     (2, 5)
                 )]),
-                generictypes: Vec::new(),
+                generictypes:None,
             }),
             parser.next_statement().expect("failed to parse"),
             "function as rt"
@@ -1956,7 +1971,7 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                     value: "3".to_owned(),
                     ty: types::INT32
                 }),
-                generictypes: Vec::new(),
+                generictypes: None,
             }),
             parser.declaration().unwrap(),
             "simple declaration"
@@ -1982,7 +1997,7 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                         ty: Some(types::STR),
                         args: Vec::new(),
                         value: ValueType::Expr(Expr::StringLiteral(r#"merp " yes"#.to_string())),
-                        generictypes: Vec::new(),
+                        generictypes: None,
                     }),
                     Statement::Return(
                         Expr::NumericLiteral {
@@ -1992,7 +2007,7 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                         (4, 5)
                     )
                 ]),
-                generictypes: Vec::new(),
+                generictypes: None,
             }),
             parser.declaration().unwrap(),
             "declaration with block"
@@ -2034,7 +2049,7 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                         (8, 5)
                     )
                 ]),
-                generictypes: Vec::new(),
+                generictypes: None,
             }),
             parser.declaration().unwrap(),
             "operator declaration w/ function call",
@@ -2089,7 +2104,7 @@ let main _ : int32 -> int32 =
                         (4, 5)
                     )
                 ]),
-                generictypes: Vec::new(),
+                generictypes: None,
             })
         )
     }
@@ -2186,7 +2201,7 @@ let main _ : int32 -> int32 =
                         (2, 5)
                     )
                 ]),
-                generictypes: Vec::new(),
+                generictypes: None,
             }),
             parser.next_statement().unwrap()
         );
@@ -2271,7 +2286,10 @@ let main _ : int32 -> int32 =
                     .boxed(),
                 }),
                 value: ast::ValueType::Expr(ast::Expr::ValueRead("a".to_string(), (0, 30))),
-                generictypes: ["T".to_string()].into_iter().collect(),
+                generictypes: Some(ast::GenericsDecl {
+                    for_loc:(0,0),
+                    decls:[((0,5),"T".to_string())].into_iter().collect(),
+                }),
             }),
             parser.declaration().unwrap(),
         )
@@ -2290,7 +2308,7 @@ for<T,U> type Tuple = {
         assert_eq!(
             ast::Declaration::TypeDefinition(ast::TypeDefinition::Struct(StructDefinition {
                 ident: "Foo".to_string(),
-                generics: Vec::new(),
+                generics: None,
                 values: vec![ast::FieldDecl {
                     name: "a".to_string(),
                     ty: types::INT32,
@@ -2304,7 +2322,10 @@ for<T,U> type Tuple = {
         assert_eq!(
             ast::Declaration::TypeDefinition(ast::TypeDefinition::Struct(StructDefinition {
                 ident: "Tuple".to_string(),
-                generics: vec!["T".to_string(), "U".to_string()],
+                generics: Some(ast::GenericsDecl {
+                    for_loc : (0,0),
+                    decls:vec![((0,5),"T".to_string()), ((0,0),"U".to_string())],
+                }),
                 values: vec![
                     ast::FieldDecl {
                         name: "first".to_string(),
@@ -2372,7 +2393,7 @@ for<T,U> type Tuple = {
                     },
                     (1, 5)
                 )]),
-                generictypes: Vec::new()
+                generictypes: None
             }),
             parser.declaration().unwrap()
         )
@@ -2460,7 +2481,7 @@ for<T,U> type Tuple = {
                     ),
                     loc: (0, 37)
                 })),
-                generictypes: Vec::new()
+                generictypes: None
             }),
             parser.declaration().unwrap(),
             "inline_expr"
@@ -2507,7 +2528,7 @@ for<T,U> type Tuple = {
                     ),
                     loc: (2, 42)
                 })),
-                generictypes: Vec::new()
+                generictypes: None
             }),
             parser.declaration().unwrap(),
             "out_of_line_expr"
@@ -2567,7 +2588,7 @@ for<T,U> type Tuple = {
                     ),
                     loc: (7, 45)
                 })),
-                generictypes: Vec::new(),
+                generictypes: None,
             }),
             parser.declaration().unwrap(),
             "expr_with_statement"
@@ -2625,7 +2646,7 @@ for<T,U> type Tuple = {
                     ),
                     loc: (14, 53)
                 })),
-                generictypes: Vec::new()
+                generictypes: None
             }),
             parser.declaration().unwrap(),
             "expr with else if"
@@ -2689,7 +2710,7 @@ for<T,U> type Tuple = {
                     ],
                     loc: (17, 5)
                 })]),
-                generictypes: Vec::new(),
+                generictypes: None,
             }),
             parser.declaration().unwrap(),
             "statement"
@@ -2746,7 +2767,7 @@ for<T,U> type Tuple = {
                     )],
                     loc: (25, 5),
                 })]),
-                generictypes: Vec::new(),
+                generictypes: None,
             }),
             parser.declaration().unwrap(),
             "statement_with_else_if"
@@ -2804,7 +2825,7 @@ for<T,U> type Tuple = {
                     ),
                     loc: (32, 58)
                 })),
-                generictypes: Vec::new(),
+                generictypes: None,
             }),
             parser.declaration().unwrap(),
             "multi line expr with else if"
@@ -2869,7 +2890,7 @@ for<T,U> type Tuple = {
                         },
                     ]
                 })),
-                generictypes: Vec::new(),
+                generictypes: None,
             }),
             parser.declaration().unwrap(),
             "match_expr_ints"
@@ -2904,7 +2925,7 @@ for<T,U> type Tuple = {
                                     value: "2".to_string(),
                                     ty: types::INT32
                                 }),
-                                generictypes: Vec::new()
+                                generictypes: None
                             })],
                             ret: Some(
                                 ast::Expr::BinaryOpCall(BinaryOpCall {
@@ -2953,7 +2974,7 @@ for<T,U> type Tuple = {
                         },
                     ]
                 })),
-                generictypes: Vec::new(),
+                generictypes: None,
             }),
             parser.declaration().unwrap(),
             "match_expr_with_block"
@@ -3029,7 +3050,7 @@ for<T,U> type Tuple = {
                         },
                     ]
                 })]),
-                generictypes: Vec::new()
+                generictypes: None
             }),
             parser.declaration().unwrap(),
             "match_statement",
