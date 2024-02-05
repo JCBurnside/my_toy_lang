@@ -20,7 +20,7 @@ pub(crate) struct Context {
     known_generic_types: HashMap<String, untyped_ast::TypeDefinition>,
     known_ops: HashMap<String, Vec<ResolvedType>>,
     known_values: BiMap<usize, ResolvedType>,
-    known_locals : HashMap<String, ResolvedType>,
+    known_locals: HashMap<String, ResolvedType>,
     equations: HashMap<usize, ResolvedType>, //? unsure of type here yet.
 }
 impl Context {
@@ -40,7 +40,7 @@ impl Context {
             known_generic_types,
             known_ops,
             known_values: BiMap::new(),
-            known_locals : HashMap::new(),
+            known_locals: HashMap::new(),
             equations: HashMap::new(),
         }
     }
@@ -119,7 +119,7 @@ impl Context {
                     }
                 });
                 let id = self.get_next_expr_id();
-                self.known_locals.insert(ident.clone(),ty.clone());
+                self.known_locals.insert(ident.clone(), ty.clone());
                 self.known_values.insert(id, ty.clone());
                 ast::ArgDeclaration { loc, ident, ty, id }
             })
@@ -244,7 +244,14 @@ impl Context {
         call: untyped_ast::FnCall,
         result_t: ResolvedType,
     ) -> ast::FnCall {
-        let untyped_ast::FnCall { loc, value, arg : Some(arg) } = call else {unreachable!()};
+        let untyped_ast::FnCall {
+            loc,
+            value,
+            arg: Some(arg),
+        } = call
+        else {
+            unreachable!()
+        };
         let arg = self.assign_ids_expr(*arg, None);
         let arg_t = arg.get_retty(self).boxed();
         let value = self.assign_ids_expr(
@@ -383,36 +390,75 @@ impl Context {
             untyped_ast::Expr::Match(match_) => ast::Expr::Match(self.assign_ids_match(match_)),
         }
     }
-    fn try_to_infer(&mut self, module:ast::ModuleDeclaration) {
-        
-    }
+    fn try_to_infer(&mut self, module: ast::ModuleDeclaration) {}
 
-    fn get_actual_type(&mut self, expr:&mut ast::Expr) ->  ResolvedType {
+    fn get_actual_type(
+        &mut self,
+        expr: &mut ast::Expr,
+        expected: Option<ResolvedType>,
+    ) -> ResolvedType {
         match expr {
-            ast::Expr::Error(_) =>ResolvedType::Error,
-            ast::Expr::NumericLiteral { value, id, ty } => ResolvedType::Number,
+            ast::Expr::Error(_) => ResolvedType::Error,
+            ast::Expr::NumericLiteral { value, id, ty } => {
+                if let Some(ety) = expected {
+                    *ty = if (ety.is_float() || ety.is_int()) && ty == &ResolvedType::Number
+                        || &ety == ty
+                    {
+                        ety
+                    } else {
+                        ResolvedType::Error
+                    };
+                    ty.clone()
+                } else {
+                    ty.clone()
+                }
+            }
             ast::Expr::StringLiteral(_) => ResolvedType::Str,
             ast::Expr::CharLiteral(_) => ResolvedType::Char,
             ast::Expr::UnitLiteral => ResolvedType::Unit,
             ast::Expr::BinaryOpCall(_) => todo!(),
-            ast::Expr::FnCall(ast::FnCall{  value, arg, ..}) => if let ResolvedType::Function { arg:arg_t, returns } = self.get_actual_type(value.as_mut()){
-                if !arg_t.is_generic() && *arg_t != self.get_actual_type(arg.as_mut()) {
-                    ResolvedType::Error
-                } else {
+            ast::Expr::FnCall(ast::FnCall { value, arg, .. }) => {
+                if let ResolvedType::Function {
+                    arg: arg_t,
+                    returns,
+                } = self.get_actual_type(value.as_mut(), None)
+                {
+                    self.get_actual_type(arg.as_mut(), Some(arg_t.as_ref().clone()));
                     *returns
+                } else {
+                    ResolvedType::Error
                 }
-            } else {
-                ResolvedType::Error
+            }
+            ast::Expr::ValueRead(ident, _, _) => {
+                if let Some(ty) = self
+                .known_locals
+                .get_mut(ident) {
+                    if let Some(ety) = expected {
+                        if let ResolvedType::Unknown(id) = ty {
+                            if let Some(new_ty) = self.equations.get(id) {
+                                *ty = new_ty.clone();
+                            } else {
+                                self.equations.insert(*id, ety);
+                            }
+                        }
+                    }
+                    ty.clone()
+                }
+                else {
+                    ResolvedType::Error
+                }
             },
-            ast::Expr::ValueRead(ident, _, _) => self.known_locals.get(ident).cloned().or_else(|| {
-                self.known_types.get(ident).cloned()
-            }).unwrap_or(ResolvedType::Error),
             ast::Expr::ArrayLiteral { contents, loc, id } => todo!(),
             ast::Expr::ListLiteral { contents, loc, id } => todo!(),
             ast::Expr::StructConstruction(strct) => {
-                
-            },
-            ast::Expr::BoolLiteral(_, _, _) => todo!(),
+                for (name,(field,_)) in &mut strct.fields {
+                    if let Some(ety) = self.known_struct_fields.get(&(strct.ident.clone(),name.clone())).cloned() {
+                        self.get_actual_type(field, Some(ety));
+                    }
+                }
+                self.known_types.get(&strct.ident).cloned().unwrap_or(ResolvedType::Error)
+            }
+            ast::Expr::BoolLiteral(_, _, _) => ResolvedType::Bool,
             ast::Expr::If(_) => todo!(),
             ast::Expr::Match(_) => todo!(),
         }
@@ -684,4 +730,93 @@ let foo a = match a where
             "binary op"
         );
     }
+
+    #[test]
+    fn generic_tying() {
+        const SRC: &'static str = r#"
+for<T> let foo x y : T -> T -> () = ()
+"#;
+        let ast = crate::Parser::from_source(SRC).module("foo".to_string());
+        let mut ctx = super::Context::new(
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+        );
+
+        assert_eq!(
+            ctx.assign_ids_module(ast),
+            super::ast::ModuleDeclaration {
+                loc: (0, 0),
+                name: "foo".to_string(),
+                decls: vec![super::ast::Declaration::Value(
+                    super::ast::ValueDeclaration {
+                        loc: (1,12),
+                        is_op: false,
+                        ident: "foo".to_string(),
+                        args: vec![
+                            super::ast::ArgDeclaration {
+                                loc: (1,16),
+                                ident: "x".to_string(),
+                                ty: ResolvedType::Generic { name: "T".to_string() },
+                                id: 1
+                            },
+                            super::ast::ArgDeclaration {
+                                loc: (1,18),
+                                ident: "y".to_string(),
+                                ty: ResolvedType::Generic { name: "T".to_string() },
+                                id: 2
+                            },
+                        ],
+                        ty: ResolvedType::Generic { name: "T".to_string() }.fn_ty(&ResolvedType::Generic { name: "T".to_string() }.fn_ty(&ResolvedType::Unit)),
+                        value: super::ast::ValueType::Expr(super::ast::Expr::UnitLiteral),
+                        generics: vec!["T".to_string()],
+                        id: 0
+                    }
+                )]
+            }
+        )
+    }
+
+
+    #[test]
+    fn finale() {
+        const SRC : &'static str = 
+r#" 
+let simple x = x
+
+let annotated_arg (x:int32) = [x,1,2,3]
+
+let complex x =
+    print_int32 x;
+    if x == 0 then 
+        [0,0,0,0]
+    else
+        annotated_arg x
+"#;
+// should result in the same as 
+/*  
+for<T> simple x : T -> T = x
+
+let annotated_arg x : int32 -> [int32;4] = [x,1,2,3]
+
+let complex x : int32 -> [int32;4] =
+    print_int32 x;
+    if x == 0 then
+        [0,0,0,0]
+    else
+        annoated_arg x
+*/
+
+        let ast = crate::Parser::from_source(SRC).module("foo".to_string());
+        let mut ctx = super::Context::new(
+            HashMap::new(),
+            HashMap::new(),
+            [("==".to_string(), vec![types::INT32.fn_ty(&types::INT32.fn_ty(&types::BOOL))])].into(),
+            HashMap::new(),
+        );
+        let ast = ctx.assign_ids_module(ast);
+
+    }
+
 }

@@ -132,6 +132,10 @@ pub enum ResolvedType {
 }
 
 impl ResolvedType {
+    pub fn fn_ty(&self,returns:&Self) -> Self {
+        Self::Function { arg: self.clone().boxed(), returns: returns.clone().boxed() }
+    }
+
     pub fn is_void_or_unit(&self) -> bool {
         match self {
             Self::Void | Self::Unit => true,
@@ -343,7 +347,9 @@ impl ResolvedType {
         if arg == 0 {
             self.clone()
         } else {
-            let Self::Function { returns, .. } = self else { unreachable!() };
+            let Self::Function { returns, .. } = self else {
+                unreachable!()
+            };
             returns.remove_args(arg - 1)
         }
     }
@@ -700,7 +706,9 @@ impl<'ctx> TypeResolver<'ctx> {
     }
 
     pub fn resolve_type_as_function(&mut self, ty: &ResolvedType) -> FunctionType<'ctx> {
-        let ResolvedType::Function { arg, returns } = ty else { unreachable!("trying to make a non function type into a function") };
+        let ResolvedType::Function { arg, returns } = ty else {
+            unreachable!("trying to make a non function type into a function")
+        };
         let arg = self.resolve_arg_type(&arg);
         let curry_holder = self
             .ctx

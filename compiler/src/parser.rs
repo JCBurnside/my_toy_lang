@@ -286,7 +286,9 @@ where
     }
 
     fn ifexpr(&mut self) -> Result<(ast::IfExpr, crate::Location), ParseError> {
-        let Some((Token::If,loc)) = self.stream.next() else { unreachable!() };
+        let Some((Token::If, loc)) = self.stream.next() else {
+            unreachable!()
+        };
         let cond = match self.next_expr() {
             Err(e) => {
                 println!("{e:?}");
@@ -356,7 +358,9 @@ where
             let mut else_ifs = Vec::new();
 
             while let Some((Token::If, _)) = self.stream.peek() {
-                let Some((Token::If,loc)) = self.stream.next() else { unreachable!() };
+                let Some((Token::If, loc)) = self.stream.next() else {
+                    unreachable!()
+                };
                 let cond = match self.next_expr() {
                     Err(e) => {
                         println!("{e:?}");
@@ -423,8 +427,11 @@ where
                 };
                 else_ifs.push((cond, body, ret.boxed()));
 
-                let Some((Token::Else,_)) = self.stream.next() else {
-                    return Err(ParseError { span: loc, reason: ParseErrorReason::NoElseBlock });
+                let Some((Token::Else, _)) = self.stream.next() else {
+                    return Err(ParseError {
+                        span: loc,
+                        reason: ParseErrorReason::NoElseBlock,
+                    });
                 };
             }
 
@@ -597,12 +604,20 @@ where
     }
 
     fn struct_construct(&mut self) -> Result<StructConstruction, ParseError> {
-        let ResolvedType::User { name, generics } = self.collect_type()? else {unreachable!("what are you doing?")};
-        let Some((Token::CurlOpen,loc)) = self.stream.next() else { unreachable!() };
+        let ResolvedType::User { name, generics } = self.collect_type()? else {
+            unreachable!("what are you doing?")
+        };
+        let Some((Token::CurlOpen, loc)) = self.stream.next() else {
+            unreachable!()
+        };
         let mut fields = HashMap::new();
         while let Some((Token::Ident(_), _)) = self.stream.peek() {
-            let Some((Token::Ident(ident),loc)) = self.stream.next() else {unreachable!()};
-            let Some((Token::Colon,_)) = self.stream.next() else {todo!("handle infered assignment")};
+            let Some((Token::Ident(ident), loc)) = self.stream.next() else {
+                unreachable!()
+            };
+            let Some((Token::Colon, _)) = self.stream.next() else {
+                todo!("handle infered assignment")
+            };
             let expr = match self.next_expr() {
                 Ok((expr, _)) => expr,
                 Err(e) => {
@@ -624,7 +639,13 @@ where
             .stream
             .peeking_take_while(|(t, _)| matches!(t, Token::EndBlock))
             .collect();
-        let Some((Token::CurlClose,_)) = self.stream.next() else { println!("not closed"); return Err(ParseError { span: loc, reason: ParseErrorReason::UnbalancedBraces }) };
+        let Some((Token::CurlClose, _)) = self.stream.next() else {
+            println!("not closed");
+            return Err(ParseError {
+                span: loc,
+                reason: ParseErrorReason::UnbalancedBraces,
+            });
+        };
         Ok(StructConstruction {
             loc,
             fields,
@@ -652,7 +673,9 @@ where
     }
 
     fn ifstatement(&mut self) -> Result<crate::ast::IfBranching, ParseError> {
-        let Some((Token::If,loc)) = self.stream.next() else { unreachable!() };
+        let Some((Token::If, loc)) = self.stream.next() else {
+            unreachable!()
+        };
         let cond = match self.next_expr() {
             Err(e) => {
                 println!("{e:?}");
@@ -695,8 +718,12 @@ where
         if let Some((Token::Else, _)) = self.stream.peek() {
             let mut else_ifs = Vec::new();
             while let Some((Token::If, _)) = self.stream.clone().nth(1) {
-                let Some((Token::Else,_)) = self.stream.next() else { unreachable!() };
-                let Some((Token::If,loc)) = self.stream.next() else { unreachable!() };
+                let Some((Token::Else, _)) = self.stream.next() else {
+                    unreachable!()
+                };
+                let Some((Token::If, loc)) = self.stream.next() else {
+                    unreachable!()
+                };
                 let cond = match self.next_expr() {
                     Err(e) => {
                         println!("{e:?}");
@@ -892,7 +919,9 @@ where
     }
 
     fn type_decl(&mut self, generics: Vec<String>) -> Result<ast::TypeDefinition, ParseError> {
-        let Some((t,loc)) = self.stream.next() else {unreachable!()};
+        let Some((t, loc)) = self.stream.next() else {
+            unreachable!()
+        };
         match t {
             Token::Type => {
                 let (ident, loc) = match self.stream.next() {
@@ -904,7 +933,12 @@ where
                         })
                     }
                 };
-                let Some((Token::Op(op),_)) = self.stream.next() else { return Err(ParseError { span: loc, reason: ParseErrorReason::DeclarationError })};
+                let Some((Token::Op(op), _)) = self.stream.next() else {
+                    return Err(ParseError {
+                        span: loc,
+                        reason: ParseErrorReason::DeclarationError,
+                    });
+                };
                 if op != "=" {
                     return Err(ParseError {
                         span: loc,
@@ -950,18 +984,26 @@ where
         generics: Vec<String>,
         loc: crate::Location,
     ) -> Result<ast::StructDefinition, ParseError> {
-        let Some((Token::CurlOpen,_)) = self.stream.next() else { unreachable!() };
+        let Some((Token::CurlOpen, _)) = self.stream.next() else {
+            unreachable!()
+        };
         while let Some((Token::BeginBlock, _)) = self.stream.clone().next() {
             self.stream.next();
         }
         let mut fields = Vec::<ast::FieldDecl>::new();
         while let Some((Token::Ident(_), _)) = self.stream.clone().next() {
-            let Some((Token::Ident(name),loc)) =
-                self.stream.next()
-                else {
-                    return Err(ParseError { span: (0,10000), reason: ParseErrorReason::DeclarationError })
-                };
-            let Some((Token::Colon,_)) = self.stream.next() else { return Err(ParseError { span: (0,10000), reason: ParseErrorReason::DeclarationError }) };
+            let Some((Token::Ident(name), loc)) = self.stream.next() else {
+                return Err(ParseError {
+                    span: (0, 10000),
+                    reason: ParseErrorReason::DeclarationError,
+                });
+            };
+            let Some((Token::Colon, _)) = self.stream.next() else {
+                return Err(ParseError {
+                    span: (0, 10000),
+                    reason: ParseErrorReason::DeclarationError,
+                });
+            };
             let ty = generics.iter().fold(self.collect_type()?, |result, it| {
                 result.replace_user_with_generic(&it)
             });
@@ -995,7 +1037,12 @@ where
         while let Some((Token::EndBlock | Token::Comma, _)) = self.stream.clone().next() {
             self.stream.next();
         }
-        let Some((Token::CurlClose,_)) = self.stream.next() else { return Err(ParseError { span: (0,11111), reason: ParseErrorReason::DeclarationError }) };
+        let Some((Token::CurlClose, _)) = self.stream.next() else {
+            return Err(ParseError {
+                span: (0, 11111),
+                reason: ParseErrorReason::DeclarationError,
+            });
+        };
         Ok(ast::StructDefinition {
             ident,
             values: fields,
@@ -1006,7 +1053,9 @@ where
 
     fn collect_generics(&mut self) -> Result<Vec<String>, ParseError> {
         let generics = if let Some((Token::For, _)) = self.stream.peek() {
-            let Some((_,span)) = self.stream.next() else { unreachable!() };
+            let Some((_, span)) = self.stream.next() else {
+                unreachable!()
+            };
             match self.stream.next() {
                 Some((Token::Op(op), _)) if op == "<" => {
                     let mut out = self
@@ -1406,12 +1455,24 @@ where
                 Token::GroupOpen => {
                     let _ = token_iter.next();
                     let mut group_opens = 0;
-                    let sub_tokens = token_iter.clone().take_while(|(t,_)| match t {
-                        Token::GroupClose => {group_opens -= 1; group_opens >= 0},
-                        Token::GroupOpen => {group_opens+= 1; true},
-                        Token::Ident(_) | Token::FloatingPoint(_, _) | Token::Integer(_, _) | Token::Op(_)=> true,
-                        _ => false
-                    }).collect_vec();
+                    let sub_tokens = token_iter
+                        .clone()
+                        .take_while(|(t, _)| match t {
+                            Token::GroupClose => {
+                                group_opens -= 1;
+                                group_opens >= 0
+                            }
+                            Token::GroupOpen => {
+                                group_opens += 1;
+                                true
+                            }
+                            Token::Ident(_)
+                            | Token::FloatingPoint(_, _)
+                            | Token::Integer(_, _)
+                            | Token::Op(_) => true,
+                            _ => false,
+                        })
+                        .collect_vec();
                     for _ in 0..sub_tokens.len() {
                         token_iter.next();
                     }
@@ -1420,58 +1481,107 @@ where
                 }
                 Token::GroupClose => {
                     let _ = token_iter.next();
-                },
+                }
                 Token::Ident(_) => {
                     if let Some((
                         Token::Ident(_)
-                        |Token::CharLiteral(_)
-                        |Token::StringLiteral(_)
-                        |Token::FloatingPoint(_, _)
-                        |Token::Integer(_, _)
-                        |Token::GroupOpen,_)) = token_iter.clone().nth(1) {
-                        let sub_tokens = token_iter.clone().take_while(|(t,_)| match t {
-                            Token::GroupClose => {group_opens -= 1; group_opens >= 0},
-                            Token::GroupOpen => {group_opens+= 1; true},
-                            Token::Ident(_) | Token::FloatingPoint(_, _) | Token::Integer(_, _)=> true,
-                            Token::Op(_) => group_opens>=0,
-                            _ => false
-                        }).collect_vec();
+                        | Token::CharLiteral(_)
+                        | Token::StringLiteral(_)
+                        | Token::FloatingPoint(_, _)
+                        | Token::Integer(_, _)
+                        | Token::GroupOpen,
+                        _,
+                    )) = token_iter.clone().nth(1)
+                    {
+                        let sub_tokens = token_iter
+                            .clone()
+                            .take_while(|(t, _)| match t {
+                                Token::GroupClose => {
+                                    group_opens -= 1;
+                                    group_opens >= 0
+                                }
+                                Token::GroupOpen => {
+                                    group_opens += 1;
+                                    true
+                                }
+                                Token::Ident(_)
+                                | Token::FloatingPoint(_, _)
+                                | Token::Integer(_, _) => true,
+                                Token::Op(_) => group_opens >= 0,
+                                _ => false,
+                            })
+                            .collect_vec();
                         for _ in 0..sub_tokens.len() {
                             token_iter.next();
                         }
                         let result = Parser::from_stream(sub_tokens.into_iter()).next_expr()?;
                         output.push(ShuntingYardOptions::Expr(result))
                     } else {
-                        let Some((Token::Ident(ident),loc)) = token_iter.next() else {unreachable!()};
-                        output.push(ShuntingYardOptions::Expr((Expr::ValueRead(ident,loc),loc)));
+                        let Some((Token::Ident(ident), loc)) = token_iter.next() else {
+                            unreachable!()
+                        };
+                        output.push(ShuntingYardOptions::Expr((
+                            Expr::ValueRead(ident, loc),
+                            loc,
+                        )));
                     }
-                },
-                Token::Integer(_, _) | Token::FloatingPoint(_, _) | Token::CharLiteral(_) | Token::StringLiteral(_) => output.push(ShuntingYardOptions::Expr({
-                    let Some((token,span)) = token_iter.next() else { return Err(ParseError { span: (0,0), reason: ParseErrorReason::UnknownError })};
-                    (make_literal(token, span)?,span)
+                }
+                Token::Integer(_, _)
+                | Token::FloatingPoint(_, _)
+                | Token::CharLiteral(_)
+                | Token::StringLiteral(_) => output.push(ShuntingYardOptions::Expr({
+                    let Some((token, span)) = token_iter.next() else {
+                        return Err(ParseError {
+                            span: (0, 0),
+                            reason: ParseErrorReason::UnknownError,
+                        });
+                    };
+                    (make_literal(token, span)?, span)
                 })),
                 Token::Op(_) => {
-                    let Some((Token::Op(ident),loc)) = token_iter.next() else { unreachable!() };
-                    let (prec,left) = PRECIDENCE.iter().find_map(|(op,weight,assc)| if op == &ident { Some((*weight,*assc))} else { None }).unwrap_or((1,false));
+                    let Some((Token::Op(ident), loc)) = token_iter.next() else {
+                        unreachable!()
+                    };
+                    let (prec, left) = PRECIDENCE
+                        .iter()
+                        .find_map(|(op, weight, assc)| {
+                            if op == &ident {
+                                Some((*weight, *assc))
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or((1, false));
                     if op_stack.is_empty() {
-                        op_stack.push((ident,loc));
+                        op_stack.push((ident, loc));
                         continue;
                     }
                     while let Some(op_back) = op_stack.last() {
-                        let back_prec = PRECIDENCE.iter().find_map(|(op,weight,_)| if op == &op_back.0 { Some(*weight)} else { None }).unwrap_or(1);
+                        let back_prec = PRECIDENCE
+                            .iter()
+                            .find_map(|(op, weight, _)| {
+                                if op == &op_back.0 {
+                                    Some(*weight)
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or(1);
                         if back_prec > prec || (back_prec == prec && left) {
-                            let Some(op_back) = op_stack.pop() else { unreachable!() };
+                            let Some(op_back) = op_stack.pop() else {
+                                unreachable!()
+                            };
                             output.push(ShuntingYardOptions::Op(op_back));
                         } else {
-                            op_stack.push((ident.clone(),loc));
+                            op_stack.push((ident.clone(), loc));
                             break;
                         }
                     }
                     if op_stack.last().is_none() {
-                        op_stack.push((ident,loc));
+                        op_stack.push((ident, loc));
                     }
                 }
-                _ => break
+                _ => break,
             }
         }
         output.extend(op_stack.into_iter().rev().map(ShuntingYardOptions::Op));
@@ -1480,8 +1590,12 @@ where
             match expr {
                 ShuntingYardOptions::Expr(expr) => final_expr.push(expr),
                 ShuntingYardOptions::Op((op, loc)) => {
-                    let Some((rhs,_)) = final_expr.pop() else { unreachable!() };
-                    let Some((lhs,_)) = final_expr.pop() else { unreachable!() };
+                    let Some((rhs, _)) = final_expr.pop() else {
+                        unreachable!()
+                    };
+                    let Some((lhs, _)) = final_expr.pop() else {
+                        unreachable!()
+                    };
                     final_expr.push((
                         ast::Expr::BinaryOpCall(BinaryOpCall {
                             loc,
@@ -1506,7 +1620,9 @@ where
     }
 
     fn match_(&mut self) -> Result<(Match, crate::Location), ParseError> {
-        let Some((Token::Match,match_loc)) = self.stream.next() else { unreachable!() };
+        let Some((Token::Match, match_loc)) = self.stream.next() else {
+            unreachable!()
+        };
         let on = match self.next_expr() {
             Ok(it) => it,
             Err(e) => {
@@ -1515,7 +1631,10 @@ where
             }
         };
         let Some((Token::Where, _)) = self.stream.next() else {
-            return Err(ParseError { span: on.1 , reason: ParseErrorReason::UnexpectedToken });
+            return Err(ParseError {
+                span: on.1,
+                reason: ParseErrorReason::UnexpectedToken,
+            });
         };
         let expect_block = if let Some((Token::BeginBlock, _)) = self.stream.clone().next() {
             let _ = self.stream.next();
@@ -1531,16 +1650,22 @@ where
             let _ = self.stream.next();
             let (cond, loc) = match self.stream.peek() {
                 Some((Token::Ident(ident), _)) if ident != "_" => {
-                    let Some((Token::Ident(name),loc)) = self.stream.next() else { unreachable!() };
+                    let Some((Token::Ident(name), loc)) = self.stream.next() else {
+                        unreachable!()
+                    };
                     //todo! detect patterns
                     (Pattern::Read(name), loc)
                 }
                 Some((Token::Ident(_), _)) => {
-                    let Some((_,loc)) = self.stream.next() else {unreachable!()};
+                    let Some((_, loc)) = self.stream.next() else {
+                        unreachable!()
+                    };
                     (Pattern::Default, loc)
                 }
                 Some((Token::Integer(_, _), _)) => {
-                    let Some((Token::Integer(signed, value),loc)) = self.stream.next() else { unreachable!() };
+                    let Some((Token::Integer(signed, value), loc)) = self.stream.next() else {
+                        unreachable!()
+                    };
 
                     (
                         Pattern::ConstNumber(format!("{}{}", if signed { "-" } else { "" }, value)),
@@ -1548,7 +1673,10 @@ where
                     )
                 }
                 Some((Token::FloatingPoint(_, _), _)) => {
-                    let Some((Token::FloatingPoint(signed, value),loc)) = self.stream.next() else { unreachable!() };
+                    let Some((Token::FloatingPoint(signed, value), loc)) = self.stream.next()
+                    else {
+                        unreachable!()
+                    };
 
                     (
                         Pattern::ConstNumber(format!("{}{}", if signed { "-" } else { "" }, value)),
@@ -1556,19 +1684,27 @@ where
                     )
                 }
                 Some((Token::CharLiteral(_), _)) => {
-                    let Some((Token::CharLiteral(c),loc)) = self.stream.next() else { unreachable!() };
+                    let Some((Token::CharLiteral(c), loc)) = self.stream.next() else {
+                        unreachable!()
+                    };
                     (Pattern::ConstChar(c), loc)
                 }
                 Some((Token::StringLiteral(_), _)) => {
-                    let Some((Token::StringLiteral(c),loc)) = self.stream.next() else { unreachable!() };
+                    let Some((Token::StringLiteral(c), loc)) = self.stream.next() else {
+                        unreachable!()
+                    };
                     (Pattern::ConstStr(c), loc)
                 }
                 Some((Token::True, _)) => {
-                    let Some((_,loc)) = self.stream.next() else {unreachable!()};
+                    let Some((_, loc)) = self.stream.next() else {
+                        unreachable!()
+                    };
                     (Pattern::ConstBool(true), loc)
                 }
                 Some((Token::False, _)) => {
-                    let Some((_,loc)) = self.stream.next() else {unreachable!()};
+                    let Some((_, loc)) = self.stream.next() else {
+                        unreachable!()
+                    };
                     (Pattern::ConstBool(false), loc)
                 }
                 Some((t, loc)) => {
@@ -1596,7 +1732,9 @@ where
             if let Some((Token::Arrow, _)) = self.stream.peek() {
                 self.stream.next();
             } else {
-                let Some((t,loc)) = self.stream.peek() else { unreachable!() };
+                let Some((t, loc)) = self.stream.peek() else {
+                    unreachable!()
+                };
                 println!(
                     "expected -> but got {:?} at line: {}, col: {}",
                     t, loc.0, loc.1
@@ -1657,7 +1795,9 @@ where
                     if let Some((Token::Comma, _)) = self.stream.peek() {
                         let _ = self.stream.next();
                     } else {
-                        let Some((peeked,loc)) = self.stream.peek() else { unreachable!() };
+                        let Some((peeked, loc)) = self.stream.peek() else {
+                            unreachable!()
+                        };
                         println!(
                             "expected `,` but got {:?} at line : {}, col: {}",
                             peeked, loc.0, loc.1

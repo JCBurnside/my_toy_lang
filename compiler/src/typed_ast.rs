@@ -813,7 +813,9 @@ impl TypedFnCall {
         if value != TypedExpr::ErrorNode {
             let arg_t = arg.as_ref().map(|arg| arg.get_ty());
             let ty = strip_pointers(&value.get_ty());
-            let ResolvedType::Function { arg, .. } = ty else { return Err(TypingError::FnNotDeclared) };
+            let ResolvedType::Function { arg, .. } = ty else {
+                return Err(TypingError::FnNotDeclared);
+            };
             if !arg.is_generic() && Some(*arg) != arg_t {
                 return Err(TypingError::ArgTypeMismatch);
             }
@@ -824,7 +826,9 @@ impl TypedFnCall {
             match value.get_ty() {
                 ResolvedType::Function { returns, .. } => *returns,
                 ResolvedType::Pointer { underlining } if underlining.is_function() => {
-                    let ResolvedType::Function { returns, .. } = *underlining else { unreachable!() };
+                    let ResolvedType::Function { returns, .. } = *underlining else {
+                        unreachable!()
+                    };
                     *returns
                 }
                 _ => ResolvedType::Error,
@@ -1563,14 +1567,18 @@ impl TypedMemberRead {
         already_processed_args: Vec<ResolvedType>,
     ) -> Result<Self, TypingError> {
         let ast::BinaryOpCall { loc, lhs, rhs, .. } = value;
-        let ast::Expr::ValueRead(member, _) = *rhs else { return Err(TypingError::MemberMustBeIdent) };
+        let ast::Expr::ValueRead(member, _) = *rhs else {
+            return Err(TypingError::MemberMustBeIdent);
+        };
         let value = TypedExpr::try_from(*lhs, known_values, known_types, already_processed_args)?;
         let ty = value.get_ty();
 
         if ty == ResolvedType::Error {
             return Err(TypingError::UnknownType);
         }
-        let ResolvedType::User { generics, .. } = ty.clone() else { unreachable!() };
+        let ResolvedType::User { generics, .. } = ty.clone() else {
+            unreachable!()
+        };
         if !generics.is_empty() {
             // we will have to do checking after lowering.  will do as part of lowering.
             Ok(Self {
@@ -1581,7 +1589,9 @@ impl TypedMemberRead {
                 loc,
             })
         } else if let Some(strct) = known_types.get(&ty.to_string()) {
-            let ast::TypeDefinition::Struct(def) = strct else { unreachable!("how are you accessing a member not on a struct")};
+            let ast::TypeDefinition::Struct(def) = strct else {
+                unreachable!("how are you accessing a member not on a struct")
+            };
             let offset = def.values.iter().position(|it| it.name == member);
             let ty = def
                 .values
@@ -1620,11 +1630,16 @@ impl TypedMemberRead {
             return;
         }
         self.target.lower_generics(context);
-        let Some(strct) = context.generated_generics.get(&(self.target.get_ty().to_string())) else {
+        let Some(strct) = context
+            .generated_generics
+            .get(&(self.target.get_ty().to_string()))
+        else {
             self.ty = ResolvedType::Error;
             return;
         };
-        let TypedDeclaration::TypeDefinition(ResolvedTypeDeclaration::Struct(def)) = strct else { unreachable!("how are you accessing a member not on a struct")};
+        let TypedDeclaration::TypeDefinition(ResolvedTypeDeclaration::Struct(def)) = strct else {
+            unreachable!("how are you accessing a member not on a struct")
+        };
         self.offset = def.fields.iter().position(|it| it.name == self.member);
         self.ty = def
             .fields
@@ -1665,7 +1680,9 @@ pub fn map_types_to_args(
     if args.is_empty() || !fun.is_generic() {
         return (fun, vec![]);
     }
-    let ResolvedType::Function { arg, returns } = &fun else { unreachable!() };
+    let ResolvedType::Function { arg, returns } = &fun else {
+        unreachable!()
+    };
     let arg_t = args.pop().unwrap();
     if let ResolvedType::Generic { name } = arg.as_ref() {
         let fun = returns.replace_generic(name, arg_t.clone());
@@ -1811,8 +1828,12 @@ impl TypedBinaryOpCall {
                 {
                     *rt = match (lhs_t, rhs_t) {
                         (lhs, rhs) if lhs.is_float() && rhs.is_float() => {
-                            let ResolvedType::Float { width : lhs_w } = lhs else { unreachable!() };
-                            let ResolvedType::Float { width : rhs_w } = rhs else { unreachable!() };
+                            let ResolvedType::Float { width: lhs_w } = lhs else {
+                                unreachable!()
+                            };
+                            let ResolvedType::Float { width: rhs_w } = rhs else {
+                                unreachable!()
+                            };
                             ResolvedType::Float {
                                 width: lhs_w.max(rhs_w),
                             }
@@ -1820,8 +1841,20 @@ impl TypedBinaryOpCall {
                         (lhs, rhs) if lhs.is_float() || rhs.is_generic() => lhs,
                         (lhs, rhs) if rhs.is_float() || lhs.is_generic() => rhs,
                         (lhs, rhs) => {
-                            let ResolvedType::Int { signed : lhs_signed, width : lhs_w } = lhs else { unreachable!() };
-                            let ResolvedType::Int { signed : rhs_signed, width : rhs_w } = lhs else { unreachable!() };
+                            let ResolvedType::Int {
+                                signed: lhs_signed,
+                                width: lhs_w,
+                            } = lhs
+                            else {
+                                unreachable!()
+                            };
+                            let ResolvedType::Int {
+                                signed: rhs_signed,
+                                width: rhs_w,
+                            } = lhs
+                            else {
+                                unreachable!()
+                            };
                             if lhs_signed && !rhs_signed {
                                 lhs
                             } else if rhs_signed && !lhs_signed {
@@ -1847,8 +1880,12 @@ impl TypedBinaryOpCall {
                 {
                     *rt = match (lhs_t, rhs_t) {
                         (lhs, rhs) if lhs.is_float() && rhs.is_float() => {
-                            let ResolvedType::Float { width : lhs } = lhs else { unreachable!() };
-                            let ResolvedType::Float { width : rhs } = rhs else { unreachable!() };
+                            let ResolvedType::Float { width: lhs } = lhs else {
+                                unreachable!()
+                            };
+                            let ResolvedType::Float { width: rhs } = rhs else {
+                                unreachable!()
+                            };
                             ResolvedType::Float {
                                 width: lhs.max(rhs),
                             }
@@ -1856,8 +1893,20 @@ impl TypedBinaryOpCall {
                         (lhs, _) if lhs.is_float() => lhs,
                         (_, rhs) if rhs.is_float() => rhs,
                         (lhs, rhs) => {
-                            let ResolvedType::Int { signed : lhs_signed, width : lhs_w } = lhs else { unreachable!() };
-                            let ResolvedType::Int { signed : rhs_signed, width : rhs_w } = rhs else { unreachable!() };
+                            let ResolvedType::Int {
+                                signed: lhs_signed,
+                                width: lhs_w,
+                            } = lhs
+                            else {
+                                unreachable!()
+                            };
+                            let ResolvedType::Int {
+                                signed: rhs_signed,
+                                width: rhs_w,
+                            } = rhs
+                            else {
+                                unreachable!()
+                            };
                             let max = lhs_w.max(rhs_w);
                             ResolvedType::Float {
                                 width: match max {
@@ -2013,8 +2062,12 @@ impl TypedBinaryOpCall {
                         rt: match (lhs_t, rhs_t) {
                             (ResolvedType::Error, _) | (_, ResolvedType::Error) => types::ERROR,
                             (lhs, rhs) if lhs.is_float() && rhs.is_float() => {
-                                let ResolvedType::Float { width : lhs_w } = lhs else { unreachable!() };
-                                let ResolvedType::Float { width : rhs_w } = rhs else { unreachable!() };
+                                let ResolvedType::Float { width: lhs_w } = lhs else {
+                                    unreachable!()
+                                };
+                                let ResolvedType::Float { width: rhs_w } = rhs else {
+                                    unreachable!()
+                                };
                                 ResolvedType::Float {
                                     width: lhs_w.max(rhs_w),
                                 }
@@ -2022,8 +2075,20 @@ impl TypedBinaryOpCall {
                             (lhs, rhs) if lhs.is_float() || rhs.is_generic() => lhs,
                             (lhs, rhs) if rhs.is_float() || lhs.is_generic() => rhs,
                             (lhs, rhs) => {
-                                let ResolvedType::Int { signed : lhs_signed, width : lhs_w } = lhs else { unreachable!() };
-                                let ResolvedType::Int { signed : rhs_signed, width : rhs_w } = lhs else { unreachable!() };
+                                let ResolvedType::Int {
+                                    signed: lhs_signed,
+                                    width: lhs_w,
+                                } = lhs
+                                else {
+                                    unreachable!()
+                                };
+                                let ResolvedType::Int {
+                                    signed: rhs_signed,
+                                    width: rhs_w,
+                                } = lhs
+                                else {
+                                    unreachable!()
+                                };
                                 if lhs_signed && !rhs_signed {
                                     lhs
                                 } else if rhs_signed && !lhs_signed {
@@ -2061,8 +2126,12 @@ impl TypedBinaryOpCall {
                         rt: match (lhs_t, rhs_t) {
                             (ResolvedType::Error, _) | (_, ResolvedType::Error) => types::ERROR,
                             (lhs, rhs) if lhs.is_float() && rhs.is_float() => {
-                                let ResolvedType::Float { width : lhs } = lhs else { unreachable!() };
-                                let ResolvedType::Float { width : rhs } = rhs else { unreachable!() };
+                                let ResolvedType::Float { width: lhs } = lhs else {
+                                    unreachable!()
+                                };
+                                let ResolvedType::Float { width: rhs } = rhs else {
+                                    unreachable!()
+                                };
                                 ResolvedType::Float {
                                     width: lhs.max(rhs),
                                 }
@@ -2070,8 +2139,20 @@ impl TypedBinaryOpCall {
                             (lhs, _) if lhs.is_float() => lhs,
                             (_, rhs) if rhs.is_float() => rhs,
                             (lhs, rhs) => {
-                                let ResolvedType::Int { signed : lhs_signed, width : lhs_w } = lhs else { unreachable!() };
-                                let ResolvedType::Int { signed : rhs_signed, width : rhs_w } = rhs else { unreachable!() };
+                                let ResolvedType::Int {
+                                    signed: lhs_signed,
+                                    width: lhs_w,
+                                } = lhs
+                                else {
+                                    unreachable!()
+                                };
+                                let ResolvedType::Int {
+                                    signed: rhs_signed,
+                                    width: rhs_w,
+                                } = rhs
+                                else {
+                                    unreachable!()
+                                };
                                 let max = lhs_w.max(rhs_w);
                                 ResolvedType::Float {
                                     width: match max {
@@ -2841,7 +2922,9 @@ let main _ : () -> () =
         let dtree = module.get_dependencies();
         let module =
             super::TypedModuleDeclaration::from(module, &HashMap::new(), &HashMap::new(), &dtree);
-        let [generic, main] = &module.declarations[..] else { unreachable!() };
+        let [generic, main] = &module.declarations[..] else {
+            unreachable!()
+        };
         assert_eq!(
             &TypedDeclaration::Value(TypedValueDeclaration {
                 loc: (1, 12),
@@ -2946,7 +3029,9 @@ let first a : Tuple<int32,float64> -> int32 =
         let dtree = module.get_dependencies();
         let mut module =
             TypedModuleDeclaration::from(module, &HashMap::new(), &HashMap::new(), &dtree);
-        let [strct, _] = &module.declarations[..] else { unreachable!() };
+        let [strct, _] = &module.declarations[..] else {
+            unreachable!()
+        };
         assert_eq!(
             strct,
             &TypedDeclaration::TypeDefinition(crate::typed_ast::ResolvedTypeDeclaration::Struct(
@@ -2977,7 +3062,9 @@ let first a : Tuple<int32,float64> -> int32 =
 
         module.lower_generics(&HashMap::new());
 
-        let [_unlowered, fun, generated_strct] = &module.declarations[..] else { unreachable!() };
+        let [_unlowered, fun, generated_strct] = &module.declarations[..] else {
+            unreachable!()
+        };
         assert_eq!(
             fun,
             &TypedDeclaration::Value(TypedValueDeclaration {
@@ -3052,7 +3139,9 @@ let main _ : int32 -> int32 =
         let mut module =
             TypedModuleDeclaration::from(module, &HashMap::new(), &HashMap::new(), &dtree);
         module.lower_generics(&HashMap::new());
-        let [generic, main, generated] = &module.declarations[..] else { unreachable!("should have three when done")};
+        let [generic, main, generated] = &module.declarations[..] else {
+            unreachable!("should have three when done")
+        };
         assert_eq!(
             generic,
             &TypedDeclaration::Value(TypedValueDeclaration {
@@ -3190,7 +3279,9 @@ let statement_with_else_if a b : bool -> bool -> int32 =
         let dtree = module.get_dependencies();
         let mut module =
             TypedModuleDeclaration::from(module, &HashMap::new(), &HashMap::new(), &dtree);
-        let [expr,stmnt] = &module.declarations[..] else {unreachable!("more than two?") };
+        let [expr, stmnt] = &module.declarations[..] else {
+            unreachable!("more than two?")
+        };
         assert_eq!(
             &TypedDeclaration::Value(TypedValueDeclaration {
                 loc: (1, 5),
@@ -3366,7 +3457,9 @@ let as_statement a b : int32 -> int32 -> () =
         let dtree = module.get_dependencies();
         let mut module =
             TypedModuleDeclaration::from(module, &HashMap::new(), &HashMap::new(), &dtree);
-        let [simple, nest_in_call,statement] = &module.declarations[..] else { unreachable!() };
+        let [simple, nest_in_call, statement] = &module.declarations[..] else {
+            unreachable!()
+        };
         assert_eq!(
             &TypedDeclaration::Value(TypedValueDeclaration {
                 loc: (1, 5),

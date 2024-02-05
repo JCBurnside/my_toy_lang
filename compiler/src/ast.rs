@@ -33,7 +33,11 @@ impl ModuleDeclaration {
             })
             .collect::<Vec<_>>();
         for (offset, idx) in to_remove.into_iter().enumerate() {
-            let Declaration::TypeDefinition(TypeDefinition::Alias(new,old)) = self.declarations.remove(idx-offset) else { unreachable!() };
+            let Declaration::TypeDefinition(TypeDefinition::Alias(new, old)) =
+                self.declarations.remove(idx - offset)
+            else {
+                unreachable!()
+            };
             for decl in &mut self.declarations {
                 decl.replace(&new, &old.to_string());
             }

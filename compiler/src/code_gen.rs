@@ -113,7 +113,9 @@ impl<'ctx> CodeGen<'ctx> {
         let v = self.incomplete_functions.get(&decl.ident).unwrap().clone();
 
         if let Some(dibuilder) = &self.dibuilder {
-            let Some(difile) = self.difile.as_ref() else { unreachable!() };
+            let Some(difile) = self.difile.as_ref() else {
+                unreachable!()
+            };
             let fnty = {
                 let (args, rt) = decl.ty.as_c_function();
                 #[allow(non_snake_case)]
@@ -234,8 +236,12 @@ impl<'ctx> CodeGen<'ctx> {
             self.builder.build_store(arg, value);
             self.locals.insert(arg_name.ident.clone(), arg.into());
             if let Some(fnscope) = &self.difunction {
-                let Some(dibuilder) = &self.dibuilder else { unreachable!() };
-                let Some(file) = &self.difile else { unreachable!() };
+                let Some(dibuilder) = &self.dibuilder else {
+                    unreachable!()
+                };
+                let Some(file) = &self.difile else {
+                    unreachable!()
+                };
                 let ty = &decl.ty.as_c_function().0[idx];
                 let ty = self.ditypes[&ty.to_string()];
                 let local = dibuilder.create_parameter_variable(
@@ -266,8 +272,12 @@ impl<'ctx> CodeGen<'ctx> {
             .build_alloca(last_param.get_type(), &last_param_info.ident);
         self.builder.build_store(arg, last_param);
         if let Some(fnscope) = &self.difunction {
-            let Some(dibuilder) = &self.dibuilder else { unreachable!() };
-            let Some(file) = &self.difile else { unreachable!() };
+            let Some(dibuilder) = &self.dibuilder else {
+                unreachable!()
+            };
+            let Some(file) = &self.difile else {
+                unreachable!()
+            };
             let types = decl.ty.as_c_function().0;
             let ty = types.last().unwrap();
             let ty_name = if ty.is_function() {
@@ -518,7 +528,9 @@ impl<'ctx> CodeGen<'ctx> {
             }
             TypedStatement::Return(expr, loc) => {
                 if let Some(dibuilder) = &self.dibuilder {
-                    let Some(difun) = &self.difunction else {unreachable!()};
+                    let Some(difun) = &self.difunction else {
+                        unreachable!()
+                    };
                     let loc = dibuilder.create_debug_location(
                         self.ctx,
                         loc.0.try_into().unwrap(),
@@ -549,7 +561,9 @@ impl<'ctx> CodeGen<'ctx> {
 
             TypedStatement::FnCall(data) => {
                 if let Some(dibuilder) = &self.dibuilder {
-                    let Some(difun) = &self.difunction else {unreachable!()};
+                    let Some(difun) = &self.difunction else {
+                        unreachable!()
+                    };
                     let loc = dibuilder.create_debug_location(
                         self.ctx,
                         data.loc.0.try_into().unwrap(),
@@ -584,8 +598,12 @@ impl<'ctx> CodeGen<'ctx> {
                         .build_store::<BasicValueEnum>(pvalue, result.try_into().unwrap());
                     self.locals.insert(ident.clone(), pvalue);
                     if let Some(fnscope) = &self.difunction {
-                        let Some(dibuilder) = &self.dibuilder else { unreachable!() };
-                        let Some(file) = &self.difile else { unreachable!() };
+                        let Some(dibuilder) = &self.dibuilder else {
+                            unreachable!()
+                        };
+                        let Some(file) = &self.difile else {
+                            unreachable!()
+                        };
                         let diloc = dibuilder.create_debug_location(
                             self.ctx,
                             loc.0.try_into().unwrap(),
@@ -1384,8 +1402,12 @@ impl<'ctx> CodeGen<'ctx> {
                     );
                     // self.builder.set_current_debug_location(loc);
                 }
-                let TypedExpr::ValueRead(ident,_, _) = *value else { unreachable!("not a function name?") };
-                let Some(gv)= self.known_functions.get(&ident) else { unreachable!("function not found") };
+                let TypedExpr::ValueRead(ident, _, _) = *value else {
+                    unreachable!("not a function name?")
+                };
+                let Some(gv) = self.known_functions.get(&ident) else {
+                    unreachable!("function not found")
+                };
                 let fun = self
                     .builder
                     .build_struct_gep(gv.as_pointer_value(), 0, "")
@@ -1478,7 +1500,11 @@ impl<'ctx> CodeGen<'ctx> {
                 let target_t = self.ctx.get_struct_type(&con.ident).unwrap();
                 let out = self.builder.build_alloca(target_t, "");
 
-                let ResolvedTypeDeclaration::Struct(def) = self.known_types.get(&con.ident).unwrap().clone() else { unreachable!() };
+                let ResolvedTypeDeclaration::Struct(def) =
+                    self.known_types.get(&con.ident).unwrap().clone()
+                else {
+                    unreachable!()
+                };
                 let order = con.fields.into_iter().map(|(field, expr)| {
                     (
                         expr,
@@ -1550,8 +1576,12 @@ impl<'ctx> CodeGen<'ctx> {
     }
 
     fn add_struct_di(&mut self, def: &StructDefinition) -> bool {
-        let Some(dibuilder) = &self.dibuilder else {unreachable!()};
-        let Some(file) = &self.difile else {unreachable!()};
+        let Some(dibuilder) = &self.dibuilder else {
+            unreachable!()
+        };
+        let Some(file) = &self.difile else {
+            unreachable!()
+        };
         let fields = def
             .fields
             .iter()
@@ -1584,7 +1614,9 @@ impl<'ctx> CodeGen<'ctx> {
                 out
             });
         let size = 0;
-        let Some(discope) = &self.difile else {unreachable!()};
+        let Some(discope) = &self.difile else {
+            unreachable!()
+        };
         let difields = info.into_iter().map(|(it, _)| it).collect_vec();
 
         let di_struct = dibuilder.create_struct_type(
@@ -1667,6 +1699,7 @@ impl<'ctx> CodeGen<'ctx> {
                     let _strct = self.ctx.opaque_struct_type(&decl.ident);
                 }
             },
+            _ => {}
         }
     }
 
@@ -1692,20 +1725,42 @@ impl<'ctx> CodeGen<'ctx> {
             &ident,
         );
         // generate needed supporting functions.
-        let args_curry_functions = args.iter().rev().take(args.len()-1).map(|_| {
-            let ResolvedType::Function { arg:arg_t, returns } = result_ty.clone() else { unreachable!() };
-            let arg_t = self.type_resolver.resolve_arg_type(&arg_t);
-            let fun_t = curry_placeholder.fn_type(&[curry_placeholder.into(),arg_t.into()], false);
-            result_ty = match *returns{
-                ResolvedType::Pointer { underlining } if matches!(underlining.as_ref(),ResolvedType::Function { .. }) => *underlining,
-                _ => *returns
-            };
-            let fun = self.module.add_function(&ident, fun_t, None);
-            curried_args.push(arg_t);
-            fun
-        }).collect_vec();
+        let args_curry_functions = args
+            .iter()
+            .rev()
+            .take(args.len() - 1)
+            .map(|_| {
+                let ResolvedType::Function {
+                    arg: arg_t,
+                    returns,
+                } = result_ty.clone()
+                else {
+                    unreachable!()
+                };
+                let arg_t = self.type_resolver.resolve_arg_type(&arg_t);
+                let fun_t =
+                    curry_placeholder.fn_type(&[curry_placeholder.into(), arg_t.into()], false);
+                result_ty = match *returns {
+                    ResolvedType::Pointer { underlining }
+                        if matches!(underlining.as_ref(), ResolvedType::Function { .. }) =>
+                    {
+                        *underlining
+                    }
+                    _ => *returns,
+                };
+                let fun = self.module.add_function(&ident, fun_t, None);
+                curried_args.push(arg_t);
+                fun
+            })
+            .collect_vec();
 
-        let ResolvedType::Function { arg:arg_t, returns:rt } = result_ty else { unreachable!() };
+        let ResolvedType::Function {
+            arg: arg_t,
+            returns: rt,
+        } = result_ty
+        else {
+            unreachable!()
+        };
         let fun_t = if rt.as_ref() == &ResolvedType::Void || rt.as_ref() == &ResolvedType::Unit {
             let rt = self.ctx.void_type();
             let arg_t = self.type_resolver.resolve_type_as_basic(*arg_t);
@@ -2004,7 +2059,9 @@ impl<'ctx> CodeGen<'ctx> {
         for file in ast {
             self.current_module = file.name.clone() + ".fb";
             if is_debug {
-                let Some(dibuilder) = &self.dibuilder else { unreachable!() };
+                let Some(dibuilder) = &self.dibuilder else {
+                    unreachable!()
+                };
                 let difile = dibuilder.create_file(&file.name, "");
                 self.difile = Some(difile);
             }
@@ -2090,7 +2147,9 @@ impl<'ctx> CodeGen<'ctx> {
         let current_block = self.builder.get_insert_block().unwrap();
 
         if let Some(dibuilder) = &self.dibuilder {
-            let Some(scope) = &self.difunction else { unreachable!() };
+            let Some(scope) = &self.difunction else {
+                unreachable!()
+            };
             let diloc = dibuilder.create_debug_location(
                 self.ctx,
                 loc.0 as _,
@@ -2145,12 +2204,12 @@ impl<'ctx> CodeGen<'ctx> {
                 .builder
                 .build_phi(self.type_resolver.resolve_type_as_basic(rt), "");
             for (_, bb, ret) in &arms {
-                let Some(ret) = &ret else {unreachable!()};
+                let Some(ret) = &ret else { unreachable!() };
                 let _ = ret_block.move_after(*bb);
                 phi.add_incoming(&[(ret, *bb)]);
             }
             let unreachable_bb = if let Some((bb, ret)) = default_block {
-                let Some(ret) = ret else {unreachable!()};
+                let Some(ret) = ret else { unreachable!() };
                 phi.add_incoming(&[(&ret, bb)]);
                 bb
             } else {
