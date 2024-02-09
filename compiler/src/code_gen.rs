@@ -1738,7 +1738,7 @@ impl<'ctx> CodeGen<'ctx> {
         );
         // generate needed supporting functions.
         let args_curry_functions = args.iter().rev().take(args.len()-1).map(|_| {
-            let ResolvedType::Function { arg:arg_t, returns } = result_ty.clone() else { unreachable!() };
+            let ResolvedType::Function { arg:arg_t, returns, .. } = result_ty.clone() else { unreachable!() };
             let arg_t = self.type_resolver.resolve_arg_type(&arg_t);
             let fun_t = curry_placeholder.fn_type(&[curry_placeholder.into(),arg_t.into()], false);
             result_ty = match *returns{
@@ -1750,7 +1750,7 @@ impl<'ctx> CodeGen<'ctx> {
             fun
         }).collect_vec();
 
-        let ResolvedType::Function { arg:arg_t, returns:rt } = result_ty else { unreachable!() };
+        let ResolvedType::Function { arg:arg_t, returns:rt, .. } = result_ty else { unreachable!() };
         let fun_t = if rt.as_ref() == &ResolvedType::Void || rt.as_ref() == &ResolvedType::Unit {
             let rt = self.ctx.void_type();
             let arg_t = self.type_resolver.resolve_type_as_basic(*arg_t);
@@ -1924,6 +1924,7 @@ impl<'ctx> CodeGen<'ctx> {
                             == ResolvedType::Function {
                                 arg: types::UNIT.boxed(),
                                 returns: types::UNIT.boxed(),
+                                loc:(0,0)
                             })
                     {
                         Some(decl.ident.clone())

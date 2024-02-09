@@ -814,7 +814,7 @@ where
                     }
                 }
             }
-            if let Some((Token::Arrow, _)) = self.stream.peek() {
+            if let Some((Token::Arrow, fn_loc)) = self.stream.clone().next() {
                 self.stream.next();
                 let result = self.collect_type()?;
 
@@ -822,6 +822,7 @@ where
                 Ok(ResolvedType::Function {
                     arg: ty.boxed(),
                     returns: result.boxed(),
+                    loc:fn_loc
                 })
             } else {
                 let ty = type_from_string(&ty, generic_args, loc);
@@ -830,11 +831,12 @@ where
         } else if let Some((Token::GroupOpen, span)) = ty {
             if let Some((Token::GroupClose, _)) = self.stream.peek() {
                 self.stream.next();
-                return if let Some((Token::Arrow, _)) = self.stream.peek() {
+                return if let Some((Token::Arrow, arr_loc)) = self.stream.clone().next() {
                     self.stream.next();
                     Ok(ResolvedType::Function {
                         arg: types::UNIT.boxed(),
                         returns: self.collect_type()?.boxed(),
+                        loc:arr_loc
                     })
                 } else {
                     Ok(types::UNIT)
@@ -842,12 +844,13 @@ where
             }
             let ty = self.collect_type()?;
             if let Some((Token::GroupClose, _)) = self.stream.next() {
-                if let Some((Token::Arrow, _)) = self.stream.peek() {
+                if let Some((Token::Arrow, arr_loc)) = self.stream.clone().next() {
                     self.stream.next();
                     let result = self.collect_type()?;
                     Ok(ResolvedType::Function {
                         arg: ty.boxed(),
                         returns: result.boxed(),
+                        loc:arr_loc
                     })
                 } else {
                     Ok(ty)
@@ -1868,7 +1871,8 @@ mod tests {
                 ident: "foo".to_owned(),
                 ty: Some(ResolvedType::Function {
                     arg: types::INT32.boxed(),
-                    returns: types::INT32.boxed()
+                    returns: types::INT32.boxed(),
+                    loc:(0,0)
                 }),
                 args: vec![ArgDeclation {
                     loc: (0, 8),
@@ -1902,10 +1906,12 @@ let foo _ : ( int32 -> int32 ) -> int32 =
                 ty: Some(ResolvedType::Function {
                     arg: ResolvedType::Function {
                         arg: types::INT32.boxed(),
-                        returns: types::INT32.boxed()
+                        returns: types::INT32.boxed(),
+                        loc:(0,0)
                     }
                     .boxed(),
-                    returns: types::INT32.boxed()
+                    returns: types::INT32.boxed(),
+                    loc:(0,0)
                 }),
                 args: vec![ast::ArgDeclation {
                     ident: "_".to_string(),
@@ -1937,9 +1943,11 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                     arg: types::INT32.boxed(),
                     returns: ResolvedType::Function {
                         arg: types::INT32.boxed(),
-                        returns: types::INT32.boxed()
+                        returns: types::INT32.boxed(),
+                        loc:(0,0)
                     }
-                    .boxed()
+                    .boxed(),
+                    loc:(0,0)
                 }),
                 args: vec![ast::ArgDeclation {
                     ident: "_".to_string(),
@@ -1986,7 +1994,8 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                 ident: "bar".to_owned(),
                 ty: Some(ResolvedType::Function {
                     arg: types::INT32.boxed(),
-                    returns: types::INT32.boxed()
+                    returns: types::INT32.boxed(),
+                    loc:(0,0)
                 }),
                 args: vec![ast::ArgDeclation {
                     ident: "quz".to_string(),
@@ -2024,9 +2033,11 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                     arg: types::INT32.boxed(),
                     returns: ResolvedType::Function {
                         arg: types::INT32.boxed(),
-                        returns: types::INT32.boxed()
+                        returns: types::INT32.boxed(),
+                        loc:(0,0)
                     }
-                    .boxed()
+                    .boxed(),
+                    loc:(0,0)
                 }),
                 args: vec![
                     ast::ArgDeclation {
@@ -2076,7 +2087,8 @@ let main _ : int32 -> int32 =
                 ident: "main".to_string(),
                 ty: Some(ResolvedType::Function {
                     arg: types::INT32.boxed(),
-                    returns: types::INT32.boxed()
+                    returns: types::INT32.boxed(),
+                    loc:(0,0)
                 }),
                 args: vec![ast::ArgDeclation {
                     ident: "_".to_string(),
@@ -2289,6 +2301,7 @@ let main _ : int32 -> int32 =
                         loc: (0,25)
                     }
                     .boxed(),
+                    loc:(0,0)
                 }),
                 value: ast::ValueType::Expr(ast::Expr::ValueRead("a".to_string(), (0, 29))),
                 generictypes: Some(ast::GenericsDecl {
@@ -2396,9 +2409,11 @@ for<T,U> type Tuple = {
                             loc:(0,28)
                         }
                         .boxed(),
-                        returns: types::INT32.boxed()
+                        returns: types::INT32.boxed(),
+                        loc:(0,0)
                     }
-                    .boxed()
+                    .boxed(),
+                    loc:(0,0)
                 }),
                 value: ValueType::Function(vec![Statement::Return(
                     Expr::NumericLiteral {
@@ -2472,7 +2487,8 @@ for<T,U> type Tuple = {
                 }],
                 ty: Some(ResolvedType::Function {
                     arg: types::BOOL.boxed(),
-                    returns: types::INT32.boxed()
+                    returns: types::INT32.boxed(),
+                    loc:(0,0)
                 }),
                 value: ast::ValueType::Expr(ast::Expr::If(IfExpr {
                     cond: ast::Expr::ValueRead("a".to_string(), (0, 39)).boxed(),
@@ -2512,7 +2528,8 @@ for<T,U> type Tuple = {
                 }],
                 ty: Some(ResolvedType::Function {
                     arg: types::BOOL.boxed(),
-                    returns: types::INT32.boxed()
+                    returns: types::INT32.boxed(),
+                    loc:(0,0)
                 }),
                 value: ast::ValueType::Expr(ast::Expr::If(IfExpr {
                     cond: ast::Expr::ValueRead("a".to_string(), (2, 44)).boxed(),
@@ -2559,7 +2576,8 @@ for<T,U> type Tuple = {
                 }],
                 ty: Some(ResolvedType::Function {
                     arg: types::BOOL.boxed(),
-                    returns: types::INT32.boxed()
+                    returns: types::INT32.boxed(),
+                    loc:(0,0)
                 }),
                 value: ast::ValueType::Expr(ast::Expr::If(IfExpr {
                     cond: ast::Expr::ValueRead("a".to_string(), (7, 47)).boxed(),
@@ -2627,9 +2645,11 @@ for<T,U> type Tuple = {
                     arg: types::BOOL.boxed(),
                     returns: ResolvedType::Function {
                         arg: types::BOOL.boxed(),
-                        returns: types::INT32.boxed()
+                        returns: types::INT32.boxed(),
+                        loc:(0,0)
                     }
-                    .boxed()
+                    .boxed(),
+                    loc:(0,0)
                 }),
                 value: ValueType::Expr(ast::Expr::If(IfExpr {
                     cond: ast::Expr::ValueRead("a".to_string(), (14, 55)).boxed(),
@@ -2677,7 +2697,8 @@ for<T,U> type Tuple = {
                 }],
                 ty: Some(ResolvedType::Function {
                     arg: types::BOOL.boxed(),
-                    returns: types::INT32.boxed()
+                    returns: types::INT32.boxed(),
+                    loc:(0,0)
                 }),
                 value: ast::ValueType::Function(vec![ast::Statement::IfStatement(IfBranching {
                     cond: ast::Expr::ValueRead("a".to_string(), (17, 7)).boxed(),
@@ -2749,9 +2770,11 @@ for<T,U> type Tuple = {
                     arg: types::BOOL.boxed(),
                     returns: ResolvedType::Function {
                         arg: types::BOOL.boxed(),
-                        returns: types::INT32.boxed()
+                        returns: types::INT32.boxed(),
+                        loc:(0,0)
                     }
                     .boxed(),
+                    loc:(0,0)
                 }),
                 value: ast::ValueType::Function(vec![ast::Statement::IfStatement(IfBranching {
                     cond: ast::Expr::ValueRead("a".to_string(), (25, 7)).boxed(),
@@ -2806,9 +2829,11 @@ for<T,U> type Tuple = {
                     arg: types::BOOL.boxed(),
                     returns: ResolvedType::Function {
                         arg: types::BOOL.boxed(),
-                        returns: types::INT32.boxed()
+                        returns: types::INT32.boxed(),
+                        loc:(0,0)
                     }
-                    .boxed()
+                    .boxed(),
+                    loc:(0,0)
                 }),
                 value: ValueType::Expr(ast::Expr::If(IfExpr {
                     cond: ast::Expr::ValueRead("a".to_string(), (32, 60)).boxed(),
@@ -2861,6 +2886,7 @@ for<T,U> type Tuple = {
                 ty: Some(ResolvedType::Function {
                     arg: types::INT32.boxed(),
                     returns: types::INT32.boxed(),
+                    loc:(0,0)
                 }),
                 value: ast::ValueType::Expr(ast::Expr::Match(Match {
                     loc: (0, 41),
@@ -2922,6 +2948,7 @@ for<T,U> type Tuple = {
                 ty: Some(ResolvedType::Function {
                     arg: types::INT32.boxed(),
                     returns: types::INT32.boxed(),
+                    loc:(0,0)
                 }),
                 value: ValueType::Expr(ast::Expr::Match(Match {
                     loc: (5, 47),
@@ -3004,7 +3031,8 @@ for<T,U> type Tuple = {
                 },],
                 ty: Some(ResolvedType::Function {
                     arg: types::INT32.boxed(),
-                    returns: types::UNIT.boxed()
+                    returns: types::UNIT.boxed(),
+                    loc:(0,0)
                 }),
                 value: ValueType::Function(vec![ast::Statement::Match(Match {
                     loc: (13, 4),

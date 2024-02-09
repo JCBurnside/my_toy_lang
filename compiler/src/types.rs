@@ -79,7 +79,7 @@ impl FloatWidth {
     }
 }
 
-#[derive(Hash, Clone, Debug, PartialEq, Eq)]
+#[derive(Hash, Clone, Debug, Eq)]
 pub enum ResolvedType {
     Bool,
     Int {
@@ -107,6 +107,7 @@ pub enum ResolvedType {
     Function {
         arg: Box<ResolvedType>,
         returns: Box<ResolvedType>,
+        loc : crate::Location,
     },
     User {
         name: String,
@@ -130,74 +131,74 @@ pub enum ResolvedType {
     Error,
 }
 
-// impl PartialEq for ResolvedType {
-//     fn eq(&self, other: &Self) -> bool {
-//         if self.is_generic() || other.is_generic() {
-//             return true;
-//         }
-//         match (self, other) {
-//             (ResolvedType::Error, _) | (_, ResolvedType::Error) => true,
-//             (ResolvedType::Alias { actual }, other) => other == actual.as_ref(),
-//             (ResolvedType::Void, ResolvedType::Void)
-//             | (ResolvedType::Unit, ResolvedType::Unit)
-//             | (ResolvedType::Str, ResolvedType::Str)
-//             | (ResolvedType::Char, ResolvedType::Char)
-//             | (ResolvedType::Bool, ResolvedType::Bool) => true,
-//             (other, ResolvedType::Alias { actual }) => other == actual.as_ref(),
-//             (
-//                 ResolvedType::Int {
-//                     signed: lhs_signed,
-//                     width: lhs_wdith,
-//                 },
-//                 ResolvedType::Int {
-//                     signed: rhs_signed,
-//                     width: rhs_width,
-//                 },
-//             ) => lhs_signed == rhs_signed && lhs_wdith == rhs_width,
-//             (
-//                 ResolvedType::Float { width: lhs_width },
-//                 ResolvedType::Float { width: rhs_width },
-//             ) => lhs_width == rhs_width,
-//             (
-//                 ResolvedType::Array {
-//                     underlining: lhs_underlinging,
-//                     size: lhs_size,
-//                 },
-//                 ResolvedType::Array {
-//                     underlining: rhs_underlining,
-//                     size: rhs_size,
-//                 },
-//             ) => lhs_size == rhs_size && lhs_underlinging == rhs_underlining,
-//             (
-//                 ResolvedType::Pointer {
-//                     underlining: lhs_underling,
-//                 },
-//                 ResolvedType::Pointer {
-//                     underlining: rhs_underling,
-//                 },
-//             )
-//             | (
-//                 ResolvedType::Ref {
-//                     underlining: lhs_underling,
-//                 },
-//                 ResolvedType::Ref {
-//                     underlining: rhs_underling,
-//                 },
-//             ) => lhs_underling.as_ref() == rhs_underling.as_ref(),
-//             (
-//                 ResolvedType::Function {
-//                     arg: lhs_arg,
-//                     returns: lhs_ret,
-//                 },
-//                 ResolvedType::Function {
-//                     arg: rhs_arg,
-//                     returns: rhs_ret,
-//                 },
-//             ) => lhs_arg.as_ref() == rhs_ret.as_ref() && lhs_ret.as_ref() == rhs_ret.as_ref(),
-//             _ => false,
-//         }
-//     }
-// }
+impl PartialEq for ResolvedType {
+    fn eq(&self, other: &Self) -> bool {
+        
+        match (self, other) {
+            (ResolvedType::Error, _) | (_, ResolvedType::Error) => true,
+            (ResolvedType::Alias { actual, .. }, other) => other == actual.as_ref(),
+            (ResolvedType::Void, ResolvedType::Void)
+            | (ResolvedType::Unit, ResolvedType::Unit)
+            | (ResolvedType::Str, ResolvedType::Str)
+            | (ResolvedType::Char, ResolvedType::Char)
+            | (ResolvedType::Bool, ResolvedType::Bool) => true,
+            (other, ResolvedType::Alias { actual, .. }) => other == actual.as_ref(),
+            (
+                ResolvedType::Int {
+                    signed: lhs_signed,
+                    width: lhs_wdith,
+                },
+                ResolvedType::Int {
+                    signed: rhs_signed,
+                    width: rhs_width,
+                },
+            ) => lhs_signed == rhs_signed && lhs_wdith == rhs_width,
+            (
+                ResolvedType::Float { width: lhs_width },
+                ResolvedType::Float { width: rhs_width },
+            ) => lhs_width == rhs_width,
+            (
+                ResolvedType::Array {
+                    underlining: lhs_underlinging,
+                    size: lhs_size,
+                },
+                ResolvedType::Array {
+                    underlining: rhs_underlining,
+                    size: rhs_size,
+                },
+            ) => lhs_size == rhs_size && lhs_underlinging == rhs_underlining,
+            (
+                ResolvedType::Pointer {
+                    underlining: lhs_underling,
+                },
+                ResolvedType::Pointer {
+                    underlining: rhs_underling,
+                },
+            )
+            | (
+                ResolvedType::Ref {
+                    underlining: lhs_underling,
+                },
+                ResolvedType::Ref {
+                    underlining: rhs_underling,
+                },
+            ) => lhs_underling.as_ref() == rhs_underling.as_ref(),
+            (
+                ResolvedType::Function {
+                    arg: lhs_arg,
+                    returns: lhs_ret,
+                    ..
+                },
+                ResolvedType::Function {
+                    arg: rhs_arg,
+                    returns: rhs_ret,
+                    ..
+                },
+            ) => lhs_arg.as_ref() == rhs_ret.as_ref() && lhs_ret.as_ref() == rhs_ret.as_ref(),
+            _ => false,
+        }
+    }
+}
 // impl Eq for ResolvedType {}
 impl ResolvedType {
     pub fn is_void_or_unit(&self) -> bool {
@@ -214,7 +215,7 @@ impl ResolvedType {
     pub fn as_c_function(&self) -> (Vec<Self>, Self) {
         // (args, return type)
         match self {
-            Self::Function { arg, returns } => {
+            Self::Function { arg, returns, .. } => {
                 let (mut args, rt) = returns.as_c_function();
                 args.push(arg.as_ref().clone());
                 (args, rt)
@@ -226,9 +227,10 @@ impl ResolvedType {
     pub fn replace_generic(&self, name: &str, new_ty: Self) -> Self {
         match self {
             Self::Generic { name: old_name, .. } if old_name == name => new_ty,
-            Self::Function { arg, returns } => Self::Function {
+            Self::Function { arg, returns , loc} => Self::Function {
                 arg: Box::new(arg.replace_generic(name, new_ty.clone())),
                 returns: Box::new(returns.replace_generic(name, new_ty)),
+                loc: *loc,
             },
             _ => self.clone(),
         }
@@ -236,7 +238,7 @@ impl ResolvedType {
 
     fn find_first_generic_arg(&self) -> String {
         match self {
-            Self::Function { arg, returns } => {
+            Self::Function { arg, returns, .. } => {
                 if arg.is_generic() {
                     arg.find_first_generic_arg()
                 } else {
@@ -255,7 +257,7 @@ impl ResolvedType {
 
     pub fn is_generic(&self) -> bool {
         match self {
-            Self::Function { arg, returns } => arg.is_generic() || returns.is_generic(),
+            Self::Function { arg, returns, .. } => arg.is_generic() || returns.is_generic(),
             Self::Alias { actual, .. } => actual.is_generic(),
             Self::Slice { underlining }
             | Self::Pointer { underlining }
@@ -285,9 +287,10 @@ impl ResolvedType {
             ResolvedType::Slice { underlining } => Self::Slice {
                 underlining: underlining.replace_user_with_generic(target_name).boxed(),
             },
-            ResolvedType::Function { arg, returns } => Self::Function {
+            ResolvedType::Function { arg, returns, loc } => Self::Function {
                 arg: arg.replace_user_with_generic(target_name).boxed(),
                 returns: returns.replace_user_with_generic(target_name).boxed(),
+                loc:loc,
             },
             ResolvedType::Array {
                 underlining: underlying,
@@ -321,7 +324,7 @@ impl ResolvedType {
                 ..
             }
             | ResolvedType::Ref { underlining } => underlining.as_mut().lower_generics(context),
-            ResolvedType::Function { arg, returns } => {
+            ResolvedType::Function { arg, returns, .. } => {
                 arg.as_mut().lower_generics(context);
                 returns.as_mut().lower_generics(context);
             }
@@ -372,9 +375,10 @@ impl ResolvedType {
                     }
                 }
             }
-            Self::Function { arg, returns } => Self::Function {
+            Self::Function { arg, returns, loc } => Self::Function {
                 arg: arg.replace(nice_name, actual).boxed(),
                 returns: returns.replace(nice_name, actual).boxed(),
+                loc: *loc,
             },
             _ => self.clone(),
         }
@@ -404,7 +408,7 @@ impl ToString for ResolvedType {
             ResolvedType::Alias { actual, .. } => actual.to_string(),
             ResolvedType::Char => "char".to_string(),
             ResolvedType::Float { width } => "float".to_string() + &width.to_string(),
-            ResolvedType::Function { arg, returns } => {
+            ResolvedType::Function { arg, returns, .. } => {
                 let arg = if arg.is_function() {
                     format!("({})", arg.to_string())
                 } else {
@@ -704,7 +708,7 @@ impl<'ctx> TypeResolver<'ctx> {
     }
 
     pub fn resolve_type_as_function(&mut self, ty: &ResolvedType) -> FunctionType<'ctx> {
-        let ResolvedType::Function { arg, returns } = ty else { unreachable!("trying to make a non function type into a function") };
+        let ResolvedType::Function { arg, returns, .. } = ty else { unreachable!("trying to make a non function type into a function") };
         let arg = self.resolve_arg_type(&arg);
         let curry_holder = self
             .ctx
@@ -787,10 +791,12 @@ mod tests {
             "{}",
             super::ResolvedType::Function {
                 arg: super::INT32.boxed(),
-                returns: super::INT32.boxed()
+                returns: super::INT32.boxed(),
+                loc:(0,0)
             } == super::ResolvedType::Function {
                 arg: super::INT32.boxed(),
-                returns: super::INT32.boxed()
+                returns: super::INT32.boxed(),
+                loc:(1,0)
             }
         )
     }

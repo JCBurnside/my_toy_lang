@@ -357,7 +357,7 @@ pub struct TypedValueDeclaration {
     pub(crate) is_curried: bool,
 }
 pub(crate) fn collect_args(t: &ResolvedType) -> Vec<ResolvedType> {
-    if let ResolvedType::Function { arg, returns } = t {
+    if let ResolvedType::Function { arg, returns, .. } = t {
         [arg.as_ref().clone()]
             .into_iter()
             .chain(collect_args(&returns).into_iter())
@@ -1714,7 +1714,7 @@ pub fn map_types_to_args(
     if args.is_empty() || !fun.is_generic() {
         return (fun, vec![]);
     }
-    let ResolvedType::Function { arg, returns } = &fun else { unreachable!() };
+    let ResolvedType::Function { arg, returns, loc } = &fun else { unreachable!() };
     let arg_t = args.pop().unwrap();
     if let ResolvedType::Generic { name, .. } = arg.as_ref() {
         let fun = returns.replace_generic(name, arg_t.clone());
@@ -1724,6 +1724,7 @@ pub fn map_types_to_args(
             ResolvedType::Function {
                 arg: arg_t.boxed(),
                 returns: fun.boxed(),
+                loc:*loc
             },
             replaced,
         )
@@ -1733,6 +1734,7 @@ pub fn map_types_to_args(
             ResolvedType::Function {
                 arg: arg_t.boxed(),
                 returns: returns.boxed(),
+                loc:(0,0)
             },
             replaced,
         )
@@ -2155,7 +2157,7 @@ pub struct TypedUnaryOpCall {
 }
 
 fn strip_pointers(ty: &ResolvedType) -> ResolvedType {
-    if let ResolvedType::Function { arg, returns } = ty {
+    if let ResolvedType::Function { arg, returns, loc } = ty {
         let arg = match arg.as_ref() {
             ResolvedType::Pointer { underlining } if underlining.is_function() => {
                 strip_pointers(underlining.as_ref()).boxed()
@@ -2168,7 +2170,7 @@ fn strip_pointers(ty: &ResolvedType) -> ResolvedType {
             }
             _ => returns.clone(),
         };
-        ResolvedType::Function { arg, returns }
+        ResolvedType::Function { arg, returns, loc: *loc }
     } else {
         ty.clone()
     }
@@ -2494,7 +2496,7 @@ mod tests {
     lazy_static::lazy_static! {
         static ref PREDEFINED_VALUES : HashMap<String,ResolvedType> = {
             let mut out = HashMap::new();
-            out.insert("foo".to_string(), ResolvedType::Function { arg: types::INT32.boxed(), returns: types::INT32.boxed() });
+            out.insert("foo".to_string(), ResolvedType::Function { arg: types::INT32.boxed(), returns: types::INT32.boxed(), loc:(0,0) });
             out.insert("bar".to_string(), types::INT32);
             out
         };
@@ -2670,7 +2672,8 @@ let main _ : () -> () =
                     "foo".to_string(),
                     ResolvedType::Function {
                         arg: types::INT32.boxed(),
-                        returns: types::INT32.boxed()
+                        returns: types::INT32.boxed(),
+                        loc:(0,0)
                     },
                     (0, 0)
                 )
@@ -2797,7 +2800,8 @@ let main _ : () -> () =
                     "foo".to_string(),
                     ResolvedType::Function {
                         arg: types::INT32.boxed(),
-                        returns: types::INT32.boxed()
+                        returns: types::INT32.boxed(),
+                        loc:(0,0)
                     },
                     (0, 0)
                 )
@@ -2829,7 +2833,8 @@ let main _ : () -> () =
                     }],
                     ty: Some(ResolvedType::Function {
                         arg: types::INT32.boxed(),
-                        returns: types::INT32.boxed()
+                        returns: types::INT32.boxed(),
+                        loc:(0,0)
                     }),
                     value: ast::ValueType::Function(vec![ast::Statement::Return(
                         ast::Expr::NumericLiteral {
@@ -2854,7 +2859,8 @@ let main _ : () -> () =
                 }],
                 ty: ResolvedType::Function {
                     arg: types::INT32.boxed(),
-                    returns: types::INT32.boxed()
+                    returns: types::INT32.boxed(),
+                    loc:(0,0)
                 },
                 value: super::TypedValueType::Function(vec![super::TypedStatement::Return(
                     super::TypedExpr::IntegerLiteral {
@@ -2913,7 +2919,8 @@ let main _ : () -> () =
                         name: "T".to_string(),
                         loc:(1,25)
                     }
-                    .boxed()
+                    .boxed(),
+                    loc:(0,0)
                 },
                 generictypes: Some(ResolvedGenericsDecl {
                     for_loc : (1,0),
@@ -2955,7 +2962,8 @@ let main _ : () -> () =
                                 name: "T".to_string(),
                                 loc:(1,25)
                             }
-                            .boxed()
+                            .boxed(),
+                            loc:(0,0),
                         },
                         (4, 4)
                     )
@@ -2975,7 +2983,8 @@ let main _ : () -> () =
                 })]),
                 ty: ResolvedType::Function {
                     arg: types::UNIT.boxed(),
-                    returns: types::UNIT.boxed()
+                    returns: types::UNIT.boxed(),
+                    loc:(0,0)
                 },
                 generictypes: None,
                 is_curried: false,
@@ -3079,7 +3088,8 @@ let first a : Tuple<int32,float64> -> int32 =
                         loc:(7,14)
                     }
                     .boxed(),
-                    returns: types::INT32.boxed()
+                    returns: types::INT32.boxed(),
+                    loc:(7,36)
                 },
                 generictypes: None,
                 is_curried: false,
@@ -3158,7 +3168,8 @@ let main _ : int32 -> int32 =
                         name: "T".to_string(),
                         loc:(1,25),
                     }
-                    .boxed()
+                    .boxed(),
+                    loc:(1,23),
                 },
                 generictypes: Some(ResolvedGenericsDecl {
                     for_loc:(1,0),
@@ -3193,7 +3204,8 @@ let main _ : int32 -> int32 =
                             "test<int32>".to_string(),
                             ResolvedType::Function {
                                 arg: types::INT32.boxed(),
-                                returns: types::INT32.boxed()
+                                returns: types::INT32.boxed(),
+                                loc:(5,4)
                             },
                             (5, 4)
                         )
@@ -3218,7 +3230,8 @@ let main _ : int32 -> int32 =
                 ]),
                 ty: ResolvedType::Function {
                     arg: types::INT32.boxed(),
-                    returns: types::INT32.boxed()
+                    returns: types::INT32.boxed(),
+                    loc:(6,20)
                 },
                 generictypes: None,
                 is_curried: false,
@@ -3241,7 +3254,8 @@ let main _ : int32 -> int32 =
                 )]),
                 ty: ResolvedType::Function {
                     arg: types::INT32.boxed(),
-                    returns: types::INT32.boxed()
+                    returns: types::INT32.boxed(),
+                    loc:(0,0)
                 },
                 generictypes: None,
                 is_curried: false,
@@ -3292,7 +3306,8 @@ let statement_with_else_if a b : bool -> bool -> int32 =
                                 "foo".to_string(),
                                 ResolvedType::Function {
                                     arg: types::INT32.boxed(),
-                                    returns: types::INT32.boxed()
+                                    returns: types::INT32.boxed(),
+                                    loc:(0,0)
                                 },
                                 (2, 8)
                             )
@@ -3321,7 +3336,8 @@ let statement_with_else_if a b : bool -> bool -> int32 =
                                 "foo".to_string(),
                                 ResolvedType::Function {
                                     arg: types::INT32.boxed(),
-                                    returns: types::INT32.boxed()
+                                    returns: types::INT32.boxed(),
+                                    loc:(0,0)
                                 },
                                 (5, 8)
                             )
@@ -3346,7 +3362,8 @@ let statement_with_else_if a b : bool -> bool -> int32 =
                 })),
                 ty: ResolvedType::Function {
                     arg: types::BOOL.boxed(),
-                    returns: types::INT32.boxed()
+                    returns: types::INT32.boxed(),
+                    loc:(0,0)
                 },
                 generictypes: None,
                 is_curried: false,
@@ -3373,9 +3390,11 @@ let statement_with_else_if a b : bool -> bool -> int32 =
                     arg: types::BOOL.boxed(),
                     returns: ResolvedType::Function {
                         arg: types::BOOL.boxed(),
-                        returns: types::INT32.boxed()
+                        returns: types::INT32.boxed(),
+                        loc:(0,0)
                     }
                     .boxed(),
+                    loc:(0,0)
                 },
                 value: TypedValueType::Function(vec![TypedStatement::IfBranching(
                     TypedIfBranching {
@@ -3468,7 +3487,8 @@ let as_statement a b : int32 -> int32 -> () =
                             "fun".to_string(),
                             ResolvedType::Function {
                                 arg: types::INT32.boxed(),
-                                returns: types::INT32.boxed()
+                                returns: types::INT32.boxed(),
+                                loc:(0,0)
                             },
                             (1, 67)
                         )
@@ -3545,12 +3565,15 @@ let as_statement a b : int32 -> int32 -> () =
                     returns: ResolvedType::Function {
                         arg: ResolvedType::Function {
                             arg: types::INT32.boxed(),
-                            returns: types::INT32.boxed()
+                            returns: types::INT32.boxed(),
+                            loc:(0,0)
                         }
                         .boxed(),
-                        returns: types::INT32.boxed()
+                        returns: types::INT32.boxed(),
+                        loc:(0,0)
                     }
-                    .boxed()
+                    .boxed(),
+                    loc:(0,0)
                 },
                 generictypes: None,
                 is_curried: false,
@@ -3580,7 +3603,8 @@ let as_statement a b : int32 -> int32 -> () =
                         "fun".to_string(),
                         ResolvedType::Function {
                             arg: types::INT32.boxed(),
-                            returns: types::INT32.boxed()
+                            returns: types::INT32.boxed(),
+                            loc:(0,0)
                         },
                         (6, 62)
                     )
@@ -3657,12 +3681,15 @@ let as_statement a b : int32 -> int32 -> () =
                     returns: ResolvedType::Function {
                         arg: ResolvedType::Function {
                             arg: types::INT32.boxed(),
-                            returns: types::INT32.boxed()
+                            returns: types::INT32.boxed(),
+                            loc:(0,0)
                         }
                         .boxed(),
-                        returns: types::INT32.boxed()
+                        returns: types::INT32.boxed(),
+                        loc:(0,0)
                     }
-                    .boxed()
+                    .boxed(),
+                    loc:(0,0)
                 },
                 generictypes: None,
                 is_curried: false,
@@ -3714,7 +3741,8 @@ let as_statement a b : int32 -> int32 -> () =
                                                     "foo".to_string(),
                                                     ResolvedType::Function {
                                                         arg: types::INT32.boxed(),
-                                                        returns: types::INT32.boxed()
+                                                        returns: types::INT32.boxed(),
+                                                        loc:(0,0)
                                                     },
                                                     (16, 15)
                                                 )
@@ -3744,7 +3772,8 @@ let as_statement a b : int32 -> int32 -> () =
                                                 "foo".to_string(),
                                                 ResolvedType::Function {
                                                     arg: types::INT32.boxed(),
-                                                    returns: types::INT32.boxed()
+                                                    returns: types::INT32.boxed(),
+                                                    loc:(0,0)
                                                 },
                                                 (18, 12)
                                             )
@@ -3789,9 +3818,11 @@ let as_statement a b : int32 -> int32 -> () =
                     arg: types::INT32.boxed(),
                     returns: ResolvedType::Function {
                         arg: types::INT32.boxed(),
-                        returns: types::UNIT.boxed()
+                        returns: types::UNIT.boxed(),
+                        loc:(0,0)
                     }
                     .boxed(),
+                    loc:(0,0)
                 },
                 generictypes: None,
                 is_curried: false,

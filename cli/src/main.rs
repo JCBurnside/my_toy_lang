@@ -36,6 +36,7 @@ fn main() {
         ResolvedType::Function {
             arg: Box::new(types::STR),
             returns: Box::new(ResolvedType::Void),
+            loc:(0,0)
         },
     );
 
