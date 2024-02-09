@@ -596,7 +596,7 @@ where
     }
 
     fn struct_construct(&mut self) -> Result<StructConstruction, ParseError> {
-        let ResolvedType::User { name, generics } = self.collect_type()? else {unreachable!("what are you doing?")};
+        let ResolvedType::User { name, generics, .. } = self.collect_type()? else {unreachable!("what are you doing?")};
         let Some((Token::CurlOpen,loc)) = self.stream.next() else { unreachable!() };
         let mut fields = HashMap::new();
         while let Some((Token::Ident(_), _)) = self.stream.peek() {
@@ -818,13 +818,13 @@ where
                 self.stream.next();
                 let result = self.collect_type()?;
 
-                let ty = type_from_string(&ty, generic_args);
+                let ty = type_from_string(&ty, generic_args, loc);
                 Ok(ResolvedType::Function {
                     arg: ty.boxed(),
                     returns: result.boxed(),
                 })
             } else {
-                let ty = type_from_string(&ty, generic_args);
+                let ty = type_from_string(&ty, generic_args, loc);
                 Ok(ty)
             }
         } else if let Some((Token::GroupOpen, span)) = ty {
@@ -1748,7 +1748,7 @@ fn make_literal(token: Token, span: (usize, usize)) -> Result<crate::ast::Expr, 
         }),
     }
 }
-fn type_from_string(name: &str, generics: Vec<ResolvedType>) -> ResolvedType {
+fn type_from_string(name: &str, generics: Vec<ResolvedType>, loc:crate::Location) -> ResolvedType {
     match name {
         "str" => types::STR,
         "char" => types::CHAR,
@@ -1763,6 +1763,7 @@ fn type_from_string(name: &str, generics: Vec<ResolvedType>) -> ResolvedType {
                 _ => ResolvedType::User {
                     name: ty.to_string(),
                     generics: Vec::new(),
+                    loc,
                 },
             }
         }
@@ -1774,12 +1775,14 @@ fn type_from_string(name: &str, generics: Vec<ResolvedType>) -> ResolvedType {
                 _ => ResolvedType::User {
                     name: ty.to_string(),
                     generics: Vec::new(),
+                    loc,
                 },
             }
         }
         _ => ResolvedType::User {
             name: name.to_string(),
             generics,
+            loc,
         },
     }
 }
@@ -2277,18 +2280,25 @@ let main _ : int32 -> int32 =
                 }],
                 ty: Some(ResolvedType::Function {
                     arg: ResolvedType::Generic {
-                        name: "T".to_string()
+                        name: "T".to_string(),
+                        loc: (0,20)
                     }
                     .boxed(),
                     returns: ResolvedType::Generic {
-                        name: "T".to_string()
+                        name: "T".to_string(),
+                        loc: (0,25)
                     }
                     .boxed(),
                 }),
                 value: ast::ValueType::Expr(ast::Expr::ValueRead("a".to_string(), (0, 29))),
                 generictypes: Some(ast::GenericsDecl {
                     for_loc:(0,0),
-                    decls:[((0,4),"T".to_string())].into_iter().collect(),
+                    decls:[
+                        (
+                            (0,4),
+                            "T".to_string()
+                        )
+                    ].into_iter().collect(),
                 }),
             }),
             parser.declaration().unwrap(),
@@ -2330,14 +2340,16 @@ for<T,U> type Tuple = {
                     ast::FieldDecl {
                         name: "first".to_string(),
                         ty: ResolvedType::Generic {
-                            name: "T".to_string()
+                            name: "T".to_string(),
+                            loc:(4,12),
                         },
                         loc: (4, 4)
                     },
                     ast::FieldDecl {
                         name: "second".to_string(),
                         ty: ResolvedType::Generic {
-                            name: "U".to_string()
+                            name: "U".to_string(),
+                            loc:(5,13)
                         },
                         loc: (5, 4)
                     },
@@ -2373,13 +2385,15 @@ for<T,U> type Tuple = {
                 ty: Some(ResolvedType::Function {
                     arg: ResolvedType::User {
                         name: "Bar".to_string(),
-                        generics: vec![types::INT32]
+                        generics: vec![types::INT32],
+                        loc:(0,14)
                     }
                     .boxed(),
                     returns: ResolvedType::Function {
                         arg: ResolvedType::User {
                             name: "Baz".to_string(),
-                            generics: vec![types::INT32, types::FLOAT64]
+                            generics: vec![types::INT32, types::FLOAT64],
+                            loc:(0,28)
                         }
                         .boxed(),
                         returns: types::INT32.boxed()

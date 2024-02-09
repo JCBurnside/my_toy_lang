@@ -118,6 +118,32 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                         (Token::CharLiteral(inside), (self.curr_line, start_col))
                     }
                 }
+                '/' if self.source_stream.clone().next() == Some('/') => {
+                    let _comment = self.source_stream.peeking_take_while(|c| c!=&'\n').collect::<String>();
+                    self.lex()
+                }
+                '/' if self.source_stream.clone().next() == Some('*') => {
+                    let mut prev = '\0';
+                    let _comment = self
+                        .source_stream
+                        .peeking_take_while(|c| {
+                            if prev == '*' && c == &'/' {
+                                self.curr_col+=1;
+                                false
+                            } else {
+                                if c==&'\n' {
+                                    self.curr_line +=1;
+                                    self.curr_col = 0;
+                                } else {
+                                    self.curr_col +=1;
+                                }
+                                prev = *c;
+                                true
+                            }
+                        }).collect::<String>();
+                    let _close_comment = self.source_stream.next();
+                    self.lex()
+                }
                 '"' => {
                     let mut prev = '\0';
                     let inside = self
@@ -779,6 +805,24 @@ let main _ : int32 -> int32 =
                 Ident("print_str".to_owned()), StringLiteral("v".to_owned()),Seq,
                 Return, Integer(false, "32".to_owned()),Seq,
             EoF
+            ]
+        )
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn ingore_comments() {
+        const SRC :&'static str = r#"
+//first comment
+let foo /*inline*/ x = 0;
+"#;
+
+        use Token::*;
+        assert_eq!(
+            TokenStream::from_source(SRC).collect_vec(),
+            &[
+                (Let,(2,0)), (Ident("foo".to_string()),(2,4)), (Ident("x".to_string()),(2,19)), (Op("=".to_string()),(2,21)), (Integer(false, "0".to_string()),(2,23)), (Seq,(2,24)),
+                (EoF,(3,0))
             ]
         )
     }

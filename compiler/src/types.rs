@@ -111,6 +111,7 @@ pub enum ResolvedType {
     User {
         name: String,
         generics: Vec<ResolvedType>,
+        loc:crate::Location
     },
 
     Array {
@@ -120,9 +121,11 @@ pub enum ResolvedType {
     // ForwardUser{name:String},
     Alias {
         actual: Box<ResolvedType>,
+        loc:crate::Location,
     },
     Generic {
         name: String,
+        loc:crate::Location,
     },
     Error,
 }
@@ -222,7 +225,7 @@ impl ResolvedType {
 
     pub fn replace_generic(&self, name: &str, new_ty: Self) -> Self {
         match self {
-            Self::Generic { name: old_name } if old_name == name => new_ty,
+            Self::Generic { name: old_name, .. } if old_name == name => new_ty,
             Self::Function { arg, returns } => Self::Function {
                 arg: Box::new(arg.replace_generic(name, new_ty.clone())),
                 returns: Box::new(returns.replace_generic(name, new_ty)),
@@ -240,7 +243,7 @@ impl ResolvedType {
                     returns.find_first_generic_arg()
                 }
             }
-            Self::Generic { name } => name.clone(),
+            Self::Generic { name, .. } => name.clone(),
             _ => unreachable!(),
         }
     }
@@ -253,7 +256,7 @@ impl ResolvedType {
     pub fn is_generic(&self) -> bool {
         match self {
             Self::Function { arg, returns } => arg.is_generic() || returns.is_generic(),
-            Self::Alias { actual } => actual.is_generic(),
+            Self::Alias { actual, .. } => actual.is_generic(),
             Self::Slice { underlining }
             | Self::Pointer { underlining }
             | Self::Ref { underlining } => underlining.is_generic(),
@@ -265,7 +268,7 @@ impl ResolvedType {
     pub fn is_function(&self) -> bool {
         match self {
             Self::Function { .. } => true,
-            Self::Alias { actual } => actual.is_function(),
+            Self::Alias { actual, .. } => actual.is_function(),
             Self::Pointer { underlining } | Self::Ref { underlining } => underlining.is_function(),
             _ => false,
         }
@@ -293,8 +296,8 @@ impl ResolvedType {
                 underlining: underlying.replace_user_with_generic(target_name).boxed(),
                 size,
             },
-            ResolvedType::User { name, .. } if &name == target_name => {
-                ResolvedType::Generic { name }
+            ResolvedType::User { name, loc, .. } if &name == target_name => {
+                ResolvedType::Generic { name, loc }
             }
             _ => self,
         }
@@ -315,13 +318,14 @@ impl ResolvedType {
             | ResolvedType::Array { underlining, .. }
             | ResolvedType::Alias {
                 actual: underlining,
+                ..
             }
             | ResolvedType::Ref { underlining } => underlining.as_mut().lower_generics(context),
             ResolvedType::Function { arg, returns } => {
                 arg.as_mut().lower_generics(context);
                 returns.as_mut().lower_generics(context);
             }
-            ResolvedType::User { name, generics } => {
+            ResolvedType::User { name, generics, .. } => {
                 if generics.iter().any(ResolvedType::is_generic) || generics.len() == 0 {
                     return;
                 }
@@ -350,11 +354,12 @@ impl ResolvedType {
 
     pub fn replace(&self, nice_name: &str, actual: &str) -> Self {
         match self {
-            Self::User { name, generics } => {
+            Self::User { name, generics, loc } => {
                 if name == nice_name {
                     Self::User {
                         name: actual.to_string(),
                         generics: generics.clone(),
+                        loc:*loc,
                     }
                 } else {
                     Self::User {
@@ -363,6 +368,7 @@ impl ResolvedType {
                             .iter()
                             .map(|it| it.replace(nice_name, actual))
                             .collect(),
+                        loc:*loc,
                     }
                 }
             }
@@ -395,7 +401,7 @@ impl ToString for ResolvedType {
     fn to_string(&self) -> String {
         match self {
             ResolvedType::Bool => "bool".to_string(),
-            ResolvedType::Alias { actual } => actual.to_string(),
+            ResolvedType::Alias { actual, .. } => actual.to_string(),
             ResolvedType::Char => "char".to_string(),
             ResolvedType::Float { width } => "float".to_string() + &width.to_string(),
             ResolvedType::Function { arg, returns } => {
@@ -424,7 +430,7 @@ impl ToString for ResolvedType {
             ResolvedType::Str => "str".to_string(),
             ResolvedType::Unit => "()".to_string(),
             ResolvedType::Void => "".to_string(),
-            ResolvedType::User { name, generics } => {
+            ResolvedType::User { name, generics, .. } => {
                 if generics.len() > 0 {
                     format!(
                         "{}<{}>",
@@ -627,7 +633,7 @@ impl<'ctx> TypeResolver<'ctx> {
                     .as_any_type_enum();
                 self.known.insert(ty, r);
             }
-            ResolvedType::User { name, generics }
+            ResolvedType::User { name, generics, .. }
                 if generics
                     .iter()
                     .map(ResolvedType::is_generic)
@@ -658,7 +664,7 @@ impl<'ctx> TypeResolver<'ctx> {
                     .insert(BOOL, self.ctx.bool_type().as_any_type_enum());
             }
             // ResolvedType::ForwardUser { name } => todo!(),
-            ResolvedType::Alias { actual } => self.resolve_type(actual.as_ref().clone()),
+            ResolvedType::Alias { actual, .. } => self.resolve_type(actual.as_ref().clone()),
             ResolvedType::Unit => (),
             ResolvedType::Generic { .. } =>
             /* not sure what I need to do here yet */
