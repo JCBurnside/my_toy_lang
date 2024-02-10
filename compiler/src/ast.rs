@@ -281,10 +281,10 @@ pub struct UnaryOpCall {
 
 #[derive(PartialEq, Debug)]
 pub struct BinaryOpCall {
-    pub(crate) loc: crate::Location,
-    pub(crate) lhs: Box<Expr>,
-    pub(crate) rhs: Box<Expr>,
-    pub(crate) operator: String,
+    pub loc: crate::Location,
+    pub lhs: Box<Expr>,
+    pub rhs: Box<Expr>,
+    pub operator: String,
 }
 impl BinaryOpCall {
     fn replace(&mut self, nice_name: &str, actual: &str) {
@@ -295,9 +295,9 @@ impl BinaryOpCall {
 
 #[derive(PartialEq, Debug)]
 pub struct FnCall {
-    pub(crate) loc: crate::Location,
-    pub(crate) value: Box<Expr>,
-    pub(crate) arg: Option<Box<Expr>>,
+    pub loc: crate::Location,
+    pub value: Box<Expr>,
+    pub arg: Option<Box<Expr>>,
 }
 impl FnCall {
     fn replace(&mut self, nice_name: &str, actual: &str) {
@@ -308,10 +308,10 @@ impl FnCall {
 
 #[derive(PartialEq, Debug)]
 pub struct StructConstruction {
-    pub(crate) loc: crate::Location,
-    pub(crate) fields: HashMap<String, (Expr, crate::Location)>,
-    pub(crate) generics: Vec<ResolvedType>,
-    pub(crate) ident: String,
+    pub loc: crate::Location,
+    pub fields: HashMap<String, (Expr, crate::Location)>,
+    pub generics: Vec<ResolvedType>,
+    pub ident: String,
 }
 impl StructConstruction {
     fn replace(&mut self, nice_name: &str, actual: &str) {
@@ -411,11 +411,11 @@ impl Expr {
 
 #[derive(PartialEq, Debug)]
 pub struct IfExpr {
-    pub(crate) cond: Box<Expr>,
-    pub(crate) true_branch: (Vec<Statement>, Box<Expr>),
-    pub(crate) else_ifs: Vec<(Box<Expr>, Vec<Statement>, Box<Expr>)>,
-    pub(crate) else_branch: (Vec<Statement>, Box<Expr>),
-    pub(crate) loc: crate::Location,
+    pub cond: Box<Expr>,
+    pub true_branch: (Vec<Statement>, Box<Expr>),
+    pub else_ifs: Vec<(Box<Expr>, Vec<Statement>, Box<Expr>)>,
+    pub else_branch: (Vec<Statement>, Box<Expr>),
+    pub loc: crate::Location,
 }
 
 impl IfExpr {
@@ -443,9 +443,9 @@ impl IfExpr {
 
 #[derive(Debug, PartialEq)]
 pub struct Match {
-    pub(crate) loc: crate::Location,
-    pub(crate) on: Box<Expr>,
-    pub(crate) arms: Vec<MatchArm>,
+    pub loc: crate::Location,
+    pub on: Box<Expr>,
+    pub arms: Vec<MatchArm>,
 }
 impl Match {
     fn replace(&mut self, nice_name: &str, actual: &str) {
@@ -457,11 +457,11 @@ impl Match {
 }
 
 #[derive(Debug, PartialEq)]
-pub(crate) struct MatchArm {
-    pub(crate) block: Vec<Statement>,
-    pub(crate) ret: Option<Box<Expr>>,
-    pub(crate) cond: Pattern,
-    pub(crate) loc: crate::Location,
+pub struct MatchArm {
+    pub block: Vec<Statement>,
+    pub ret: Option<Box<Expr>>,
+    pub cond: Pattern,
+    pub loc: crate::Location,
 }
 impl MatchArm {
     fn replace(&mut self, nice_name: &str, actual: &str) {
@@ -475,7 +475,7 @@ impl MatchArm {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Pattern {
+pub enum Pattern {
     Default,
     ConstNumber(String), // todo! conditional branch
     ConstStr(String),
