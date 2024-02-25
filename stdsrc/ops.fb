@@ -1,0 +1,129 @@
+
+extern "intrinsic" for<T> let (*) a : &T -> T;
+concept Deref =
+    type Output;
+    let (*) : &Self -> Self::Output;
+concept DerefMut = 
+    type Output;
+    let (^) : &mut Self -> Self::Output;
+
+// addition
+for<Other=Self> concept Add =
+    type Output;
+    let (+) : Self -> Other -> Self::Output;
+
+extern "intrinsic" let (+) : int8 -> int8 -> int8;
+let (+) (lhs:int8) (rhs:&int8)  = lhs + (*rhs);
+let (+) (lhs:&int8) (rhs:int8)  = (*lhs) + rhs;
+let (+) (lhs:&int8) (rhs:&int8) = (*lhs) + (*rhs);
+extern "intrinsic" let (+) : int16 -> int16 -> int16;
+let (+) (lhs:int16) (rhs:&int16)  = lhs + (*rhs);
+let (+) (lhs:&int16) (rhs:int16)  = (*lhs) + rhs;
+let (+) (lhs:&int16) (rhs:&int16) = (*lhs) + (*rhs);
+extern "intrinsic" let (+) : int32 -> int32 -> int32;
+let (+) (lhs:int32) (rhs:&int32)  = lhs + (*rhs);
+let (+) (lhs:&int32) (rhs:int32)  = (*lhs) + rhs;
+let (+) (lhs:&int32) (rhs:&int32) = (*lhs) + (*rhs);
+extern "intrinsic" let (+) : int64 -> int64 -> int64;
+let (+) (lhs:int64) (rhs:&int64)  = lhs + (*rhs);
+let (+) (lhs:&int64) (rhs:int64)  = (*lhs) + rhs;
+let (+) (lhs:&int64) (rhs:&int64) = (*lhs) + (*rhs);
+extern "intrinsic" let (+) : float32 -> float32 -> float32;
+let (+) (lhs:float32) (rhs:&float32)  = lhs + (*rhs);
+let (+) (lhs:&float32) (rhs:float32)  = (*lhs) + rhs;
+let (+) (lhs:&float32) (rhs:&float32) = (*lhs) + (*rhs);
+extern "intrinsic" let (+) : float64 -> float64 -> float64;
+let (+) (lhs:float64) (rhs:&float64)  = lhs + (*rhs);
+let (+) (lhs:&float64) (rhs:float64)  = (*lhs) + rhs;
+let (+) (lhs:&float64) (rhs:&float64) = (*lhs) + (*rhs);
+
+// subtraction
+for<Other = Self> concept Sub =
+    type Output;
+    let (-) : Self -> Other -> Self::Output;
+
+extern "intrinsic" let (-) : int8 -> int8 -> int8;
+let (-) (lhs:int8) (rhs:&int8)  = lhs - (*rhs);
+let (-) (lhs:&int8) (rhs:int8)  = (*lhs) - rhs;
+let (-) (lhs:&int8) (rhs:&int8) = (*lhs) - (*rhs);
+extern "intrinsic" let (-) : int16 -> int16 -> int16;
+let (-) (lhs:int16) (rhs:&int16)  = lhs - (*rhs);
+let (-) (lhs:&int16) (rhs:int16)  = (*lhs) - rhs;
+let (-) (lhs:&int16) (rhs:&int16) = (*lhs) - (*rhs);
+extern "intrinsic" let (-) : int32 -> int32 -> int32;
+let (-) (lhs:int32) (rhs:&int32)  = lhs - (*rhs);
+let (-) (lhs:&int32) (rhs:int32)  = (*lhs) - rhs;
+let (-) (lhs:&int32) (rhs:&int32) = (*lhs) - (*rhs);
+extern "intrinsic" let (-) : int64 -> int64 -> int64;
+let (-) (lhs:int64) (rhs:&int64)  = lhs - (*rhs);
+let (-) (lhs:&int64) (rhs:int64)  = (*lhs) - rhs;
+let (-) (lhs:&int64) (rhs:&int64) = (*lhs) - (*rhs);
+extern "intrinsic" let (-) : float32 -> float32 -> float32;
+let (-) (lhs:float32) (rhs:&float32)  = lhs - (*rhs);
+let (-) (lhs:&float32) (rhs:float32)  = (*lhs) - rhs;
+let (-) (lhs:&float32) (rhs:&float32) = (*lhs) - (*rhs);
+extern "intrinsic" let (-) : float64 -> float64 -> float64;
+let (-) (lhs:float64) (rhs:&float64)  = lhs - (*rhs);
+let (-) (lhs:&float64) (rhs:float64)  = (*lhs) - rhs;
+let (-) (lhs:&float64) (rhs:&float64) = (*lhs) - (*rhs);
+
+// multiplication
+for<Other = Self> concept Mul =
+    type Output;
+    let (*) : Self -> Other -> Self::Output;
+
+extern "intrinsic" let (*) : int8 -> int8 -> int8;
+let (*) (lhs:int8) (rhs:&int8)  = lhs * (*rhs);
+let (*) (lhs:&int8) (rhs:int8)  = (*lhs) * rhs;
+let (*) (lhs:&int8) (rhs:&int8) = (*lhs) * (*rhs);
+extern "intrinsic" let (*) : int16 -> int16 -> int16;
+let (*) (lhs:int16) (rhs:&int16)  = lhs * (*rhs);
+let (*) (lhs:&int16) (rhs:int16)  = (*lhs) * rhs;
+let (*) (lhs:&int16) (rhs:&int16) = (*lhs) * (*rhs);
+extern "intrinsic" let (*) : int32 -> int32 -> int32;
+let (*) (lhs:int32) (rhs:&int32)  = lhs * (*rhs);
+let (*) (lhs:&int32) (rhs:int32)  = (*lhs) * rhs;
+let (*) (lhs:&int32) (rhs:&int32) = (*lhs) * (*rhs);
+extern "intrinsic" let (*) : int64 -> int64 -> int64;
+let (*) (lhs:int64) (rhs:&int64)  = lhs * (*rhs);
+let (*) (lhs:&int64) (rhs:int64)  = (*lhs) * rhs;
+let (*) (lhs:&int64) (rhs:&int64) = (*lhs) * (*rhs);
+extern "intrinsic" let (*) : float32 -> float32 -> float32;
+let (*) (lhs:float32) (rhs:&float32)  = lhs * (*rhs);
+let (*) (lhs:&float32) (rhs:float32)  = (*lhs) * rhs;
+let (*) (lhs:&float32) (rhs:&float32) = (*lhs) * (*rhs);
+extern "intrinsic" let (*) : float64 -> float64 -> float64;
+let (*) (lhs:float64) (rhs:&float64)  = lhs * (*rhs);
+let (*) (lhs:&float64) (rhs:float64)  = (*lhs) * rhs;
+let (*) (lhs:&float64) (rhs:&float64) = (*lhs) * (*rhs);
+
+// division
+for<Other = Self> concept Div =
+    type Output;
+    let (/) : Self -> Other -> Self::Output;
+
+extern "intrinsic" let (/) : int8 -> int8 -> int8;
+let (/) (lhs:int8) (rhs:&int8)  = lhs / (*rhs);
+let (/) (lhs:&int8) (rhs:int8)  = (*lhs) / rhs;
+let (/) (lhs:&int8) (rhs:&int8) = (*lhs) / (*rhs);
+extern "intrinsic" let (/) : int16 -> int16 -> int16;
+let (/) (lhs:int16) (rhs:&int16)  = lhs / (*rhs);
+let (/) (lhs:&int16) (rhs:int16)  = (*lhs) / rhs;
+let (/) (lhs:&int16) (rhs:&int16) = (*lhs) / (*rhs);
+extern "intrinsic" let (/) : int32 -> int32 -> int32;
+let (/) (lhs:int32) (rhs:&int32)  = lhs / (*rhs);
+let (/) (lhs:&int32) (rhs:int32)  = (*lhs) / rhs;
+let (/) (lhs:&int32) (rhs:&int32) = (*lhs) / (*rhs);
+extern "intrinsic" let (/) : int64 -> int64 -> int64;
+let (/) (lhs:int64) (rhs:&int64)  = lhs / (*rhs);
+let (/) (lhs:&int64) (rhs:int64)  = (*lhs) / rhs;
+let (/) (lhs:&int64) (rhs:&int64) = (*lhs) / (*rhs);
+extern "intrinsic" let (/) : float32 -> float32 -> float32;
+let (/) (lhs:float32) (rhs:&float32)  = lhs / (*rhs);
+let (/) (lhs:&float32) (rhs:float32)  = (*lhs) / rhs;
+let (/) (lhs:&float32) (rhs:&float32) = (*lhs) / (*rhs);
+extern "intrinsic" let (/) : float64 -> float64 -> float64;
+let (/) (lhs:float64) (rhs:&float64)  = lhs / (*rhs);
+let (/) (lhs:&float64) (rhs:float64)  = (*lhs) / rhs;
+let (/) (lhs:&float64) (rhs:&float64) = (*lhs) / (*rhs);
+

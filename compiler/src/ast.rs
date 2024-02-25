@@ -1,4 +1,7 @@
-use std::{collections::HashMap, num::NonZeroU8};
+use std::{
+    collections::{HashMap, HashSet},
+    num::NonZeroU8,
+};
 
 use itertools::Itertools;
 
@@ -30,7 +33,11 @@ impl ModuleDeclaration {
             })
             .collect::<Vec<_>>();
         for (offset, idx) in to_remove.into_iter().enumerate() {
-            let Declaration::TypeDefinition(TypeDefinition::Alias(new,old)) = self.declarations.remove(idx-offset) else { unreachable!() };
+            let Declaration::TypeDefinition(TypeDefinition::Alias(new, old)) =
+                self.declarations.remove(idx - offset)
+            else {
+                unreachable!()
+            };
             for decl in &mut self.declarations {
                 decl.replace(&new, &old.to_string());
             }
@@ -68,15 +75,21 @@ impl ModuleDeclaration {
             }
         }
     }
+    pub fn get_dependencies(&self) -> HashMap<String, HashSet<String>> {
+        self.declarations
+            .iter()
+            .flat_map(|it| it.get_dependencies())
+            .collect()
+    }
 }
 
 #[derive(PartialEq, Debug)]
-pub enum Declaration {
+pub(crate) enum Declaration {
+    TypeDefinition(TypeDefinition),
+
     #[allow(unused)] //TODO submoduling
     Mod(ModuleDeclaration),
     Value(ValueDeclaration),
-    /// TODO
-    TypeDefinition(TypeDefinition),
 }
 
 impl Declaration {
@@ -85,6 +98,14 @@ impl Declaration {
             Self::Mod(_) => (), //do nothing as super mod alias should not leak into submodules
             Self::TypeDefinition(def) => def.replace(nice_name, actual),
             Self::Value(decl) => decl.replace(nice_name, actual),
+        }
+    }
+
+    fn get_dependencies(&self) -> HashMap<String, HashSet<String>> {
+        match self {
+            Declaration::Mod(m) => m.get_dependencies(),
+            Declaration::Value(v) => [(v.ident.clone(), v.get_dependencies())].into(),
+            Declaration::TypeDefinition(_) => [].into(),
         }
     }
 }
@@ -154,21 +175,23 @@ pub struct FieldDecl {
 }
 
 #[derive(PartialEq, Debug, Clone)]
-pub struct ArgDeclation {
+pub(crate) struct ArgDeclaration {
+    pub(crate) loc: crate::Location,
+    pub(crate) ident: String,
+    pub(crate) ty: Option<ResolvedType>, // TODO
     pub loc: crate::Location,
-    pub ident: String,
-    // ty : Option<ResolvedType>,// TODO
+
 }
 
 #[derive(PartialEq, Debug)]
 pub struct ValueDeclaration {
-    pub loc: crate::Location, //should be location of the ident.
-    pub is_op: bool,
-    pub ident: String,
-    pub args: Vec<ArgDeclation>,
-    pub ty: Option<ResolvedType>,
-    pub value: ValueType,
-    pub generictypes: Vec<String>,
+    pub(crate) loc: crate::Location, //should be location of the ident.
+    pub(crate) is_op: bool,
+    pub(crate) ident: String,
+    pub(crate) args: Vec<ArgDeclaration>,
+    pub(crate) ty: Option<ResolvedType>,
+    pub(crate) value: ValueType,
+    pub(crate) generictypes: Vec<String>,
 }
 impl ValueDeclaration {
     fn replace(&mut self, nice_name: &str, actual: &str) {
@@ -176,6 +199,23 @@ impl ValueDeclaration {
             *ty = ty.replace(nice_name, actual);
         }
         self.value.replace(nice_name, actual);
+    }
+
+    fn get_dependencies(&self) -> HashSet<String> {
+        let mut output = HashSet::new();
+        if let Some(ty) = &self.ty {
+            output.extend(ty.get_all_types());
+        }
+        for arg in &self.args {
+            if let Some(ty) = &arg.ty {
+                let mut tys = ty.get_all_types();
+                output.extend(tys);
+            }
+        }
+        let args = self.args.iter().map(|arg| arg.ident.clone()).collect_vec();
+        let dependencies = self.value.get_dependencies(args);
+        output.extend(dependencies);
+        output
     }
 }
 #[derive(PartialEq, Debug)]
@@ -190,6 +230,27 @@ impl ValueType {
             ValueType::Function(stmnts) => stmnts
                 .iter_mut()
                 .for_each(|it| it.replace(nice_name, actual)),
+        }
+    }
+
+    fn get_dependencies(&self, known_values: Vec<String>) -> HashSet<String> {
+        match self {
+            ValueType::Expr(expr) => expr.get_dependencies(known_values),
+            ValueType::Function(stmnts) => {
+                stmnts
+                    .iter()
+                    .fold(
+                        (known_values, HashSet::new()),
+                        |(mut known_values, mut dependencies), stmnt| {
+                            dependencies.extend(stmnt.get_dependencies(known_values.clone()));
+                            if let Statement::Declaration(decl) = &stmnt {
+                                known_values.push(decl.ident.clone())
+                            }
+                            (known_values, dependencies)
+                        },
+                    )
+                    .1
+            }
         }
     }
 }
@@ -226,6 +287,68 @@ impl Statement {
             Self::IfStatement(if_) => if_.loc,
             Self::Match(match_) => match_.loc,
             Self::Error => (0, 0),
+        }
+    }
+
+    fn get_dependencies(&self, known_values: Vec<String>) -> HashSet<String> {
+        match self {
+            Statement::Declaration(decl) => decl.get_dependencies(),
+            Statement::Return(expr, _) => expr.get_dependencies(known_values),
+            Statement::FnCall(fncall) => fncall.get_dependencies(known_values),
+            Statement::Pipe(_) => todo!(),
+            Statement::IfStatement(if_) => {
+                let mut dependencies = if_.cond.get_dependencies(known_values.clone());
+                {
+                    let mut known_values = known_values.clone();
+                    for stmnt in &if_.true_branch {
+                        dependencies.extend(stmnt.get_dependencies(known_values.clone()));
+                        if let Statement::Declaration(decl) = stmnt {
+                            known_values.push(decl.ident.clone());
+                        }
+                    }
+                }
+                for elif in &if_.else_ifs {
+                    dependencies.extend(elif.0.get_dependencies(known_values.clone()));
+                    {
+                        let mut known_values = known_values.clone();
+                        for stmnt in &elif.1 {
+                            dependencies.extend(stmnt.get_dependencies(known_values.clone()));
+                            if let Statement::Declaration(decl) = stmnt {
+                                known_values.push(decl.ident.clone());
+                            }
+                        }
+                    }
+                }
+                {
+                    let mut known_values = known_values.clone();
+                    for stmnt in &if_.else_branch {
+                        dependencies.extend(stmnt.get_dependencies(known_values.clone()));
+                        if let Statement::Declaration(decl) = stmnt {
+                            known_values.push(decl.ident.clone());
+                        }
+                    }
+                }
+                dependencies
+            }
+            Statement::Match(match_) => {
+                let mut dependencies = match_.on.get_dependencies(known_values.clone());
+                for arm in &match_.arms {
+                    {
+                        let mut known_values = known_values.clone();
+                        for stmnt in &arm.block {
+                            dependencies.extend(stmnt.get_dependencies(known_values.clone()));
+                            if let Statement::Declaration(decl) = stmnt {
+                                known_values.push(decl.ident.clone());
+                            }
+                        }
+                        if let Some(ret) = &arm.ret {
+                            dependencies.extend(ret.get_dependencies(known_values));
+                        }
+                    }
+                }
+                dependencies
+            }
+            Statement::Error => todo!(),
         }
     }
 }
@@ -298,6 +421,16 @@ impl FnCall {
         self.value.replace(nice_name, actual);
         self.arg.as_mut().map(|it| it.replace(nice_name, actual));
     }
+
+    fn get_dependencies(&self, known_values: Vec<String>) -> HashSet<String> {
+        let mut dependencies = if let Some(arg) = &self.arg {
+            arg.get_dependencies(known_values.clone())
+        } else {
+            HashSet::new()
+        };
+        dependencies.extend(self.value.get_dependencies(known_values));
+        dependencies
+    }
 }
 
 #[derive(PartialEq, Debug)]
@@ -327,7 +460,6 @@ pub enum Expr {
     /// any integer or floating point value
     NumericLiteral {
         value: String,
-        ty: ResolvedType,
     },
     /// "hello world!"
     StringLiteral(String),
@@ -336,6 +468,10 @@ pub enum Expr {
     /// ()
     UnitLiteral,
     /// a >>> b
+    /// can probably remove as compose can defined as
+    /// let compose a b c = a c |> b
+    /// let (>>>) = compose
+    /// in theory should resolve to `(T0 -> T1) -> (T1 -> T2) -> T0 -> T2`
     Compose {
         lhs: Box<Expr>,
         rhs: Box<Expr>,
@@ -358,7 +494,7 @@ pub enum Expr {
     },
     /// NOT IMPLEMENTED YET
     /// defined like [| expr, expr, expr, ... |]
-    /// type [|T|]
+    /// type [|T|] or List<T>
     ListLiteral {
         contents: Vec<Expr>,
         loc: crate::Location,
@@ -399,6 +535,108 @@ impl Expr {
             Expr::If(ifexpr) => ifexpr.replace(nice_name, actual),
             Expr::Match(match_) => match_.replace(nice_name, actual),
             _ => (),
+        }
+    }
+
+    pub(crate) fn is_function_call(&self) -> bool {
+        matches!(self, Expr::FnCall(_))
+    }
+
+    fn get_dependencies(&self, known_values: Vec<String>) -> HashSet<String> {
+        match self {
+            Expr::NumericLiteral { .. }
+            | Expr::StringLiteral(_)
+            | Expr::CharLiteral(_)
+            | Expr::UnitLiteral
+            | Expr::BoolLiteral(_, _)
+            | Expr::Error => HashSet::new(),
+            Expr::Compose { .. } => todo!("compose"),
+            Expr::BinaryOpCall(binop) => {
+                let mut dependencies = binop.lhs.get_dependencies(known_values.clone());
+                dependencies.extend(binop.rhs.get_dependencies(known_values.clone()));
+                dependencies.insert(binop.operator.clone());
+                dependencies
+            }
+            Expr::UnaryOpCall(_) => todo!(),
+            Expr::FnCall(fncall) => fncall.get_dependencies(known_values),
+            Expr::ValueRead(a, _) => {
+                if !known_values.contains(a) {
+                    [a.clone()].into()
+                } else {
+                    HashSet::new()
+                }
+            }
+            Expr::ArrayLiteral { contents, .. }
+            | Expr::ListLiteral { contents, .. }
+            | Expr::TupleLiteral { contents, .. } => contents
+                .iter()
+                .flat_map(|it| it.get_dependencies(known_values.clone()))
+                .collect(),
+            Expr::StructConstruction(strctcon) => {
+                let mut dependencies: HashSet<_> = strctcon
+                    .fields
+                    .iter()
+                    .map(|it| &it.1 .0)
+                    .flat_map(|it| it.get_dependencies(known_values.clone()))
+                    .collect();
+                dependencies.insert(strctcon.ident.clone());
+                dependencies
+            }
+            Expr::If(if_) => {
+                let mut dependencies = if_.cond.get_dependencies(known_values.clone());
+                {
+                    let mut known_values = known_values.clone();
+                    for stmnt in &if_.true_branch.0 {
+                        dependencies.extend(stmnt.get_dependencies(known_values.clone()));
+                        if let Statement::Declaration(decl) = stmnt {
+                            known_values.push(decl.ident.clone());
+                        }
+                    }
+                    dependencies.extend(if_.true_branch.1.get_dependencies(known_values));
+                }
+                for elif in &if_.else_ifs {
+                    dependencies.extend(elif.0.get_dependencies(known_values.clone()));
+                    {
+                        let mut known_values = known_values.clone();
+                        for stmnt in &elif.1 {
+                            dependencies.extend(stmnt.get_dependencies(known_values.clone()));
+                            if let Statement::Declaration(decl) = stmnt {
+                                known_values.push(decl.ident.clone());
+                            }
+                        }
+                        dependencies.extend(elif.2.get_dependencies(known_values));
+                    }
+                }
+                {
+                    let mut known_values = known_values.clone();
+                    for stmnt in &if_.else_branch.0 {
+                        dependencies.extend(stmnt.get_dependencies(known_values.clone()));
+                        if let Statement::Declaration(decl) = stmnt {
+                            known_values.push(decl.ident.clone());
+                        }
+                    }
+                    dependencies.extend(if_.else_branch.1.get_dependencies(known_values));
+                }
+                dependencies
+            }
+            Expr::Match(match_) => {
+                let mut dependencies = match_.on.get_dependencies(known_values.clone());
+                for arm in &match_.arms {
+                    {
+                        let mut known_values = known_values.clone();
+                        for stmnt in &arm.block {
+                            dependencies.extend(stmnt.get_dependencies(known_values.clone()));
+                            if let Statement::Declaration(decl) = stmnt {
+                                known_values.push(decl.ident.clone());
+                            }
+                        }
+                        if let Some(ret) = &arm.ret {
+                            dependencies.extend(ret.get_dependencies(known_values));
+                        }
+                    }
+                }
+                dependencies
+            }
         }
     }
 }

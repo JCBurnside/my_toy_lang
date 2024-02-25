@@ -15,7 +15,7 @@ use inkwell::targets::TargetData;
 use inkwell::types::{AnyTypeEnum, BasicType};
 use inkwell::values::{
     AnyValue, AnyValueEnum, BasicValue, BasicValueEnum, CallableValue, FunctionValue, GlobalValue,
-    PointerValue, IntValue,
+    IntValue, PointerValue,
 };
 use inkwell::{AddressSpace, IntPredicate};
 
@@ -25,8 +25,8 @@ use multimap::MultiMap;
 
 use crate::typed_ast::{
     collect_args, ResolvedTypeDeclaration, StructDefinition, TypedBinaryOpCall, TypedDeclaration,
-    TypedExpr, TypedFnCall, TypedIfBranching, TypedIfExpr, TypedMemberRead, TypedStatement,
-    TypedValueDeclaration, TypedValueType, TypedMatch, TypedMatchArm, TypedPattern,
+    TypedExpr, TypedFnCall, TypedIfBranching, TypedIfExpr, TypedMatch, TypedMatchArm,
+    TypedMemberRead, TypedPattern, TypedStatement, TypedValueDeclaration, TypedValueType,
 };
 use crate::types::{self, ResolvedType, TypeResolver};
 use crate::util::ExtraUtilFunctions;
@@ -113,7 +113,9 @@ impl<'ctx> CodeGen<'ctx> {
         let v = self.incomplete_functions.get(&decl.ident).unwrap().clone();
 
         if let Some(dibuilder) = &self.dibuilder {
-            let Some(difile) = self.difile.as_ref() else { unreachable!() };
+            let Some(difile) = self.difile.as_ref() else {
+                unreachable!()
+            };
             let fnty = {
                 let (args, rt) = decl.ty.as_c_function();
                 #[allow(non_snake_case)]
@@ -175,7 +177,7 @@ impl<'ctx> CodeGen<'ctx> {
                 fun_scope.as_debug_info_scope(),
                 None,
             );
-            self.builder.set_current_debug_location(loc);
+            // self.builder.set_current_debug_location(loc);
             self.difunction = Some(fun_scope);
         }
         let args_block = self.ctx.append_basic_block(v, "arg_declarations");
@@ -188,7 +190,8 @@ impl<'ctx> CodeGen<'ctx> {
         } else {
             Some(
                 self.builder
-                    .build_alloca(self.type_resolver.resolve_type_as_basic(rt.clone()), "ret"),
+                    .build_alloca(self.type_resolver.resolve_type_as_basic(rt.clone()), "ret")
+                    .unwrap(),
             )
         };
         self.ret_target = ret_value;
@@ -214,28 +217,37 @@ impl<'ctx> CodeGen<'ctx> {
                 .ctx
                 .struct_type(&curried_args, false)
                 .ptr_type(AddressSpace::default());
-            self.builder.build_bitcast(first_arg, actual_ty, "")
+            self.builder
+                .build_bitcast(first_arg, actual_ty, "")
+                .unwrap()
         };
         for (idx, arg_name) in decl.args.iter().enumerate().take(decl.args.len() - 1) {
             let arg = self
                 .builder
-                .build_alloca(curried_args[idx], arg_name.ident.as_str());
+                .build_alloca(curried_args[idx], arg_name.ident.as_str())
+                .unwrap();
             let gep = unsafe {
-                self.builder.build_in_bounds_gep(
-                    first_arg.into_pointer_value(),
-                    &[
-                        self.ctx.i32_type().const_zero(),
-                        self.ctx.i32_type().const_int((idx + 1) as u64, false),
-                    ],
-                    "",
-                )
+                self.builder
+                    .build_in_bounds_gep(
+                        first_arg.into_pointer_value(),
+                        &[
+                            self.ctx.i32_type().const_zero(),
+                            self.ctx.i32_type().const_int((idx + 1) as u64, false),
+                        ],
+                        "",
+                    )
+                    .unwrap()
             };
-            let value = self.builder.build_load(gep, "");
+            let value = self.builder.build_load(gep, "").unwrap();
             self.builder.build_store(arg, value);
             self.locals.insert(arg_name.ident.clone(), arg.into());
             if let Some(fnscope) = &self.difunction {
-                let Some(dibuilder) = &self.dibuilder else { unreachable!() };
-                let Some(file) = &self.difile else { unreachable!() };
+                let Some(dibuilder) = &self.dibuilder else {
+                    unreachable!()
+                };
+                let Some(file) = &self.difile else {
+                    unreachable!()
+                };
                 let ty = &decl.ty.as_c_function().0[idx];
                 let ty = self.ditypes[&ty.to_string()];
                 let local = dibuilder.create_parameter_variable(
@@ -263,11 +275,16 @@ impl<'ctx> CodeGen<'ctx> {
         let last_param_info = decl.args.last().unwrap();
         let arg = self
             .builder
-            .build_alloca(last_param.get_type(), &last_param_info.ident);
+            .build_alloca(last_param.get_type(), &last_param_info.ident)
+            .unwrap();
         self.builder.build_store(arg, last_param);
         if let Some(fnscope) = &self.difunction {
-            let Some(dibuilder) = &self.dibuilder else { unreachable!() };
-            let Some(file) = &self.difile else { unreachable!() };
+            let Some(dibuilder) = &self.dibuilder else {
+                unreachable!()
+            };
+            let Some(file) = &self.difile else {
+                unreachable!()
+            };
             let types = decl.ty.as_c_function().0;
             let ty = types.last().unwrap();
             let ty_name = if ty.is_function() {
@@ -302,7 +319,7 @@ impl<'ctx> CodeGen<'ctx> {
         if rt.is_void_or_unit() || rt.is_user() {
             self.builder.build_return(None);
         } else {
-            let ret_value = self.builder.build_load(ret_value.unwrap(), "");
+            let ret_value = self.builder.build_load(ret_value.unwrap(), "").unwrap();
             self.builder.build_return(Some(&ret_value));
         }
 
@@ -326,7 +343,9 @@ impl<'ctx> CodeGen<'ctx> {
                     .get_basic_blocks()[1];
                 if let Some(ret_target) = self.ret_target.as_ref() {
                     let value = if rt.is_user() || value.is_pointer_value() {
-                        self.builder.build_load(value.into_pointer_value(), "")
+                        self.builder
+                            .build_load(value.into_pointer_value(), "")
+                            .unwrap()
                     } else {
                         value
                     };
@@ -365,7 +384,7 @@ impl<'ctx> CodeGen<'ctx> {
                 let true_block = self.ctx.append_basic_block(fun, "");
                 let end_block = self.ctx.append_basic_block(fun, "");
                 let cond = match self.compile_expr(*cond) {
-                    AnyValueEnum::PointerValue(ptr) => self.builder.build_load(ptr,"").into_int_value(),
+                    AnyValueEnum::PointerValue(ptr) => self.builder.build_load(ptr,"").unwrap().into_int_value(),
                     AnyValueEnum::IntValue(it) => it,
                     _=> unreachable!("it can only ever be a point which means a value read or an expression resulting in a boolean")
                 };
@@ -443,7 +462,7 @@ impl<'ctx> CodeGen<'ctx> {
                             self.builder.position_at_end(cond_block);
                             let cond = match self.compile_expr(*cond) {
                                 AnyValueEnum::PointerValue(p) => {
-                                    self.builder.build_load(p, "").into_int_value()
+                                    self.builder.build_load(p, "").unwrap().into_int_value()
                                 }
                                 AnyValueEnum::IntValue(i) => i,
                                 _ => unreachable!(),
@@ -496,7 +515,7 @@ impl<'ctx> CodeGen<'ctx> {
                             self.builder.position_at_end(cond_block);
                             let cond = match self.compile_expr(*cond) {
                                 AnyValueEnum::PointerValue(p) => {
-                                    self.builder.build_load(p, "").into_int_value()
+                                    self.builder.build_load(p, "").unwrap().into_int_value()
                                 }
                                 AnyValueEnum::IntValue(i) => i,
                                 _ => unreachable!(),
@@ -518,7 +537,9 @@ impl<'ctx> CodeGen<'ctx> {
             }
             TypedStatement::Return(expr, loc) => {
                 if let Some(dibuilder) = &self.dibuilder {
-                    let Some(difun) = &self.difunction else {unreachable!()};
+                    let Some(difun) = &self.difunction else {
+                        unreachable!()
+                    };
                     let loc = dibuilder.create_debug_location(
                         self.ctx,
                         loc.0.try_into().unwrap(),
@@ -526,7 +547,7 @@ impl<'ctx> CodeGen<'ctx> {
                         difun.as_debug_info_scope(),
                         None,
                     );
-                    self.builder.set_current_debug_location(loc);
+                    // self.builder.set_current_debug_location(loc);
                 }
                 let ret_bb = self
                     .builder
@@ -549,7 +570,9 @@ impl<'ctx> CodeGen<'ctx> {
 
             TypedStatement::FnCall(data) => {
                 if let Some(dibuilder) = &self.dibuilder {
-                    let Some(difun) = &self.difunction else {unreachable!()};
+                    let Some(difun) = &self.difunction else {
+                        unreachable!()
+                    };
                     let loc = dibuilder.create_debug_location(
                         self.ctx,
                         data.loc.0.try_into().unwrap(),
@@ -557,7 +580,7 @@ impl<'ctx> CodeGen<'ctx> {
                         difun.as_debug_info_scope(),
                         None,
                     );
-                    self.builder.set_current_debug_location(loc);
+                    // self.builder.set_current_debug_location(loc);
                 }
                 self.compile_expr(TypedExpr::FnCall(data));
             }
@@ -571,11 +594,12 @@ impl<'ctx> CodeGen<'ctx> {
             }) => {
                 if let TypedValueType::Expr(expr) = value {
                     let rty = self.type_resolver.resolve_type_as_basic(ty.clone());
-                    let pvalue = self.builder.build_alloca(rty, &ident);
+                    let pvalue = self.builder.build_alloca(rty, &ident).unwrap();
                     let result = self.compile_expr(expr);
                     let result = if ty.is_user() && result.is_pointer_value() {
                         self.builder
                             .build_load(result.into_pointer_value(), "")
+                            .unwrap()
                             .as_any_value_enum()
                     } else {
                         result
@@ -584,8 +608,12 @@ impl<'ctx> CodeGen<'ctx> {
                         .build_store::<BasicValueEnum>(pvalue, result.try_into().unwrap());
                     self.locals.insert(ident.clone(), pvalue);
                     if let Some(fnscope) = &self.difunction {
-                        let Some(dibuilder) = &self.dibuilder else { unreachable!() };
-                        let Some(file) = &self.difile else { unreachable!() };
+                        let Some(dibuilder) = &self.dibuilder else {
+                            unreachable!()
+                        };
+                        let Some(file) = &self.difile else {
+                            unreachable!()
+                        };
                         let diloc = dibuilder.create_debug_location(
                             self.ctx,
                             loc.0.try_into().unwrap(),
@@ -616,8 +644,12 @@ impl<'ctx> CodeGen<'ctx> {
                     todo!("unsure here?")
                 }
             }
-            TypedStatement::Match(match_) => {self.compile_match(match_);},
-            TypedStatement::Discard(expr, _) => { self.compile_expr(expr); }
+            TypedStatement::Match(match_) => {
+                self.compile_match(match_);
+            }
+            TypedStatement::Discard(expr, _) => {
+                self.compile_expr(expr);
+            }
             _ => todo!(),
         }
     }
@@ -651,7 +683,7 @@ impl<'ctx> CodeGen<'ctx> {
                     .unwrap();
                 let root_cond = match self.compile_expr(*cond) {
                     AnyValueEnum::PointerValue(p) => {
-                        self.builder.build_load(p, "").into_int_value()
+                        self.builder.build_load(p, "").unwrap().into_int_value()
                     }
                     AnyValueEnum::IntValue(i) => i,
                     _ => unreachable!(),
@@ -668,7 +700,9 @@ impl<'ctx> CodeGen<'ctx> {
                     }
                     let true_value = convert_to_basic_value(self.compile_expr(*true_branch.1));
                     let true_value = if !rt.is_user() && true_value.is_pointer_value() {
-                        self.builder.build_load(true_value.into_pointer_value(), "")
+                        self.builder
+                            .build_load(true_value.into_pointer_value(), "")
+                            .unwrap()
                     } else {
                         true_value
                     };
@@ -678,12 +712,14 @@ impl<'ctx> CodeGen<'ctx> {
                     }
                     let else_value = convert_to_basic_value(self.compile_expr(*else_branch.1));
                     let else_value = if !rt.is_user() && else_value.is_pointer_value() {
-                        self.builder.build_load(else_value.into_pointer_value(), "")
+                        self.builder
+                            .build_load(else_value.into_pointer_value(), "")
+                            .unwrap()
                     } else {
                         else_value
                     };
                     self.builder.position_at_end(result_block);
-                    let phi = self.builder.build_phi(ty, "");
+                    let phi = self.builder.build_phi(ty, "").unwrap();
                     phi.add_incoming(&[(&true_value, then_block), (&else_value, else_block)]);
                     let _ = result_block.move_after(else_block);
                     phi.as_any_value_enum()
@@ -698,14 +734,16 @@ impl<'ctx> CodeGen<'ctx> {
                         *cond_blocks.first().unwrap(),
                     );
                     self.builder.position_at_end(result_block);
-                    let phi = self.builder.build_phi(ty, "");
+                    let phi = self.builder.build_phi(ty, "").unwrap();
                     self.builder.position_at_end(then_block);
                     for stmnt in true_branch.0 {
                         self.compile_statement(stmnt);
                     }
                     let true_value = convert_to_basic_value(self.compile_expr(*true_branch.1));
                     let true_value = if !rt.is_user() && true_value.is_pointer_value() {
-                        self.builder.build_load(true_value.into_pointer_value(), "")
+                        self.builder
+                            .build_load(true_value.into_pointer_value(), "")
+                            .unwrap()
                     } else {
                         true_value
                     };
@@ -721,7 +759,9 @@ impl<'ctx> CodeGen<'ctx> {
                             }
                             let result = convert_to_basic_value(self.compile_expr(*result));
                             let result = if !rt.is_user() && result.is_pointer_value() {
-                                self.builder.build_load(result.into_pointer_value(), "")
+                                self.builder
+                                    .build_load(result.into_pointer_value(), "")
+                                    .unwrap()
                             } else {
                                 result
                             };
@@ -746,7 +786,7 @@ impl<'ctx> CodeGen<'ctx> {
                         self.builder.position_at_end(cond_block);
                         let cond = match self.compile_expr(*cond) {
                             AnyValueEnum::PointerValue(p) => {
-                                self.builder.build_load(p, "").into_int_value()
+                                self.builder.build_load(p, "").unwrap().into_int_value()
                             }
                             AnyValueEnum::IntValue(i) => i,
                             _ => unreachable!(),
@@ -762,7 +802,9 @@ impl<'ctx> CodeGen<'ctx> {
                     let else_value = convert_to_basic_value(self.compile_expr(*else_branch.1));
                     self.builder.build_unconditional_branch(result_block);
                     let else_value = if !rt.is_user() && else_value.is_pointer_value() {
-                        self.builder.build_load(else_value.into_pointer_value(), "")
+                        self.builder
+                            .build_load(else_value.into_pointer_value(), "")
+                            .unwrap()
                     } else {
                         else_value
                     };
@@ -791,11 +833,11 @@ impl<'ctx> CodeGen<'ctx> {
                         self.difunction.as_ref().unwrap().as_debug_info_scope(),
                         None,
                     );
-                    self.builder.set_current_debug_location(loc);
+                    // self.builder.set_current_debug_location(loc);
                 }
                 match operator.as_str() {
                     "&&" => {
-                        let result = self.builder.build_alloca(self.ctx.bool_type(), "");
+                        let result = self.builder.build_alloca(self.ctx.bool_type(), "").unwrap();
                         let lhs = convert_to_basic_value(self.compile_expr(*lhs));
                         let lhs = self.value_or_load(lhs);
                         let fun = self
@@ -822,12 +864,12 @@ impl<'ctx> CodeGen<'ctx> {
                         self.builder.build_store(result, rhs);
                         self.builder.build_unconditional_branch(continue_block);
                         self.builder.position_at_end(continue_block);
-                        let result = self.builder.build_load(result, "");
+                        let result = self.builder.build_load(result, "").unwrap();
                         result.as_any_value_enum()
                     }
 
                     "||" => {
-                        let result = self.builder.build_alloca(self.ctx.bool_type(), "");
+                        let result = self.builder.build_alloca(self.ctx.bool_type(), "").unwrap();
                         let lhs = convert_to_basic_value(self.compile_expr(*lhs));
                         let lhs = self.value_or_load(lhs);
                         let fun = self
@@ -854,7 +896,7 @@ impl<'ctx> CodeGen<'ctx> {
                         self.builder.build_store(result, rhs);
                         self.builder.build_unconditional_branch(continue_block);
                         self.builder.position_at_end(continue_block);
-                        let result = self.builder.build_load(result, "");
+                        let result = self.builder.build_load(result, "").unwrap();
                         result.as_any_value_enum()
                     }
 
@@ -876,6 +918,7 @@ impl<'ctx> CodeGen<'ctx> {
                                     rhs.into_int_value(),
                                     "",
                                 )
+                                .unwrap()
                                 .as_any_value_enum()
                         } else {
                             //this should have warned.
@@ -886,6 +929,7 @@ impl<'ctx> CodeGen<'ctx> {
                                     rhs.into_float_value(),
                                     "",
                                 )
+                                .unwrap()
                                 .as_any_value_enum()
                         }
                     }
@@ -907,6 +951,7 @@ impl<'ctx> CodeGen<'ctx> {
                                     rhs.into_int_value(),
                                     "",
                                 )
+                                .unwrap()
                                 .as_any_value_enum()
                         } else {
                             // this should have warned
@@ -917,6 +962,7 @@ impl<'ctx> CodeGen<'ctx> {
                                     rhs.into_float_value(),
                                     "",
                                 )
+                                .unwrap()
                                 .as_any_value_enum()
                         }
                     }
@@ -951,6 +997,7 @@ impl<'ctx> CodeGen<'ctx> {
                                     rhs.into_int_value(),
                                     "",
                                 )
+                                .unwrap()
                                 .as_any_value_enum()
                         } else {
                             self.builder
@@ -960,6 +1007,7 @@ impl<'ctx> CodeGen<'ctx> {
                                     rhs.into_float_value(),
                                     "",
                                 )
+                                .unwrap()
                                 .as_any_value_enum()
                         }
                     }
@@ -994,6 +1042,7 @@ impl<'ctx> CodeGen<'ctx> {
                                     rhs.into_int_value(),
                                     "",
                                 )
+                                .unwrap()
                                 .as_any_value_enum()
                         } else {
                             self.builder
@@ -1003,6 +1052,7 @@ impl<'ctx> CodeGen<'ctx> {
                                     rhs.into_float_value(),
                                     "",
                                 )
+                                .unwrap()
                                 .as_any_value_enum()
                         }
                     }
@@ -1037,6 +1087,7 @@ impl<'ctx> CodeGen<'ctx> {
                                     rhs.into_int_value(),
                                     "",
                                 )
+                                .unwrap()
                                 .as_any_value_enum()
                         } else {
                             self.builder
@@ -1046,6 +1097,7 @@ impl<'ctx> CodeGen<'ctx> {
                                     rhs.into_float_value(),
                                     "",
                                 )
+                                .unwrap()
                                 .as_any_value_enum()
                         }
                     }
@@ -1080,6 +1132,7 @@ impl<'ctx> CodeGen<'ctx> {
                                     rhs.into_int_value(),
                                     "",
                                 )
+                                .unwrap()
                                 .as_any_value_enum()
                         } else {
                             self.builder
@@ -1089,6 +1142,7 @@ impl<'ctx> CodeGen<'ctx> {
                                     rhs.into_float_value(),
                                     "",
                                 )
+                                .unwrap()
                                 .as_any_value_enum()
                         }
                     }
@@ -1101,27 +1155,34 @@ impl<'ctx> CodeGen<'ctx> {
                             (BasicValueEnum::FloatValue(lhs), BasicValueEnum::FloatValue(rhs)) => {
                                 self.builder
                                     .build_float_add(lhs, rhs, "")
+                                    .unwrap()
                                     .as_any_value_enum()
                             }
                             (BasicValueEnum::FloatValue(lhs), BasicValueEnum::IntValue(rhs)) => {
-                                let rhs =
-                                    self.builder
-                                        .build_signed_int_to_float(rhs, lhs.get_type(), "");
+                                let rhs = self
+                                    .builder
+                                    .build_signed_int_to_float(rhs, lhs.get_type(), "")
+                                    .unwrap();
                                 self.builder
                                     .build_float_add(lhs, rhs, "")
+                                    .unwrap()
                                     .as_any_value_enum()
                             }
                             (BasicValueEnum::IntValue(lhs), BasicValueEnum::FloatValue(rhs)) => {
-                                let lhs =
-                                    self.builder
-                                        .build_signed_int_to_float(lhs, rhs.get_type(), "");
+                                let lhs = self
+                                    .builder
+                                    .build_signed_int_to_float(lhs, rhs.get_type(), "")
+                                    .unwrap();
                                 self.builder
                                     .build_float_add(lhs, rhs, "")
+                                    .unwrap()
                                     .as_any_value_enum()
                             }
-                            (BasicValueEnum::IntValue(lhs), BasicValueEnum::IntValue(rhs)) => {
-                                self.builder.build_int_add(lhs, rhs, "").as_any_value_enum()
-                            }
+                            (BasicValueEnum::IntValue(lhs), BasicValueEnum::IntValue(rhs)) => self
+                                .builder
+                                .build_int_add(lhs, rhs, "")
+                                .unwrap()
+                                .as_any_value_enum(),
                             _ => unimplemented!("Operation is not currently supported."),
                         }
                     }
@@ -1134,27 +1195,34 @@ impl<'ctx> CodeGen<'ctx> {
                             (BasicValueEnum::FloatValue(lhs), BasicValueEnum::FloatValue(rhs)) => {
                                 self.builder
                                     .build_float_sub(lhs, rhs, "")
+                                    .unwrap()
                                     .as_any_value_enum()
                             }
                             (BasicValueEnum::FloatValue(lhs), BasicValueEnum::IntValue(rhs)) => {
-                                let rhs =
-                                    self.builder
-                                        .build_signed_int_to_float(rhs, lhs.get_type(), "");
+                                let rhs = self
+                                    .builder
+                                    .build_signed_int_to_float(rhs, lhs.get_type(), "")
+                                    .unwrap();
                                 self.builder
                                     .build_float_sub(lhs, rhs, "")
+                                    .unwrap()
                                     .as_any_value_enum()
                             }
                             (BasicValueEnum::IntValue(lhs), BasicValueEnum::FloatValue(rhs)) => {
-                                let lhs =
-                                    self.builder
-                                        .build_signed_int_to_float(lhs, rhs.get_type(), "");
+                                let lhs = self
+                                    .builder
+                                    .build_signed_int_to_float(lhs, rhs.get_type(), "")
+                                    .unwrap();
                                 self.builder
                                     .build_float_sub(lhs, rhs, "")
+                                    .unwrap()
                                     .as_any_value_enum()
                             }
-                            (BasicValueEnum::IntValue(lhs), BasicValueEnum::IntValue(rhs)) => {
-                                self.builder.build_int_sub(lhs, rhs, "").as_any_value_enum()
-                            }
+                            (BasicValueEnum::IntValue(lhs), BasicValueEnum::IntValue(rhs)) => self
+                                .builder
+                                .build_int_sub(lhs, rhs, "")
+                                .unwrap()
+                                .as_any_value_enum(),
                             _ => unimplemented!("Operation is not currently supported."),
                         }
                     }
@@ -1167,27 +1235,34 @@ impl<'ctx> CodeGen<'ctx> {
                             (BasicValueEnum::FloatValue(lhs), BasicValueEnum::FloatValue(rhs)) => {
                                 self.builder
                                     .build_float_mul(lhs, rhs, "")
+                                    .unwrap()
                                     .as_any_value_enum()
                             }
                             (BasicValueEnum::FloatValue(lhs), BasicValueEnum::IntValue(rhs)) => {
-                                let rhs =
-                                    self.builder
-                                        .build_signed_int_to_float(rhs, lhs.get_type(), "");
+                                let rhs = self
+                                    .builder
+                                    .build_signed_int_to_float(rhs, lhs.get_type(), "")
+                                    .unwrap();
                                 self.builder
                                     .build_float_mul(lhs, rhs, "")
+                                    .unwrap()
                                     .as_any_value_enum()
                             }
                             (BasicValueEnum::IntValue(lhs), BasicValueEnum::FloatValue(rhs)) => {
-                                let lhs =
-                                    self.builder
-                                        .build_signed_int_to_float(lhs, rhs.get_type(), "");
+                                let lhs = self
+                                    .builder
+                                    .build_signed_int_to_float(lhs, rhs.get_type(), "")
+                                    .unwrap();
                                 self.builder
                                     .build_float_mul(lhs, rhs, "")
+                                    .unwrap()
                                     .as_any_value_enum()
                             }
-                            (BasicValueEnum::IntValue(lhs), BasicValueEnum::IntValue(rhs)) => {
-                                self.builder.build_int_mul(lhs, rhs, "").as_any_value_enum()
-                            }
+                            (BasicValueEnum::IntValue(lhs), BasicValueEnum::IntValue(rhs)) => self
+                                .builder
+                                .build_int_mul(lhs, rhs, "")
+                                .unwrap()
+                                .as_any_value_enum(),
                             _ => unimplemented!("Operation is not currently supported."),
                         }
                     }
@@ -1200,27 +1275,33 @@ impl<'ctx> CodeGen<'ctx> {
                             (BasicValueEnum::FloatValue(lhs), BasicValueEnum::FloatValue(rhs)) => {
                                 self.builder
                                     .build_float_div(lhs, rhs, "")
+                                    .unwrap()
                                     .as_any_value_enum()
                             }
                             (BasicValueEnum::FloatValue(lhs), BasicValueEnum::IntValue(rhs)) => {
-                                let rhs =
-                                    self.builder
-                                        .build_signed_int_to_float(rhs, lhs.get_type(), "");
+                                let rhs = self
+                                    .builder
+                                    .build_signed_int_to_float(rhs, lhs.get_type(), "")
+                                    .unwrap();
                                 self.builder
                                     .build_float_div(lhs, rhs, "")
+                                    .unwrap()
                                     .as_any_value_enum()
                             }
                             (BasicValueEnum::IntValue(lhs), BasicValueEnum::FloatValue(rhs)) => {
-                                let lhs =
-                                    self.builder
-                                        .build_signed_int_to_float(lhs, rhs.get_type(), "");
+                                let lhs = self
+                                    .builder
+                                    .build_signed_int_to_float(lhs, rhs.get_type(), "")
+                                    .unwrap();
                                 self.builder
                                     .build_float_div(lhs, rhs, "")
+                                    .unwrap()
                                     .as_any_value_enum()
                             }
                             (BasicValueEnum::IntValue(lhs), BasicValueEnum::IntValue(rhs)) => self
                                 .builder
                                 .build_int_signed_div(lhs, rhs, "")
+                                .unwrap()
                                 .as_any_value_enum(),
                             _ => unimplemented!("Operation is not currently supported."),
                         }
@@ -1247,7 +1328,9 @@ impl<'ctx> CodeGen<'ctx> {
                         .is_struct_type()
                 {
                     //there has to be a better way to do this.
-                    self.builder.build_load(arg.into_pointer_value(), "")
+                    self.builder
+                        .build_load(arg.into_pointer_value(), "")
+                        .unwrap()
                 } else {
                     arg
                 };
@@ -1261,7 +1344,7 @@ impl<'ctx> CodeGen<'ctx> {
                         self.difunction.as_ref().unwrap().as_debug_info_scope(),
                         None,
                     );
-                    self.builder.set_current_debug_location(loc);
+                    // self.builder.set_current_debug_location(loc);
                 }
                 match value {
                     AnyValueEnum::PointerValue(target) => {
@@ -1269,7 +1352,7 @@ impl<'ctx> CodeGen<'ctx> {
                             AnyTypeEnum::StructType(_) => {
                                 let target_fun =
                                     self.builder.build_struct_gep(target, 0, "").unwrap();
-                                let target_fun = self.builder.build_load(target_fun, "");
+                                let target_fun = self.builder.build_load(target_fun, "").unwrap();
                                 let ty = self
                                     .type_resolver
                                     .resolve_type_as_function(&value_t)
@@ -1277,13 +1360,17 @@ impl<'ctx> CodeGen<'ctx> {
                                 let target_fun = self
                                     .builder
                                     .build_bitcast(target_fun, ty, "")
+                                    .unwrap()
                                     .into_pointer_value();
                                 let target_fun: CallableValue = target_fun.try_into().unwrap();
                                 if rt.is_user() {
-                                    let result = self.builder.build_alloca(
-                                        self.type_resolver.resolve_type_as_basic(rt),
-                                        "",
-                                    );
+                                    let result = self
+                                        .builder
+                                        .build_alloca(
+                                            self.type_resolver.resolve_type_as_basic(rt),
+                                            "",
+                                        )
+                                        .unwrap();
                                     self.builder.build_call(
                                         target_fun,
                                         &[target.into(), result.into(), arg.into()],
@@ -1295,6 +1382,7 @@ impl<'ctx> CodeGen<'ctx> {
                                     let _ = self.module.print_to_file("./debug.llvm");
                                     self.builder
                                         .build_call(target_fun, &[target.into(), arg.into()], "")
+                                        .unwrap()
                                         .as_any_value_enum()
                                 }
                             }
@@ -1303,11 +1391,14 @@ impl<'ctx> CodeGen<'ctx> {
                                     unreachable!()
                                 };
                                 let strct_t = ptr.get_element_type().into_struct_type();
-                                let target =
-                                    self.builder.build_load(target, "").into_pointer_value();
+                                let target = self
+                                    .builder
+                                    .build_load(target, "")
+                                    .unwrap()
+                                    .into_pointer_value();
                                 let target_fun =
                                     self.builder.build_struct_gep(target, 0, "").unwrap();
-                                let target_fun = self.builder.build_load(target_fun, "");
+                                let target_fun = self.builder.build_load(target_fun, "").unwrap();
                                 let ty = if let ResolvedType::Function { .. } = rt {
                                     self.ctx
                                         .struct_type(
@@ -1335,16 +1426,19 @@ impl<'ctx> CodeGen<'ctx> {
                                 let target_fun = self
                                     .builder
                                     .build_bitcast(target_fun, ty, "")
+                                    .unwrap()
                                     .into_pointer_value();
                                 let target_fun: CallableValue = target_fun.try_into().unwrap();
                                 self.builder
                                     .build_call(target_fun, &[target.into(), arg.into()], "")
+                                    .unwrap()
                                     .as_any_value_enum()
                             }
                             AnyTypeEnum::FunctionType(_) => {
                                 let target: CallableValue = target.try_into().unwrap();
                                 self.builder
                                     .build_call(target, &[arg.into()], "")
+                                    .unwrap()
                                     .as_any_value_enum()
                             }
                             _ => {
@@ -1359,6 +1453,7 @@ impl<'ctx> CodeGen<'ctx> {
                         println!("{:?}\n{:?}", expect_ty, arg_t);
                         self.builder
                             .build_call(target, &[arg.into()], "")
+                            .unwrap()
                             .as_any_value_enum()
                     }
                     _ => {
@@ -1378,10 +1473,14 @@ impl<'ctx> CodeGen<'ctx> {
                         self.difunction.as_ref().unwrap().as_debug_info_scope(),
                         None,
                     );
-                    self.builder.set_current_debug_location(loc);
+                    // self.builder.set_current_debug_location(loc);
                 }
-                let TypedExpr::ValueRead(ident,_, _) = *value else { unreachable!("not a function name?") };
-                let Some(gv)= self.known_functions.get(&ident) else { unreachable!("function not found") };
+                let TypedExpr::ValueRead(ident, _, _) = *value else {
+                    unreachable!("not a function name?")
+                };
+                let Some(gv) = self.known_functions.get(&ident) else {
+                    unreachable!("function not found")
+                };
                 let fun = self
                     .builder
                     .build_struct_gep(gv.as_pointer_value(), 0, "")
@@ -1389,6 +1488,7 @@ impl<'ctx> CodeGen<'ctx> {
                 let fun: CallableValue = fun.try_into().unwrap();
                 self.builder
                     .build_call(fun, &[gv.as_pointer_value().into()], "")
+                    .unwrap()
                     .as_any_value_enum()
             }
 
@@ -1457,7 +1557,7 @@ impl<'ctx> CodeGen<'ctx> {
                     .type_resolver
                     .resolve_type_as_basic(types::STR)
                     .into_struct_type();
-                let p = self.builder.build_alloca(ty, "");
+                let p = self.builder.build_alloca(ty, "").unwrap();
                 self.builder
                     .build_store(p, ty.const_named_struct(&[ptr.into(), ptr_end.into()]));
                 p.as_any_value_enum()
@@ -1472,9 +1572,13 @@ impl<'ctx> CodeGen<'ctx> {
             }
             TypedExpr::StructConstruction(con) => {
                 let target_t = self.ctx.get_struct_type(&con.ident).unwrap();
-                let out = self.builder.build_alloca(target_t, "");
+                let out = self.builder.build_alloca(target_t, "").unwrap();
 
-                let ResolvedTypeDeclaration::Struct(def) = self.known_types.get(&con.ident).unwrap().clone() else { unreachable!() };
+                let ResolvedTypeDeclaration::Struct(def) =
+                    self.known_types.get(&con.ident).unwrap().clone()
+                else {
+                    unreachable!()
+                };
                 let order = con.fields.into_iter().map(|(field, expr)| {
                     (
                         expr,
@@ -1509,7 +1613,9 @@ impl<'ctx> CodeGen<'ctx> {
                             .get_element_type()
                             .is_struct_type()
                     {
-                        self.builder.build_load(result.into_pointer_value(), "")
+                        self.builder
+                            .build_load(result.into_pointer_value(), "")
+                            .unwrap()
                     } else {
                         result
                     };
@@ -1532,7 +1638,10 @@ impl<'ctx> CodeGen<'ctx> {
                         .builder
                         .build_struct_gep((target_result).into_pointer_value(), offset as _, "")
                         .unwrap();
-                    self.builder.build_load(gep, "").as_any_value_enum()
+                    self.builder
+                        .build_load(gep, "")
+                        .unwrap()
+                        .as_any_value_enum()
                 } else {
                     todo!("member functions")
                 }
@@ -1546,8 +1655,12 @@ impl<'ctx> CodeGen<'ctx> {
     }
 
     fn add_struct_di(&mut self, def: &StructDefinition) -> bool {
-        let Some(dibuilder) = &self.dibuilder else {unreachable!()};
-        let Some(file) = &self.difile else {unreachable!()};
+        let Some(dibuilder) = &self.dibuilder else {
+            unreachable!()
+        };
+        let Some(file) = &self.difile else {
+            unreachable!()
+        };
         let fields = def
             .fields
             .iter()
@@ -1580,7 +1693,9 @@ impl<'ctx> CodeGen<'ctx> {
                 out
             });
         let size = 0;
-        let Some(discope) = &self.difile else {unreachable!()};
+        let Some(discope) = &self.difile else {
+            unreachable!()
+        };
         let difields = info.into_iter().map(|(it, _)| it).collect_vec();
 
         let di_struct = dibuilder.create_struct_type(
@@ -1606,7 +1721,6 @@ impl<'ctx> CodeGen<'ctx> {
     }
     pub fn compile_decl(&mut self, decl: TypedDeclaration) -> Module<'ctx> {
         match decl {
-            TypedDeclaration::Mod(_) => todo!(),
             TypedDeclaration::Value(data) => {
                 self.compile_function(data);
             }
@@ -1650,7 +1764,6 @@ impl<'ctx> CodeGen<'ctx> {
 
     fn create_define(&mut self, decl: &TypedDeclaration) {
         match decl {
-            TypedDeclaration::Mod(_) => todo!(),
             TypedDeclaration::Value(decl) => {
                 if decl.ty.is_function() {
                     let fun = self.create_curry_list(decl);
@@ -1665,6 +1778,7 @@ impl<'ctx> CodeGen<'ctx> {
                     let _strct = self.ctx.opaque_struct_type(&decl.ident);
                 }
             },
+            _ => {}
         }
     }
 
@@ -1690,20 +1804,42 @@ impl<'ctx> CodeGen<'ctx> {
             &ident,
         );
         // generate needed supporting functions.
-        let args_curry_functions = args.iter().rev().take(args.len()-1).map(|_| {
-            let ResolvedType::Function { arg:arg_t, returns } = result_ty.clone() else { unreachable!() };
-            let arg_t = self.type_resolver.resolve_arg_type(&arg_t);
-            let fun_t = curry_placeholder.fn_type(&[curry_placeholder.into(),arg_t.into()], false);
-            result_ty = match *returns{
-                ResolvedType::Pointer { underlining } if matches!(underlining.as_ref(),ResolvedType::Function { .. }) => *underlining,
-                _ => *returns
-            };
-            let fun = self.module.add_function(&ident, fun_t, None);
-            curried_args.push(arg_t);
-            fun
-        }).collect_vec();
+        let args_curry_functions = args
+            .iter()
+            .rev()
+            .take(args.len() - 1)
+            .map(|_| {
+                let ResolvedType::Function {
+                    arg: arg_t,
+                    returns,
+                } = result_ty.clone()
+                else {
+                    unreachable!()
+                };
+                let arg_t = self.type_resolver.resolve_arg_type(&arg_t);
+                let fun_t =
+                    curry_placeholder.fn_type(&[curry_placeholder.into(), arg_t.into()], false);
+                result_ty = match *returns {
+                    ResolvedType::Pointer { underlining }
+                        if matches!(underlining.as_ref(), ResolvedType::Function { .. }) =>
+                    {
+                        *underlining
+                    }
+                    _ => *returns,
+                };
+                let fun = self.module.add_function(&ident, fun_t, None);
+                curried_args.push(arg_t);
+                fun
+            })
+            .collect_vec();
 
-        let ResolvedType::Function { arg:arg_t, returns:rt } = result_ty else { unreachable!() };
+        let ResolvedType::Function {
+            arg: arg_t,
+            returns: rt,
+        } = result_ty
+        else {
+            unreachable!()
+        };
         let fun_t = if rt.as_ref() == &ResolvedType::Void || rt.as_ref() == &ResolvedType::Unit {
             let rt = self.ctx.void_type();
             let arg_t = self.type_resolver.resolve_type_as_basic(*arg_t);
@@ -1748,11 +1884,14 @@ impl<'ctx> CodeGen<'ctx> {
             self.builder.position_at_end(bb);
             let ret_t = self.ctx.struct_type(&curried_args[..=(idx + 1)], false);
             let ret = self.builder.build_malloc(ret_t, "ret").unwrap();
-            let next_fn_ptr = self.builder.build_bitcast(
-                next.as_global_value().as_pointer_value(),
-                self.ctx.i8_type().ptr_type(AddressSpace::default()),
-                "",
-            );
+            let next_fn_ptr = self
+                .builder
+                .build_bitcast(
+                    next.as_global_value().as_pointer_value(),
+                    self.ctx.i8_type().ptr_type(AddressSpace::default()),
+                    "",
+                )
+                .unwrap();
             let next_ptr = self.builder.build_struct_gep(ret, 0, "").unwrap();
             self.builder.build_store(next_ptr, next_fn_ptr);
             let expected = self.ctx.struct_type(&curried_args[..=idx], false);
@@ -1764,6 +1903,7 @@ impl<'ctx> CodeGen<'ctx> {
                     expected.ptr_type(AddressSpace::default()),
                     "curried",
                 )
+                .unwrap()
                 .into_pointer_value();
 
             //copy the elements from old to new
@@ -1772,7 +1912,7 @@ impl<'ctx> CodeGen<'ctx> {
                     .builder
                     .build_struct_gep(first_elem, idx as u32 + 1, "")
                     .unwrap();
-                let element = self.builder.build_load(element, "");
+                let element = self.builder.build_load(element, "").unwrap();
                 let target = self
                     .builder
                     .build_struct_gep(ret, idx as u32 + 1, "")
@@ -1785,7 +1925,10 @@ impl<'ctx> CodeGen<'ctx> {
                 .unwrap();
             self.builder
                 .build_store(target, curr.get_last_param().unwrap());
-            let ret = self.builder.build_bitcast(ret, curry_placeholder, "");
+            let ret = self
+                .builder
+                .build_bitcast(ret, curry_placeholder, "")
+                .unwrap();
             self.builder.build_return(Some(&ret));
         }
         self.incomplete_functions.insert(decl.ident.clone(), v);
@@ -2002,7 +2145,9 @@ impl<'ctx> CodeGen<'ctx> {
         for file in ast {
             self.current_module = file.name.clone() + ".fb";
             if is_debug {
-                let Some(dibuilder) = &self.dibuilder else { unreachable!() };
+                let Some(dibuilder) = &self.dibuilder else {
+                    unreachable!()
+                };
                 let difile = dibuilder.create_file(&file.name, "");
                 self.difile = Some(difile);
             }
@@ -2026,7 +2171,11 @@ impl<'ctx> CodeGen<'ctx> {
                     .builder
                     .build_struct_gep(gs.as_pointer_value(), 0, "")
                     .unwrap();
-                let main = self.builder.build_load(main, "").into_pointer_value();
+                let main = self
+                    .builder
+                    .build_load(main, "")
+                    .unwrap()
+                    .into_pointer_value();
                 let main = self
                     .builder
                     .build_bitcast(
@@ -2053,6 +2202,7 @@ impl<'ctx> CodeGen<'ctx> {
                             .ptr_type(AddressSpace::default()),
                         "",
                     )
+                    .unwrap()
                     .into_pointer_value();
                 let main: CallableValue = main.try_into().unwrap();
                 self.builder.build_call(
@@ -2076,7 +2226,9 @@ impl<'ctx> CodeGen<'ctx> {
     }
     fn value_or_load(&mut self, value: BasicValueEnum<'ctx>) -> BasicValueEnum<'ctx> {
         if value.is_pointer_value() {
-            self.builder.build_load(value.into_pointer_value(), "")
+            self.builder
+                .build_load(value.into_pointer_value(), "")
+                .unwrap()
         } else {
             value
         }
@@ -2086,11 +2238,19 @@ impl<'ctx> CodeGen<'ctx> {
         let rt = match_.get_ty();
         let TypedMatch { loc, on, mut arms } = match_;
         let current_block = self.builder.get_insert_block().unwrap();
-        
+
         if let Some(dibuilder) = &self.dibuilder {
-            let Some(scope) = &self.difunction else { unreachable!() };
-            let diloc = dibuilder.create_debug_location(self.ctx, loc.0 as _, loc.1 as _, scope.as_debug_info_scope(), None);
-            self.builder.set_current_debug_location(diloc);
+            let Some(scope) = &self.difunction else {
+                unreachable!()
+            };
+            let diloc = dibuilder.create_debug_location(
+                self.ctx,
+                loc.0 as _,
+                loc.1 as _,
+                scope.as_debug_info_scope(),
+                None,
+            );
+            // self.builder.set_current_debug_location(diloc);
         }
         let cond_ty = on.get_ty();
         if !cond_ty.is_int() && cond_ty != types::CHAR {
@@ -2099,68 +2259,99 @@ impl<'ctx> CodeGen<'ctx> {
         let on = self.compile_expr(*on).into_int_value(); //TODO handle if on is an enum.
         let fun = current_block.get_parent().unwrap();
         let ret_block = self.ctx.append_basic_block(fun, "");
-        let default_block = if let Some(arm) = arms.iter().position(|arm| matches!(arm.cond,TypedPattern::Default | TypedPattern::Read(_, _))) {
+        let default_block = if let Some(arm) = arms
+            .iter()
+            .position(|arm| matches!(arm.cond, TypedPattern::Default | TypedPattern::Read(_, _)))
+        {
             let arm = arms.remove(arm);
-            let (_,bb,ret) = self.compile_match_arm(arm, fun,&on.as_basic_value_enum(), &cond_ty, ret_block);
-            Some((bb,ret))
+            let (_, bb, ret) =
+                self.compile_match_arm(arm, fun, &on.as_basic_value_enum(), &cond_ty, ret_block);
+            Some((bb, ret))
         } else {
             None
         };
-        let arms = arms.into_iter()
-            .map(|arm| self.compile_match_arm(arm, fun,&on.as_basic_value_enum(), &cond_ty, ret_block))
+        let arms = arms
+            .into_iter()
+            .map(|arm| {
+                self.compile_match_arm(arm, fun, &on.as_basic_value_enum(), &cond_ty, ret_block)
+            })
             .collect_vec();
         if rt.is_void_or_unit() {
             self.builder.position_at_end(current_block);
-            let arms = arms.into_iter().map(|(cond,bb,_)| (cond,bb)).collect_vec();
-            self.builder.build_switch(
-                on, 
-                default_block.map_or(ret_block, |(bb,_)| bb), 
-                &arms);
-            let _ = ret_block.move_after(*arms.last().map(|(_,bb)| bb).unwrap());
+            let arms = arms
+                .into_iter()
+                .map(|(cond, bb, _)| (cond, bb))
+                .collect_vec();
+            self.builder
+                .build_switch(on, default_block.map_or(ret_block, |(bb, _)| bb), &arms);
+            let _ = ret_block.move_after(*arms.last().map(|(_, bb)| bb).unwrap());
             self.builder.position_at_end(ret_block);
-            self.module.get_global("()").unwrap().as_pointer_value().as_any_value_enum()
+            self.module
+                .get_global("()")
+                .unwrap()
+                .as_pointer_value()
+                .as_any_value_enum()
         } else {
             self.builder.position_at_end(ret_block);
-            let phi = self.builder.build_phi(self.type_resolver.resolve_type_as_basic(rt), "");
-            for (_,bb,ret) in &arms {
-                let Some(ret) = &ret else {unreachable!()};
+            let phi = self
+                .builder
+                .build_phi(self.type_resolver.resolve_type_as_basic(rt), "")
+                .unwrap();
+            for (_, bb, ret) in &arms {
+                let Some(ret) = &ret else { unreachable!() };
                 let _ = ret_block.move_after(*bb);
-                phi.add_incoming(&[
-                    (ret,*bb)
-                ]);
+                phi.add_incoming(&[(ret, *bb)]);
             }
-            let unreachable_bb = if let Some((bb,ret)) = default_block {
-                let Some(ret) = ret else {unreachable!()};
-                phi.add_incoming(&[
-                    (&ret,bb)
-                ]);
+            let unreachable_bb = if let Some((bb, ret)) = default_block {
+                let Some(ret) = ret else { unreachable!() };
+                phi.add_incoming(&[(&ret, bb)]);
                 bb
-            } else { 
+            } else {
                 let bb = self.ctx.append_basic_block(fun, "");
                 self.builder.position_at_end(bb);
                 self.builder.build_unreachable();
                 bb
             };
             self.builder.position_at_end(current_block);
-            let arms = arms.into_iter().map(|(cond,bb,_)| (cond,bb)).collect_vec();
+            let arms = arms
+                .into_iter()
+                .map(|(cond, bb, _)| (cond, bb))
+                .collect_vec();
             self.builder.build_switch(on, unreachable_bb, &arms);
             self.builder.position_at_end(ret_block);
             phi.as_any_value_enum()
         }
     }
 
-    fn compile_match_arm(&mut self, arm:TypedMatchArm, fun : FunctionValue<'ctx>, cond_v : &BasicValueEnum<'ctx>, cond_ty : &ResolvedType, ret_block:BasicBlock<'ctx>) -> (IntValue<'ctx>, BasicBlock<'ctx>, Option<BasicValueEnum<'ctx>>) {
-        let TypedMatchArm { loc, cond, block, ret } = arm;
-        let cond_ty = self.type_resolver.resolve_type_as_basic(cond_ty.clone()).into_int_type();
+    fn compile_match_arm(
+        &mut self,
+        arm: TypedMatchArm,
+        fun: FunctionValue<'ctx>,
+        cond_v: &BasicValueEnum<'ctx>,
+        cond_ty: &ResolvedType,
+        ret_block: BasicBlock<'ctx>,
+    ) -> (
+        IntValue<'ctx>,
+        BasicBlock<'ctx>,
+        Option<BasicValueEnum<'ctx>>,
+    ) {
+        let TypedMatchArm {
+            loc,
+            cond,
+            block,
+            ret,
+        } = arm;
+        let cond_ty = self
+            .type_resolver
+            .resolve_type_as_basic(cond_ty.clone())
+            .into_int_type();
         let cond = match cond {
             TypedPattern::Const(_, ty) if ty == types::STR => todo!("string"),
-            TypedPattern::Const(value, _) => {
-                cond_ty.const_int(value.parse().unwrap(), false)
-            },
+            TypedPattern::Const(value, _) => cond_ty.const_int(value.parse().unwrap(), false),
             TypedPattern::Read(name, _) => {
                 self.known_values.insert(name, cond_v.clone());
                 cond_ty.const_zero()
-            },
+            }
             TypedPattern::Default => cond_ty.const_zero(),
         };
         let bb = self.ctx.append_basic_block(fun, "");
@@ -2168,9 +2359,11 @@ impl<'ctx> CodeGen<'ctx> {
         for stmnt in block {
             self.compile_statement(stmnt);
         }
-        let ret = ret.map(|ret| self.compile_expr(*ret)).map(convert_to_basic_value);
+        let ret = ret
+            .map(|ret| self.compile_expr(*ret))
+            .map(convert_to_basic_value);
         self.builder.build_unconditional_branch(ret_block);
-        (cond,bb,ret)
+        (cond, bb, ret)
     }
 }
 

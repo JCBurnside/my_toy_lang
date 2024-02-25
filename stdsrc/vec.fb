@@ -4,26 +4,28 @@ for<T> public type Vec = {
     capacity : usize,
 }
 
-for<T> public let fn Vec::new : () -> Vec<T> = Vec { start:nullptr, count:0, capacity:0}
+for<T> implements Vec<T> =
+    public let fn new = Vec<T> { start:nullptr, count:0, capacity:0};
 
-for<T> public let Vec::push &mut self it : &mut Vec<T> -> T -> ()
-    todo
+    public let push (&mut self) it : &mut Vec<T> -> T -> () =
+        todo
 
-public let Vec::len &self = self.count
+    public let fn len &self = self.count;
 
-public let Vec::capacity &self = self.capacity
-
+    public let fn capacity &self = self.capacity;
+// Should auto implement Index<usize, Output = T>
 for<T> public let !! &vec idx : &Vec<T> -> usize -> &T = 
     if idx > self.count then error "index out of bounds"
     unsafe 
         &*std::ptr::offset vec.start idx
 
-for<T> public let Vec::mut_idx &mut self idx : &mut Vec<T> -> usize -> &mut T =
+// Should atuo implement IndexMut<usize, Output = T>
+for<T> public let !^ &mut self idx : &mut Vec<T> -> usize -> &mut T =
     if idx > self.count then error "index out of bounds"
     unsafe 
         &mut *std::ptr::offset vec.start idx
-    
 
+// for<T,S implements Seq<T>> Vec<T> -> S -> Vec<T>
 let from_seq_impl (mut v) (mut s)=
     match s.next
     | None -> v
@@ -31,6 +33,5 @@ let from_seq_impl (mut v) (mut s)=
         v.push t;
         from_seq_impl v s
 
-for<T> implement seq::FromSeq<T> for Vec<T> =
-    let from_seq s = from_seq_impl Vec::new s
-        
+for<T> implements seq::FromSeq<T> for Vec<T> =
+    for<I : seq::IntoSequence<Item = T>> let from_seq s = from_seq_impl Vec::new 

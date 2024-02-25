@@ -51,7 +51,9 @@ fn main() {
                 let jit = module
                     .create_jit_execution_engine(OptimizationLevel::None)
                     .unwrap();
-                let Some(str_t) = ctx.get_struct_type("str") else { unreachable!("how do you not have the basic str type????")};
+                let Some(str_t) = ctx.get_struct_type("str") else {
+                    unreachable!("how do you not have the basic str type????")
+                };
                 let jitstd = ctx.create_module("jitstd");
                 let fun = jitstd::add_printstr(&ctx, &jitstd, str_t.as_basic_type_enum());
                 jit.add_global_mapping(&fun, jitstd::print_str as usize);

@@ -6,15 +6,20 @@ pub mod ast;
 // mod langstd;
 #[cfg(feature = "full")]
 mod code_gen;
+mod inference;
 mod lexer;
+mod ops;
 mod parser;
 mod tokens;
 pub mod typed_ast;
 pub mod types;
 mod util;
 
+use code_gen::CodeGen;
+use itertools::Itertools;
+
 use typed_ast::{ResolvedTypeDeclaration, TypedDeclaration, TypedModuleDeclaration};
-// use code_gen::CodeGen;
+
 
 
 use lexer::TokenStream;
@@ -25,6 +30,7 @@ use types::TypeResolver;
 use multimap::MultiMap;
 type Location = (usize, usize);
 
+
 pub fn get_untyped_ast(input:&str,file_name:&str) -> ast::ModuleDeclaration{
     let ts = TokenStream::from_source(input);
     Parser::from_stream(ts).module(file_name.to_string())
@@ -34,6 +40,7 @@ pub fn get_untyped_ast(input:&str,file_name:&str) -> ast::ModuleDeclaration{
 use inkwell::{context::Context, module::Module};
 
 #[cfg(feature = "full")]
+
 pub fn from_file<'ctx>(
     file: &PathBuf,
     ctx: &'ctx Context,
@@ -88,10 +95,24 @@ pub fn from_file<'ctx>(
         MultiMap::new(),
         target_machine.get_target_data(),
     );
-
     let mut ast = parser.module(file_name.to_str().unwrap().to_string());
     ast.canonialize(vec![project_name]);
-    let mut ast = TypedModuleDeclaration::from(ast, &fwd_declarations,); //TODO: foward declare std lib
+    let dependency_graph = dbg!(ast.get_dependencies());
+    let dependency_tree = dependency_graph
+        .into_iter()
+        .map(|(key, value)| (key, value.into_iter().collect()))
+        .collect();
+    let mut inference_context = inference::Context::new(
+        dependency_tree,
+        fwd_declarations.clone(),
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+    );
+    let ast = inference_context.inference(ast);
+    let mut ast =
+        TypedModuleDeclaration::from(ast, &fwd_declarations, &HashMap::new()); //TODO: foward declare std lib
+
 
     ast.lower_generics(&HashMap::new());
     ast.declarations.retain(|it| match it {

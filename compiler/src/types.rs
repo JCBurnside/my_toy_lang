@@ -1,4 +1,9 @@
-use std::{collections::HashMap, mem::size_of};
+use std::{
+    collections::{HashMap, HashSet},
+    mem::size_of,
+    ops::{Range, RangeFrom},
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use crate::{typed_ast, util::ExtraUtilFunctions};
 #[cfg(feature = "full")]
@@ -81,7 +86,9 @@ impl FloatWidth {
 
 #[derive(Hash, Clone, Debug, PartialEq, Eq)]
 pub enum ResolvedType {
+    Unknown(usize),
     Bool,
+    Number,
     Int {
         signed: bool,
         width: IntWidth,
@@ -127,76 +134,53 @@ pub enum ResolvedType {
     Error,
 }
 
-// impl PartialEq for ResolvedType {
-//     fn eq(&self, other: &Self) -> bool {
-//         if self.is_generic() || other.is_generic() {
-//             return true;
-//         }
-//         match (self, other) {
-//             (ResolvedType::Error, _) | (_, ResolvedType::Error) => true,
-//             (ResolvedType::Alias { actual }, other) => other == actual.as_ref(),
-//             (ResolvedType::Void, ResolvedType::Void)
-//             | (ResolvedType::Unit, ResolvedType::Unit)
-//             | (ResolvedType::Str, ResolvedType::Str)
-//             | (ResolvedType::Char, ResolvedType::Char)
-//             | (ResolvedType::Bool, ResolvedType::Bool) => true,
-//             (other, ResolvedType::Alias { actual }) => other == actual.as_ref(),
-//             (
-//                 ResolvedType::Int {
-//                     signed: lhs_signed,
-//                     width: lhs_wdith,
-//                 },
-//                 ResolvedType::Int {
-//                     signed: rhs_signed,
-//                     width: rhs_width,
-//                 },
-//             ) => lhs_signed == rhs_signed && lhs_wdith == rhs_width,
-//             (
-//                 ResolvedType::Float { width: lhs_width },
-//                 ResolvedType::Float { width: rhs_width },
-//             ) => lhs_width == rhs_width,
-//             (
-//                 ResolvedType::Array {
-//                     underlining: lhs_underlinging,
-//                     size: lhs_size,
-//                 },
-//                 ResolvedType::Array {
-//                     underlining: rhs_underlining,
-//                     size: rhs_size,
-//                 },
-//             ) => lhs_size == rhs_size && lhs_underlinging == rhs_underlining,
-//             (
-//                 ResolvedType::Pointer {
-//                     underlining: lhs_underling,
-//                 },
-//                 ResolvedType::Pointer {
-//                     underlining: rhs_underling,
-//                 },
-//             )
-//             | (
-//                 ResolvedType::Ref {
-//                     underlining: lhs_underling,
-//                 },
-//                 ResolvedType::Ref {
-//                     underlining: rhs_underling,
-//                 },
-//             ) => lhs_underling.as_ref() == rhs_underling.as_ref(),
-//             (
-//                 ResolvedType::Function {
-//                     arg: lhs_arg,
-//                     returns: lhs_ret,
-//                 },
-//                 ResolvedType::Function {
-//                     arg: rhs_arg,
-//                     returns: rhs_ret,
-//                 },
-//             ) => lhs_arg.as_ref() == rhs_ret.as_ref() && lhs_ret.as_ref() == rhs_ret.as_ref(),
-//             _ => false,
-//         }
-//     }
-// }
-// impl Eq for ResolvedType {}
 impl ResolvedType {
+    pub(crate) fn replace_unkown_with(&mut self, id: usize, ty: Self) {
+        match self {
+            Self::Unknown(i) if *i == id => *self = ty,
+            Self::Ref { underlining }
+            | Self::Pointer { underlining }
+            | Self::Slice { underlining }
+            | Self::Array { underlining, .. } => underlining.replace_unkown_with(id, ty),
+            Self::Function { arg, returns } => {
+                arg.replace_unkown_with(id, ty.clone());
+                returns.replace_unkown_with(id, ty);
+            }
+            Self::User { generics, .. } => {
+                for generic in generics {
+                    generic.replace_unkown_with(id, ty.clone());
+                }
+            }
+            _ => (),
+        }
+    }
+
+    pub(crate) fn check_equality(&self, other: &Self) -> bool {
+        match (self, other) {
+            (&INT8 | &INT16 | &INT32 | &INT64 | &FLOAT32, &Self::Number) => true,
+            (&Self::Number, &INT8 | &INT16 | &INT32 | &INT64 | &FLOAT32) => true,
+            _ => self == other,
+        }
+    }
+
+    pub(crate) fn check_function(&self, args: &[Self]) -> bool {
+        println!("{args:#?}");
+        if args.len() == 0 {
+            true
+        } else if let Self::Function { arg, returns } = self {
+            arg.check_equality(&args[0]) && returns.check_function(&args[1..])
+        } else {
+            false
+        }
+    }
+
+    pub fn fn_ty(&self, returns: &Self) -> Self {
+        Self::Function {
+            arg: self.clone().boxed(),
+            returns: returns.clone().boxed(),
+        }
+    }
+
     pub fn is_void_or_unit(&self) -> bool {
         match self {
             Self::Void | Self::Unit => true,
@@ -206,6 +190,36 @@ impl ResolvedType {
 
     pub fn is_user(&self) -> bool {
         matches!(self, Self::User { .. })
+    }
+
+    pub fn get_all_types(&self) -> HashSet<String> {
+        match self {
+            ResolvedType::User { .. }
+            | ResolvedType::Bool
+            | ResolvedType::Int { .. }
+            | ResolvedType::Float { .. }
+            | ResolvedType::Char
+            | ResolvedType::Str => [self.to_string()].into(),
+            ResolvedType::Ref { underlining }
+            | ResolvedType::Pointer { underlining }
+            | ResolvedType::Slice { underlining }
+            | ResolvedType::Array { underlining, .. } => {
+                let tys = underlining.get_all_types();
+                tys
+            }
+            ResolvedType::Function { arg, returns } => {
+                let mut tys = arg.get_all_types();
+                tys.extend(returns.get_all_types().into_iter());
+                tys
+            }
+            ResolvedType::Alias { actual } => actual.get_all_types(),
+            ResolvedType::Unit
+            | ResolvedType::Number
+            | ResolvedType::Void
+            | ResolvedType::Generic { .. }
+            | ResolvedType::Unknown(_) => HashSet::new(),
+            ResolvedType::Error => todo!(),
+        }
     }
 
     pub fn as_c_function(&self) -> (Vec<Self>, Self) {
@@ -344,7 +358,7 @@ impl ResolvedType {
                 *name = new_name;
                 *generics = Vec::new();
             }
-            ResolvedType::Error => (),
+            ResolvedType::Unknown(_) | ResolvedType::Number | ResolvedType::Error => (),
         }
     }
 
@@ -378,7 +392,9 @@ impl ResolvedType {
         if arg == 0 {
             self.clone()
         } else {
-            let Self::Function { returns, .. } = self else { unreachable!() };
+            let Self::Function { returns, .. } = self else {
+                unreachable!()
+            };
             returns.remove_args(arg - 1)
         }
     }
@@ -386,6 +402,65 @@ impl ResolvedType {
     pub(crate) fn is_error(&self) -> bool {
         match self {
             Self::Error => true,
+            _ => false,
+        }
+    }
+
+    pub(crate) fn is_unknown(&self) -> bool {
+        match self {
+            Self::Number //since it can be one of many types.
+            | Self::Unknown(_) => true,
+            Self::Function { arg, returns } => arg.is_unknown() || returns.is_unknown(),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn get_nth_arg(&self, idx: usize) -> Self {
+        match self {
+            Self::Function { arg, .. } if idx == 0 => arg.as_ref().clone(),
+            Self::Function { returns, .. } => returns.get_nth_arg(idx - 1),
+            _ => Self::Error,
+        }
+    }
+    pub fn is_float(&self) -> bool {
+        matches!(self, Self::Float { .. })
+    }
+
+    pub fn is_int(&self) -> bool {
+        matches!(self, Self::Int { .. })
+    }
+
+    pub(crate) fn get_dependant_unknowns(&self) -> Vec<usize> {
+        match self {
+            Self::Unknown(id) => vec![*id],
+            Self::Pointer { underlining }
+            | Self::Slice { underlining }
+            | Self::Array { underlining, .. }
+            | Self::Ref { underlining } => underlining.get_dependant_unknowns(),
+            Self::Function { arg, returns } => {
+                let mut out = arg.get_dependant_unknowns();
+                out.extend(returns.get_dependant_unknowns());
+                out
+            }
+            Self::User { name, generics } => generics
+                .iter()
+                .flat_map(|it| it.get_dependant_unknowns())
+                .collect(),
+            Self::Alias { actual } => Vec::new(), //aliases can't be infered
+            _ => Vec::new(),
+        }
+    }
+
+    pub(crate) fn contains_unknown(&self, id: usize) -> bool {
+        match self {
+            Self::Unknown(i) => i == &id,
+            Self::Array { underlining, .. }
+            | Self::Ref { underlining }
+            | Self::Pointer { underlining }
+            | Self::Slice { underlining } => underlining.contains_unknown(id),
+            Self::Function { arg, returns } => {
+                arg.contains_unknown(id) || returns.contains_unknown(id)
+            }
             _ => false,
         }
     }
@@ -406,8 +481,8 @@ impl ToString for ResolvedType {
                 };
                 format!("{}->{}", arg, returns.to_string())
             }
-            ResolvedType::Generic { .. } => {
-                unreachable!("why are you trying to serialize a generic type?")
+            ResolvedType::Generic { name, .. } => {
+                format!("<GenericArg:{name}>")
             }
             ResolvedType::Int {
                 signed: false,
@@ -424,6 +499,7 @@ impl ToString for ResolvedType {
             ResolvedType::Str => "str".to_string(),
             ResolvedType::Unit => "()".to_string(),
             ResolvedType::Void => "".to_string(),
+            ResolvedType::Number => "{number}".to_string(),
             ResolvedType::User { name, generics } => {
                 if generics.len() > 0 {
                     format!(
@@ -441,7 +517,7 @@ impl ToString for ResolvedType {
             } => {
                 format!("[{};{}]", underlying.to_string(), size)
             }
-            ResolvedType::Error => "<ERROR>".to_string(),
+            ResolvedType::Unknown(_) | ResolvedType::Error => "<ERROR>".to_string(),
         }
     }
 }
@@ -450,6 +526,7 @@ mod consts {
     use super::*;
     pub const BOOL: ResolvedType = ResolvedType::Bool;
     pub const ERROR: ResolvedType = ResolvedType::Error;
+    pub const NUMBER: ResolvedType = ResolvedType::Number;
     pub const INT8: ResolvedType = ResolvedType::Int {
         signed: true,
         width: IntWidth::Eight,
@@ -493,6 +570,8 @@ mod consts {
     pub const UNIT: ResolvedType = ResolvedType::Unit;
 }
 pub use consts::*;
+use itertools::Itertools;
+use lazy_static::lazy_static;
 
 #[cfg(feature="full")]
 pub struct TypeResolver<'ctx> {
@@ -698,7 +777,9 @@ impl<'ctx> TypeResolver<'ctx> {
     }
 
     pub fn resolve_type_as_function(&mut self, ty: &ResolvedType) -> FunctionType<'ctx> {
-        let ResolvedType::Function { arg, returns } = ty else { unreachable!("trying to make a non function type into a function") };
+        let ResolvedType::Function { arg, returns } = ty else {
+            unreachable!("trying to make a non function type into a function")
+        };
         let arg = self.resolve_arg_type(&arg);
         let curry_holder = self
             .ctx
@@ -757,16 +838,6 @@ impl<'ctx> TypeResolver<'ctx> {
     pub fn resolve_type_as_any(&mut self, ty: ResolvedType) -> AnyTypeEnum<'ctx> {
         self.resolve_type(ty.clone());
         *self.known.get(&ty).unwrap()
-    }
-}
-
-impl ResolvedType {
-    pub fn is_float(&self) -> bool {
-        matches!(self, Self::Float { .. })
-    }
-
-    pub fn is_int(&self) -> bool {
-        matches!(self, Self::Int { .. })
     }
 }
 
