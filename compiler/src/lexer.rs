@@ -193,6 +193,8 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     let inner = c.to_string() + &inner;
                     (Token::FloatingPoint(false, inner), (self.curr_line, start))
                 }
+                '[' => (Token::ArrayOpen, (self.curr_line, self.curr_col)),
+                ']' => (Token::ArrayClose, (self.curr_line, self.curr_col)),
                 operators!() => {
                     let inside: String = self
                         .source_stream
@@ -274,7 +276,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     (Token::Where, (self.curr_line, self.curr_col))
                 }
 
-                'i' if self.source_stream.peek() == Some(&'f') => {
+                'i' if self.source_stream.clone().take_while(ident_char).collect::<String>() == "f" => {
                     let _ = self.source_stream.next();
                     let col = self.curr_col;
                     self.curr_col += 1;
@@ -456,6 +458,7 @@ mod tests {
 let match_expr_with_block x : int32 -> int32 = match x where
 | 1 ->
     let a : int32 = 2;
+    [a,1,2,3];
     a*3
 | 2 ->
     2
@@ -654,7 +657,18 @@ let match_expr_with_block x : int32 -> int32 = match x where
                 .collect_vec(),
             [Token::False, Token::EoF],
             "false"
-        )
+        );
+
+        assert_eq!(
+            TokenStream::from_source("[").map(|(a, _)| a).collect_vec(),
+            [Token::ArrayOpen, Token::EoF],
+            "array open ["
+        );
+        assert_eq!(
+            TokenStream::from_source("]").map(|(a, _)| a).collect_vec(),
+            [Token::ArrayClose, Token::EoF],
+            "array close ]"
+        );
     }
 
     #[test]
@@ -680,6 +694,26 @@ let match_expr_with_block x : int32 -> int32 = match x where
         assert_eq!(
             TokenStream::from_source("' '").map(fst).collect_vec(),
             [Token::CharLiteral(" ".to_owned()), Token::EoF]
+        );
+    }
+
+    #[test]
+    fn array() {
+        use Token::*;
+        assert_eq!(
+            TokenStream::from_source("[1,2,3,4]").map(fst).collect_vec(),
+            [
+                ArrayOpen,
+                Integer(false, "1".to_string()),
+                Comma,
+                Integer(false, "2".to_string()),
+                Comma,
+                Integer(false, "3".to_string()),
+                Comma,
+                Integer(false, "4".to_string()),
+                ArrayClose,
+                EoF
+            ]
         );
     }
 

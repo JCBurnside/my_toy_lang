@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{cmp::Ordering, collections::HashMap};
 
 use bimap::BiMap;
 use itertools::Itertools;
@@ -9,23 +9,34 @@ use crate::{
     util::ExtraUtilFunctions,
 };
 
-mod ast;
+pub(crate) mod ast;
 
 pub(crate) struct Context {
     next_unknown_id: usize,
     next_expr_id: usize,
-    // dependency_tree: HashMap<String, Vec<String>>,
+    dependency_tree: HashMap<String, Vec<String>>,
     known_types: HashMap<String, ResolvedType>,
     known_struct_fields: HashMap<(String, String), ResolvedType>,
     known_generic_types: HashMap<String, untyped_ast::TypeDefinition>,
     known_ops: HashMap<String, Vec<ResolvedType>>,
-    known_values: BiMap<usize, ResolvedType>,
+    known_values: HashMap<String, ResolvedType>,
     known_locals: HashMap<String, ResolvedType>,
+    expr_ty : HashMap<usize, ResolvedType>,
     equations: HashMap<usize, ResolvedType>, //? unsure of type here yet.
 }
 impl Context {
+    pub(crate) fn inference(
+        &mut self,
+        ast: untyped_ast::ModuleDeclaration,
+    ) -> ast::ModuleDeclaration {
+        let mut ast = self.assign_ids_module(ast);
+        self.try_to_infer(&mut ast);
+        self.apply_equations(&mut ast);
+        ast
+    }
+
     pub(crate) fn new(
-        // dependency_tree: HashMap<String, Vec<String>>,
+        dependency_tree: HashMap<String, Vec<String>>,
         known_types: HashMap<String, ResolvedType>,
         known_struct_fields: HashMap<(String, String), ResolvedType>,
         known_ops: HashMap<String, Vec<ResolvedType>>,
@@ -34,13 +45,14 @@ impl Context {
         Self {
             next_unknown_id: 0,
             next_expr_id: 0,
-            // dependency_tree,
+            dependency_tree,
             known_types,
             known_struct_fields,
             known_generic_types,
             known_ops,
-            known_values: BiMap::new(),
+            known_values: HashMap::new(),
             known_locals: HashMap::new(),
+            expr_ty: HashMap::new(),
             equations: HashMap::new(),
         }
     }
@@ -82,7 +94,7 @@ impl Context {
         decl: untyped_ast::Declaration,
     ) -> ast::Declaration {
         match decl {
-            untyped_ast::Declaration::TypeDefinition(_) => todo!(),
+            untyped_ast::Declaration::TypeDefinition(ty) => ast::Declaration::Type(ty),
             untyped_ast::Declaration::Mod(_) => todo!(),
             untyped_ast::Declaration::Value(v) => {
                 ast::Declaration::Value(self.assign_ids_value_decl(v))
@@ -105,7 +117,7 @@ impl Context {
 
         let id = self.get_next_expr_id();
         let decl_ty = ty.unwrap_or_else(|| self.get_next_type_id());
-        self.known_values.insert(id, decl_ty.clone());
+        self.known_values.insert(ident.clone(), decl_ty.clone());
         let args = args
             .into_iter()
             .enumerate()
@@ -120,7 +132,6 @@ impl Context {
                 });
                 let id = self.get_next_expr_id();
                 self.known_locals.insert(ident.clone(), ty.clone());
-                self.known_values.insert(id, ty.clone());
                 ast::ArgDeclaration { loc, ident, ty, id }
             })
             .collect_vec();
@@ -151,7 +162,8 @@ impl Context {
         match stmnt {
             untyped_ast::Statement::Declaration(decl) => {
                 let decl = self.assign_ids_value_decl(decl);
-                self.known_values.insert(decl.id, decl.ty.clone());
+                self.known_locals
+                    .insert(decl.ident.clone(), decl.ty.clone());
                 ast::Statement::Declaration(decl)
             }
             untyped_ast::Statement::Return(ret, loc) => {
@@ -284,7 +296,7 @@ impl Context {
                         self.get_next_type_id()
                     }
                 } else {
-                    self.get_next_type_id()
+                    types::NUMBER
                 };
                 ast::Expr::NumericLiteral {
                     value,
@@ -390,20 +402,104 @@ impl Context {
             untyped_ast::Expr::Match(match_) => ast::Expr::Match(self.assign_ids_match(match_)),
         }
     }
-    fn try_to_infer(&mut self, module: ast::ModuleDeclaration) {}
+    fn try_to_infer(&mut self, module: &mut ast::ModuleDeclaration) {
+        let ast::ModuleDeclaration { loc, name, decls } = module;
+        let order = self.dependency_tree.iter().sorted_by(|(lhs_name,lhs_depends), (rhs_name,rhs_depends)| {
+            match (lhs_depends.contains(*rhs_name), rhs_depends.contains(*lhs_name)) {
+                (true,true) => {
+                    if decls.iter().find(|decl| &decl.get_ident() == *lhs_name).map_or(false, ast::Declaration::has_ty) {
+                        Ordering::Less//left has explict type so it can come first
+                    } else if decls.iter().find(|decl| &decl.get_ident() == *rhs_name).map_or(false, ast::Declaration::has_ty) {
+                        Ordering::Greater//right has explict type so it can come first
+                    } else {
+                        todo!("remove this case.  both lhs and rhs. means they depend on each other.")
+                    }
+                }
+                (false, true) => Ordering::Less,//right depends on left thus should appear after.
+                (true, false) => Ordering::Greater,//left depends on right thus should appear after.
+                (false,false) => Ordering::Equal,//neither depend on each other.
+            }
+        })
+        .map(|(a,_)|a)
+        .cloned()
+        .collect_vec();
+        decls.sort_unstable_by_key(|decl| order.iter().position(|name| name == &decl.get_ident()));
+        for decl in decls {
+            self.known_locals.clear();
+            match decl {
+                ast::Declaration::Value(value) => {
+                    self.infer_decl(value);
+                    self.known_values
+                        .insert(value.ident.clone(), value.ty.clone());
+                }
+                ast::Declaration::Type(_) => (), //don't think there is anything to be done here.
+            }
+        }
+    }
+
+    fn infer_decl(&mut self, value :&mut ast::ValueDeclaration) {
+        for arg in &value.args {
+            self.known_locals.insert(arg.ident.clone(), arg.ty.clone());
+        }
+        match &mut value.value {
+            ast::ValueType::Expr(e) => {
+                dbg!(value.ident.clone());
+                println!("value ty {}", value.ty.to_string());
+                let mut ty = if value.ty.is_unknown() {
+                    None
+                } else {
+                    let ty = value.ty.remove_args(value.args.len());
+                    Some(ty)
+                };
+                
+                let actual = dbg!(self.get_actual_type(e, dbg!(ty.clone()), &mut ty));
+                if value.ty.is_unknown() {
+                    value.ty =  value
+                            .args
+                            .iter()
+                            .map(|arg| arg.ty.clone())
+                            .rev()
+                            .fold(actual,|ty, arg| arg.fn_ty(&ty));
+        
+                    //not sure if this the correct way to handle this.
+                }
+            }
+            ast::ValueType::Function(stmnts) => {
+                let mut ty = if value.ty.is_unknown() {
+                    None
+                } else {
+                    Some(value.ty.remove_args(value.args.len()))
+                };
+                for stmnt in stmnts {
+                    self.infer_stmnt(stmnt, &mut ty);
+                }
+                if value.ty.is_unknown() {
+                    let fun = value
+                        .args
+                        .iter()
+                        .map(|arg| arg.ty.clone())
+                        .reduce(|ty, arg| ty.fn_ty(&arg));
+                    value.ty = fun.unwrap().fn_ty(&ty.unwrap()); //not sure if this the correct way to handle this.
+                }
+            }
+        }
+    
+    }
 
     fn get_actual_type(
         &mut self,
         expr: &mut ast::Expr,
         expected: Option<ResolvedType>,
+        fun_ret_ty: &mut Option<ResolvedType>,
     ) -> ResolvedType {
         match expr {
             ast::Expr::Error(_) => ResolvedType::Error,
             ast::Expr::NumericLiteral { value, id, ty } => {
-                if let Some(ety) = expected {
-                    *ty = if (ety.is_float() || ety.is_int()) && ty == &ResolvedType::Number
-                        || &ety == ty
-                    {
+                if let Some(ety) = dbg!(expected) {
+                    let is_ety_valid = ety.is_float() || ety.is_int();
+                    let is_replacable =
+                        ty == &ResolvedType::Number || ty.is_error() || ty.is_unknown();
+                    *ty = if is_ety_valid && is_replacable {
                         ety
                     } else {
                         ResolvedType::Error
@@ -416,23 +512,63 @@ impl Context {
             ast::Expr::StringLiteral(_) => ResolvedType::Str,
             ast::Expr::CharLiteral(_) => ResolvedType::Char,
             ast::Expr::UnitLiteral => ResolvedType::Unit,
-            ast::Expr::BinaryOpCall(_) => todo!(),
-            ast::Expr::FnCall(ast::FnCall { value, arg, .. }) => {
-                if let ResolvedType::Function {
-                    arg: arg_t,
-                    returns,
-                } = self.get_actual_type(value.as_mut(), None)
-                {
-                    self.get_actual_type(arg.as_mut(), Some(arg_t.as_ref().clone()));
-                    *returns
+            ast::Expr::BinaryOpCall(ast::BinaryOpCall {
+                loc,
+                lhs,
+                rhs,
+                operator,
+                id,
+                result,
+            }) => {
+                let lhs_ty = self.get_actual_type(lhs, None, fun_ret_ty);
+                let rhs_ty = self.get_actual_type(rhs, None, fun_ret_ty);
+                let args = [lhs_ty, rhs_ty];
+                let out = if let Some(possiblities) = self.known_ops.get(operator) {
+                    if let Some(ety) = expected {
+                        if let Some(result) =
+                            possiblities.iter().find(|ty| ty.check_function(&args))
+                        {
+                            let ResolvedType::Function { 
+                                arg:lhs_ty,
+                                returns: temp
+                            } = result else { unreachable!()};
+                            let ResolvedType::Function { 
+                                arg:rhs_ty,
+                                returns: result
+                            } = temp.as_ref() else { unreachable!()};
+                            
+                            self.expr_ty.insert(lhs.get_expr_id(),lhs_ty.as_ref().clone());
+                            self.expr_ty.insert(rhs.get_expr_id(), rhs_ty.as_ref().clone());
+                            if let ResolvedType::Unknown(id) = ety{
+                                let result = result.as_ref().clone();
+                                self.equations.insert(id, result.clone());
+                                result
+                            } else if result.as_ref() == &ety {
+                                ety
+                            } else {
+                                types::ERROR
+                            }
+                        } else {
+                            types::ERROR
+                        }
+                    } else {
+                        if let Some(result) =
+                            possiblities.iter().find(|ty| ty.check_function(&args))
+                        {
+                            result.clone()
+                        } else {
+                            types::ERROR
+                        }
+                    }
                 } else {
-                    ResolvedType::Error
-                }
+                    types::ERROR
+                };
+                *result = out.clone();
+                out
             }
+            ast::Expr::FnCall(fncall) => self.infer_call(fncall, fun_ret_ty),
             ast::Expr::ValueRead(ident, _, _) => {
-                if let Some(ty) = self
-                .known_locals
-                .get_mut(ident) {
+                if let Some(ty) = self.known_locals.get_mut(ident) {
                     if let Some(ety) = expected {
                         if let ResolvedType::Unknown(id) = ty {
                             if let Some(new_ty) = self.equations.get(id) {
@@ -443,24 +579,706 @@ impl Context {
                         }
                     }
                     ty.clone()
-                }
-                else {
+                } else if let Some(ty) = self
+                    .known_values
+                    .get(ident)
+                    .or_else(|| self.known_types.get(ident))
+                {
+                    if let Some(ety) = expected {
+                        if &ety != ty {
+                            types::ERROR
+                        } else {
+                            ety
+                        }
+                    } else {
+                        ty.clone()
+                    }
+                } else {
                     ResolvedType::Error
                 }
-            },
-            ast::Expr::ArrayLiteral { contents, loc, id } => todo!(),
-            ast::Expr::ListLiteral { contents, loc, id } => todo!(),
-            ast::Expr::StructConstruction(strct) => {
-                for (name,(field,_)) in &mut strct.fields {
-                    if let Some(ety) = self.known_struct_fields.get(&(strct.ident.clone(),name.clone())).cloned() {
-                        self.get_actual_type(field, Some(ety));
+            }
+            ast::Expr::ArrayLiteral { contents, loc, id } => {
+                let ety = if let Some(types::ResolvedType::Array { underlining, .. }) = &expected {
+                    Some(underlining.as_ref().clone())
+                } else {
+                    None
+                };
+                let result_tys = contents
+                    .iter_mut()
+                    .map(|elem| self.get_actual_type(elem, ety.clone(), fun_ret_ty))
+                    .collect_vec();
+                let underlining = result_tys
+                    .into_iter()
+                    .reduce(|accum, actual| {
+                        let out = if accum == actual || actual.is_generic() || actual.is_unknown() {
+                            accum
+                        } else if accum == types::ERROR || accum.is_unknown() {
+                            actual
+                        } else {
+                            types::ERROR
+                        };
+                        out
+                    })
+                    .expect("no empty array literals");
+                if underlining != types::ERROR {
+                    for elem in contents.iter_mut() {
+                        self.get_actual_type(elem, Some(underlining.clone()), fun_ret_ty);
                     }
                 }
-                self.known_types.get(&strct.ident).cloned().unwrap_or(ResolvedType::Error)
+
+                let out = types::ResolvedType::Array {
+                    underlining: underlining.boxed(),
+                    size: contents.len(),
+                };
+                // self.known_values.insert(*id, out.clone());
+                // TODO? not sure if I use expr ids at this point
+                out
+            }
+            ast::Expr::ListLiteral { contents, loc, id } => {
+                let ety = if let Some(types::ResolvedType::Array { underlining, .. }) = &expected {
+                    Some(underlining.as_ref().clone())
+                } else {
+                    None
+                };
+                let result_tys = contents
+                    .iter_mut()
+                    .map(|elem| self.get_actual_type(elem, ety.clone(), fun_ret_ty));
+                let underlining = result_tys
+                    .reduce(|accum, actual| {
+                        if accum == actual || actual.is_generic() {
+                            accum
+                        } else {
+                            ResolvedType::Error
+                        }
+                    })
+                    .expect("no empty array literals");
+                todo!("list type?")
+            }
+            ast::Expr::StructConstruction(strct) => {
+                for (name, (field, _)) in &mut strct.fields {
+                    if let Some(ety) = self
+                        .known_struct_fields
+                        .get(&(strct.ident.clone(), name.clone()))
+                        .cloned()
+                    {
+                        self.get_actual_type(field, Some(ety), fun_ret_ty);
+                    }
+                }
+                self.known_types
+                    .get(&strct.ident)
+                    .cloned()
+                    .unwrap_or(ResolvedType::Error)
             }
             ast::Expr::BoolLiteral(_, _, _) => ResolvedType::Bool,
-            ast::Expr::If(_) => todo!(),
+            ast::Expr::If(ast::IfExpr {
+                cond,
+                true_branch,
+                else_ifs,
+                else_branch,
+                loc,
+                id,
+                result,
+            }) => {
+                self.get_actual_type(cond, Some(types::BOOL), fun_ret_ty);
+                let (true_block, true_ret) = true_branch;
+                for stmnt in true_block {
+                    self.infer_stmnt(stmnt, fun_ret_ty);
+                }
+                let mut ety = self.get_actual_type(true_ret, expected.clone(), fun_ret_ty);
+                for (cond, block, ret) in else_ifs {
+                    self.get_actual_type(cond, Some(types::BOOL), fun_ret_ty);
+                    for stmnt in block {
+                        self.infer_stmnt(stmnt, fun_ret_ty);
+                    }
+                    if ety == types::ERROR {
+                        ety = self.get_actual_type(ret, expected.clone(), fun_ret_ty);
+                    } else {
+                        self.get_actual_type(ret, Some(ety.clone()), fun_ret_ty);
+                    }
+                }
+                let (block, ret) = else_branch;
+                for stmnt in block {
+                    self.infer_stmnt(stmnt, fun_ret_ty);
+                }
+                if ety == types::ERROR {
+                    ety = self.get_actual_type(ret, expected, fun_ret_ty);
+                } else {
+                    self.get_actual_type(ret, Some(ety.clone()), fun_ret_ty);
+                }
+
+                *result = ety.clone();
+                ety
+            }
+            ast::Expr::Match(match_) => self.handle_match(match_, expected, fun_ret_ty),
+        }
+    }
+
+    fn handle_match(
+        &mut self,
+        match_: &mut ast::Match,
+        e_ty : Option<ResolvedType>,
+        fun_ret_ty: &mut Option<ResolvedType>,
+    ) -> ResolvedType {
+        let ast::Match { loc, on, arms, id } = match_;
+        let on_ty = self.get_actual_type(on, None, fun_ret_ty);
+        let mut ety = e_ty.unwrap_or(types::ERROR);
+        for ast::MatchArm {
+            block,
+            ret,
+            cond,
+            loc,
+        } in arms
+        {
+            for stmnt in block {
+                self.infer_stmnt(stmnt, fun_ret_ty);
+            }
+            if let Some(ret) = ret {
+                if ety == types::ERROR || ety.is_unknown() || ety == types::NUMBER {
+                    ety = self.get_actual_type(ret, None, fun_ret_ty);
+                } else {
+                    self.get_actual_type(ret, Some(ety.clone()), fun_ret_ty);
+                }
+            }
+        }
+
+        ety
+    }
+
+    fn infer_stmnt(&mut self, stmnt: &mut ast::Statement, fun_ret_ty: &mut Option<ResolvedType>) {
+        match stmnt {
+            ast::Statement::Error => (),
+            ast::Statement::Declaration(value) => {
+                self.infer_decl(value);
+                self.known_locals.insert(value.ident.clone(),value.ty.clone());
+            }
+            ast::Statement::Return(expr, _) => {
+                let ret = self.get_actual_type(expr, fun_ret_ty.clone(), fun_ret_ty);
+                if fun_ret_ty.is_none()
+                    || fun_ret_ty.as_ref().map(|ty| ty == &types::ERROR).unwrap()
+                {
+                    *fun_ret_ty = Some(ret)
+                }
+            }
+            ast::Statement::FnCall(fncall) => {
+                self.infer_call(fncall, fun_ret_ty);
+            }
+            ast::Statement::IfStatement(ast::IfBranching {
+                cond,
+                true_branch,
+                else_ifs,
+                else_branch,
+                loc,
+            }) => {
+                self.get_actual_type(cond, Some(types::BOOL), fun_ret_ty);
+                for stmnt in true_branch {
+                    self.infer_stmnt(stmnt, fun_ret_ty);
+                }
+                for (cond, block) in else_ifs {
+                    self.get_actual_type(cond, Some(types::BOOL), fun_ret_ty);
+                    for stmnt in block {
+                        self.infer_stmnt(stmnt, fun_ret_ty);
+                    }
+                }
+                for stmnt in else_branch {
+                    self.infer_stmnt(stmnt, fun_ret_ty);
+                }
+            }
+            ast::Statement::Match(match_) => {
+                self.handle_match(match_, None, fun_ret_ty);
+            }
+        };
+    }
+
+    fn infer_call(
+        &mut self,
+        fncall: &mut ast::FnCall,
+        fun_ret_ty: &mut Option<ResolvedType>,
+    ) -> ResolvedType {
+        let ast::FnCall {
+            value,
+            arg,
+            returns,
+            ..
+        } = fncall;
+        if let ResolvedType::Function {
+            arg: arg_t,
+            returns: return_t,
+        } = dbg!(self.get_actual_type(value.as_mut(), None, fun_ret_ty))
+        {
+            self.get_actual_type(
+                arg.as_mut(),
+                if arg_t.is_generic() || arg_t.is_unknown() || arg_t.is_error() {
+                    None
+                } else {
+                    Some(*arg_t)
+                },
+                fun_ret_ty,
+            );
+            println!("{:?}", arg);
+            *returns = return_t.as_ref().clone();
+            *return_t
+        } else {
+            ResolvedType::Error
+        }
+    }
+
+    fn apply_equations(&self, module: &mut ast::ModuleDeclaration) {
+        self.apply_substutions(module);
+        let ast::ModuleDeclaration { loc, name, decls } = module;
+        let mut equations = self.equations.clone().into_iter().collect_vec();
+        equations.sort_unstable_by(|(lhs_id, lhs_ty), (rhs_id, rhs_ty)| {
+            match (
+                lhs_ty.contains_unknown(*rhs_id),
+                rhs_ty.contains_unknown(*lhs_id),
+            ) {
+                (true, true) => todo!("handle circular equations?"),
+                (false, false) => Ordering::Equal,
+                (true, false) => Ordering::Greater,
+                (false, true) => Ordering::Less,
+            }
+        });
+        for decl in decls {
+            match decl {
+                ast::Declaration::Value(v) => {
+                    for (id, ty) in &equations {
+                        self.apply_equation_decl(v, *id, ty.clone());
+                    }
+                }
+                ast::Declaration::Type(_) => (), //Nothing to do.
+            }
+        }
+    }
+
+    fn apply_equation_decl(&self, decl: &mut ast::ValueDeclaration, id: usize, ty: ResolvedType) {
+        let ast::ValueDeclaration {
+            loc,
+            is_op,
+            ident,
+            args,
+            ty: v_ty,
+            value,
+            generics,
+            id: _,
+        } = decl;
+        v_ty.replace_unkown_with(id, ty.clone());
+        for arg in args.iter_mut() {
+            arg.ty.replace_unkown_with(id, ty.clone());
+        }
+        match value {
+            ast::ValueType::Expr(expr) => {
+                self.apply_equation_expr(expr, id, ty);
+            }
+            ast::ValueType::Function(stmnts) => {
+                for stmnt in stmnts {
+                    if let Some(rt) = self.apply_equation_stmnt(stmnt, id, ty.clone()) {
+                        if v_ty.is_unknown() || v_ty.is_error() {
+                            *v_ty = rt;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn apply_substutions(&self, ast : &mut ast::ModuleDeclaration) {
+        for sub in &self.expr_ty {
+            for decl in &mut ast.decls {
+                match decl {
+                    ast::Declaration::Value(v) => self.apply_substution_decl(sub, v),
+                    _ => (),
+                }
+            } 
+        }
+    }
+
+    fn apply_substution_decl(&self, sub:(&usize,&ResolvedType), decl : &mut ast::ValueDeclaration) {
+        let ast::ValueDeclaration{ value, args, .. } = decl;
+        
+        for arg in args {
+            if arg.id == *sub.0 {
+                arg.ty = sub.1.clone()
+            }
+        }
+
+        match value {
+            ast::ValueType::Expr(expr) => self.apply_substution_expr(sub, expr),
+            ast::ValueType::Function(stmnts) => {
+                for stmnt in stmnts {
+                    self.apply_substution_statement(sub, stmnt);
+                }
+            },
+        }
+    }
+
+    fn apply_substution_statement(&self,sub:(&usize,&ResolvedType), stmnt : &mut ast::Statement) {
+        match stmnt {
+            ast::Statement::Declaration(v) => self.apply_substution_decl(sub, v),
+            ast::Statement::FnCall(call) => self.apply_substution_fncall(sub, call),
+            ast::Statement::IfStatement(ast::IfBranching{ cond, true_branch, else_ifs, else_branch, .. }) => {
+                self.apply_substution_expr(sub, cond.as_mut());
+                for stmnt in true_branch {
+                    self.apply_substution_statement(sub, stmnt);
+                }
+                for (cond, block) in else_ifs {
+                    self.apply_substution_expr(sub, cond.as_mut());
+                    for stmnt in block {
+                        self.apply_substution_statement(sub, stmnt);
+                    }
+                }
+                for stmnt in else_branch {
+                    self.apply_substution_statement(sub, stmnt);
+                }
+            }
+            ast::Statement::Match(match_) => self.apply_substution_match(sub, match_),
+            ast::Statement::Return(expr,_) => self.apply_substution_expr(sub, expr),
+            ast::Statement::Error => (),
+        }
+    }
+
+    fn apply_substution_expr(&self, (id,ty): (&usize, &ResolvedType), expr : &mut ast::Expr) {
+        match expr {
+            ast::Expr::NumericLiteral { value, id:eid, ty:nty } if eid == id => *nty=ty.clone(), 
+            ast::Expr::BinaryOpCall(ast::BinaryOpCall{lhs,rhs, id:opid, result,..}) => {
+                if opid ==id {
+                    *result = ty.clone()
+                } else {
+                    self.apply_substution_expr((id,ty), lhs.as_mut());
+                    self.apply_substution_expr((id,ty), rhs.as_mut());
+                }
+            },
+            ast::Expr::FnCall(call) => self.apply_substution_fncall((id,ty), call),
+            ast::Expr::If(ast::IfExpr{ cond, true_branch, else_ifs, else_branch, id:ifid, result, .. }) => {
+                if ifid == id {
+                    *result = ty.clone();
+                } else {
+                    self.apply_substution_expr((id,ty), cond.as_mut());
+                    for stmnt in &mut true_branch.0 {
+                        self.apply_substution_statement((id,ty), stmnt);
+                    }
+                    self.apply_substution_expr((id,ty), true_branch.1.as_mut());
+
+                    for (cond,block,ret) in else_ifs {
+                        self.apply_substution_expr((id,ty), cond.as_mut());
+                        for stmnt in block{
+                            self.apply_substution_statement((id,ty), stmnt);
+                        }
+                        self.apply_substution_expr((id,ty), ret.as_mut());
+                    }
+
+                    for stmnt in &mut else_branch.0 {
+                        self.apply_substution_statement((id,ty), stmnt);
+                    }
+                    self.apply_substution_expr((id,ty), else_branch.1.as_mut());
+                }
+            },
+            ast::Expr::Match(match_) => self.apply_substution_match((id,ty), match_),
+            _ => (),
+        }
+    }
+
+    fn apply_substution_match(&self, sub:(&usize, &ResolvedType), match_: &mut ast::Match) {
+        let ast::Match {on,id,arms, .. } = match_;
+        if id != sub.0 {
+            self.apply_substution_expr(sub, on.as_mut());
+            for ast::MatchArm {block, ret, ..} in arms {
+                for stmnt in block{
+                    self.apply_substution_statement(sub, stmnt);
+                }
+                if let Some(ret) = ret {
+                    self.apply_substution_expr(sub, ret.as_mut())
+                }
+            }
+        }
+
+    }
+
+    fn apply_substution_fncall(&self, sub:(&usize,&ResolvedType), call : &mut ast::FnCall) {
+        let ast::FnCall{ value, arg, id, returns, ..} = call;
+        if id == sub.0 {
+            *returns = sub.1.clone();
+        } else {
+            self.apply_substution_expr(sub,value.as_mut());
+            self.apply_substution_expr(sub, arg.as_mut());
+        }
+    }
+
+    fn apply_equation_stmnt(
+        &self,
+        stmnt: &mut ast::Statement,
+        id: usize,
+        ty: ResolvedType,
+    ) -> Option<ResolvedType> {
+        match stmnt {
+            ast::Statement::Declaration(decl) => {
+                self.apply_equation_decl(decl, id, ty);
+                None
+            }
+            ast::Statement::Return(expr, _) => Some(self.apply_equation_expr(expr, id, ty)),
+            ast::Statement::FnCall(fncall) => {
+                self.apply_equation_fncall(fncall, id, ty);
+                None
+            }
+            ast::Statement::IfStatement(if_) => {
+                let ast::IfBranching {
+                    cond,
+                    true_branch,
+                    else_ifs,
+                    else_branch,
+                    loc,
+                } = if_;
+                self.apply_equation_expr(cond.as_mut(), id, ty.clone());
+                for stmnt in true_branch {
+                    self.apply_equation_stmnt(stmnt, id, ty.clone());
+                }
+
+                for (cond, block) in else_ifs.iter_mut() {
+                    self.apply_equation_expr(cond.as_mut(), id, ty.clone());
+                    for stmnt in block {
+                        self.apply_equation_stmnt(stmnt, id, ty.clone());
+                    }
+                }
+                for stmnt in else_branch {
+                    self.apply_equation_stmnt(stmnt, id, ty.clone());
+                }
+                None
+            }
+            ast::Statement::Match(match_) => {
+                self.apply_equation_match(match_, id, ty);
+                None
+            }
+            ast::Statement::Error => None, //nothing to do for errors
+        }
+    }
+
+    fn apply_equation_fncall(
+        &self,
+        fncall: &mut ast::FnCall,
+        id: usize,
+        ty: ResolvedType,
+    ) -> ResolvedType {
+        let ast::FnCall {
+            loc,
+            value,
+            arg,
+            id: _,
+            returns,
+        } = fncall;
+        let fn_expr = self.apply_equation_expr(value, id, ty.clone());
+        self.apply_equation_expr(arg, id, ty.clone());
+        if let ResolvedType::Function {
+            arg: _,
+            returns: fn_ret,
+        } = fn_expr
+        {
+            if returns.is_unknown() || returns.is_error() {
+                *returns = fn_ret.as_ref().clone();
+            }
+        }
+        returns.replace_unkown_with(id, ty);
+        returns.clone()
+    }
+
+    fn apply_equation_match(
+        &self,
+        match_: &mut ast::Match,
+        id: usize,
+        ty: ResolvedType,
+    ) -> ResolvedType {
+        let ast::Match {
+            loc,
+            on,
+            arms,
+            id: _,
+        } = match_;
+        self.apply_equation_expr(on.as_mut(), id, ty.clone());
+        let mut ret_ty = types::ERROR;
+        for ast::MatchArm {
+            block,
+            ret,
+            cond,
+            loc,
+        } in arms
+        {
+            for stmnt in block {
+                self.apply_equation_stmnt(stmnt, id, ty.clone());
+            }
+            if let Some(ret) = ret.as_mut() {
+                ret_ty = self.apply_equation_expr(ret, id, ty.clone());
+            } else if !ret_ty.is_error() {
+                *ret = Some(ast::Expr::Error(0).boxed())
+            }
+        }
+        ret_ty
+    }
+
+    fn replace_one_level(&self, expr: &mut ast::Expr, ty: ResolvedType) {
+        match expr {
+            ast::Expr::NumericLiteral {
+                value,
+                id,
+                ty: l_ty,
+            } => {
+                assert!(ty.is_int() || ty == types::NUMBER);
+                *l_ty = ty;
+            }
+            ast::Expr::BinaryOpCall(binop) => binop.result = ty,
+            ast::Expr::FnCall(call) => call.returns = ty,
+            ast::Expr::If(if_) => if_.result = ty,
             ast::Expr::Match(_) => todo!(),
+            ast::Expr::ValueRead(_, _, _) => (), //todo? handle where this could solve a value?
+            _ => (),
+        }
+    }
+
+    fn apply_equation_expr(
+        &self,
+        expr: &mut ast::Expr,
+        id: usize,
+        ty: ResolvedType,
+    ) -> ResolvedType {
+        match expr {
+            ast::Expr::NumericLiteral {
+                value,
+                id: _,
+                ty: l_ty,
+            } => {
+                l_ty.replace_unkown_with(id, ty);
+                if l_ty.is_unknown() {
+                    types::NUMBER
+                } else {
+                    l_ty.clone()
+                }
+            }
+
+            ast::Expr::BinaryOpCall(ast::BinaryOpCall {
+                loc,
+                lhs,
+                rhs,
+                operator,
+                id: _,
+                result,
+            }) => {
+                let lhs_t = self.apply_equation_expr(lhs.as_mut(), id, ty.clone());
+                let rhs_t = self.apply_equation_expr(rhs.as_mut(), id, ty.clone());
+                let args = [lhs_t, rhs_t];
+                *result = if let Some(possiblities) = self.known_ops.get(operator) {
+                    if let Some(result) = possiblities.iter().find(|ty| ty.check_function(&args)) {
+                        let ResolvedType::Function {
+                            arg: lhs_t,
+                            returns,
+                        } = result
+                        else {
+                            unreachable!()
+                        };
+                        let ResolvedType::Function {
+                            arg: rhs_t,
+                            returns,
+                        } = returns.as_ref()
+                        else {
+                            unreachable!()
+                        };
+                        self.replace_one_level(lhs.as_mut(), lhs_t.as_ref().clone());
+                        self.replace_one_level(rhs.as_mut(), rhs_t.as_ref().clone());
+                        returns.as_ref().clone()
+                    } else {
+                        types::ERROR
+                    }
+                } else {
+                    types::ERROR
+                };
+                result.clone()
+            }
+            ast::Expr::FnCall(fncall) => self.apply_equation_fncall(fncall, id, ty),
+            ast::Expr::ArrayLiteral {
+                contents,
+                loc,
+                id: _,
+            } => {
+                let result_tys = contents
+                    .iter_mut()
+                    .map(|expr| self.apply_equation_expr(expr, id, ty.clone()))
+                    .collect_vec();
+
+                let underlining = if let Some(first_ty) = result_tys
+                    .iter()
+                    .find(|it| !it.is_error() && !it.is_unknown())
+                {
+                    for expr in contents.iter_mut() {
+                        self.replace_one_level(expr, first_ty.clone());
+                    }
+                    first_ty.clone()
+                } else {
+                    types::ERROR
+                };
+
+                ResolvedType::Array {
+                    underlining: underlining.boxed(),
+                    size: contents.len(),
+                }
+            }
+            ast::Expr::ListLiteral {
+                contents,
+                loc,
+                id: _,
+            } => {
+                let underlining = contents.iter_mut().fold(types::UNIT, |_, expr| {
+                    self.apply_equation_expr(expr, id, ty.clone())
+                });
+                ResolvedType::User {
+                    name: "List".to_string(),
+                    generics: vec![underlining],
+                }
+            }
+            ast::Expr::StructConstruction(_) => todo!(),
+            ast::Expr::If(ast::IfExpr {
+                cond,
+                true_branch,
+                else_ifs,
+                else_branch,
+                loc,
+                id: _,
+                result,
+            }) => {
+                self.apply_equation_expr(cond.as_mut(), id, ty.clone());
+                for stmnt in &mut true_branch.0 {
+                    self.apply_equation_stmnt(stmnt, id, ty.clone());
+                }
+                let true_result = self.apply_equation_expr(true_branch.1.as_mut(), id, ty.clone());
+                if result.is_unknown() || result.is_error() {
+                    *result = true_result;
+                }
+                for (cond, block, ret) in else_ifs.iter_mut() {
+                    self.apply_equation_expr(cond.as_mut(), id, ty.clone());
+                    for stmnt in block {
+                        self.apply_equation_stmnt(stmnt, id, ty.clone());
+                    }
+                    let block_result = self.apply_equation_expr(ret.as_mut(), id, ty.clone());
+                    if result.is_unknown() || result.is_error() {
+                        *result = block_result;
+                    }
+                }
+                for stmnt in &mut else_branch.0 {
+                    self.apply_equation_stmnt(stmnt, id, ty.clone());
+                }
+                let else_result = self.apply_equation_expr(else_branch.1.as_mut(), id, ty.clone());
+                if result.is_unknown() || result.is_error() {
+                    *result = else_result;
+                }
+                result.replace_unkown_with(id, ty);
+                result.clone()
+            }
+            ast::Expr::Match(match_) => self.apply_equation_match(match_, id, ty),
+            ast::Expr::BoolLiteral(_, _, _) => types::BOOL,
+            ast::Expr::StringLiteral(_) => types::STR,
+            ast::Expr::CharLiteral(_) => types::CHAR,
+            ast::Expr::ValueRead(v, _, _) => self
+                .known_locals
+                .get(v)
+                .or_else(|| self.known_values.get(v))
+                .cloned()
+                .unwrap_or(types::ERROR),
+            ast::Expr::UnitLiteral => types::UNIT,
+            ast::Expr::Error(_) => types::ERROR, //nothing to do
         }
     }
 }
@@ -478,6 +1296,7 @@ mod tests {
     use std::collections::HashMap;
 
     use crate::{
+        inference::ast::ValueDeclaration,
         types::{self, ResolvedType},
         util::ExtraUtilFunctions,
     };
@@ -507,6 +1326,7 @@ mod tests {
             )],
         };
         let mut ctx = super::Context::new(
+            HashMap::new(),
             HashMap::new(),
             HashMap::new(),
             HashMap::new(),
@@ -570,7 +1390,7 @@ mod tests {
                                     super::ast::Expr::NumericLiteral {
                                         value: "0".to_string(),
                                         id: 4,
-                                        ty: ResolvedType::Unknown(3),
+                                        ty: types::NUMBER,
                                     }
                                     .boxed()
                                 ),
@@ -580,7 +1400,7 @@ mod tests {
                                     super::ast::Expr::NumericLiteral {
                                         value: "1".to_string(),
                                         id: 5,
-                                        ty: ResolvedType::Unknown(4),
+                                        ty: types::NUMBER,
                                     }
                                     .boxed()
                                 ),
@@ -714,12 +1534,12 @@ let foo a = match a where
                                 rhs: super::ast::Expr::NumericLiteral {
                                     value: "3".to_string(),
                                     id: 4,
-                                    ty: types::ResolvedType::Unknown(2),
+                                    ty: types::NUMBER,
                                 }
                                 .boxed(),
                                 operator: "==".to_string(),
                                 id: 2,
-                                result: types::ResolvedType::Unknown(3),
+                                result: types::ResolvedType::Unknown(2),
                             }
                         )),
                         generics: Vec::new(),
@@ -742,6 +1562,7 @@ for<T> let foo x y : T -> T -> () = ()
             HashMap::new(),
             HashMap::new(),
             HashMap::new(),
+            HashMap::new(),
         );
 
         assert_eq!(
@@ -751,24 +1572,36 @@ for<T> let foo x y : T -> T -> () = ()
                 name: "foo".to_string(),
                 decls: vec![super::ast::Declaration::Value(
                     super::ast::ValueDeclaration {
-                        loc: (1,12),
+                        loc: (1, 12),
                         is_op: false,
                         ident: "foo".to_string(),
                         args: vec![
                             super::ast::ArgDeclaration {
-                                loc: (1,16),
+                                loc: (1, 16),
                                 ident: "x".to_string(),
-                                ty: ResolvedType::Generic { name: "T".to_string() },
+                                ty: ResolvedType::Generic {
+                                    name: "T".to_string()
+                                },
                                 id: 1
                             },
                             super::ast::ArgDeclaration {
-                                loc: (1,18),
+                                loc: (1, 18),
                                 ident: "y".to_string(),
-                                ty: ResolvedType::Generic { name: "T".to_string() },
+                                ty: ResolvedType::Generic {
+                                    name: "T".to_string()
+                                },
                                 id: 2
                             },
                         ],
-                        ty: ResolvedType::Generic { name: "T".to_string() }.fn_ty(&ResolvedType::Generic { name: "T".to_string() }.fn_ty(&ResolvedType::Unit)),
+                        ty: ResolvedType::Generic {
+                            name: "T".to_string()
+                        }
+                        .fn_ty(
+                            &ResolvedType::Generic {
+                                name: "T".to_string()
+                            }
+                            .fn_ty(&ResolvedType::Unit)
+                        ),
                         value: super::ast::ValueType::Expr(super::ast::Expr::UnitLiteral),
                         generics: vec!["T".to_string()],
                         id: 0
@@ -778,45 +1611,459 @@ for<T> let foo x y : T -> T -> () = ()
         )
     }
 
-
     #[test]
     fn finale() {
-        const SRC : &'static str = 
-r#" 
-let simple x = x
+        const SRC: &'static str = r#" 
+
 
 let annotated_arg (x:int32) = [x,1,2,3]
 
 let complex x =
     print_int32 x;
-    if x == 0 then 
-        [0,0,0,0]
-    else
-        annotated_arg x
+    return if x == 0 then [x,0,0,0] else annotated_arg x;
 "#;
-// should result in the same as 
-/*  
-for<T> simple x : T -> T = x
+        // should result in the same as
+        /*
+        for<T> simple x : T -> T = x
 
-let annotated_arg x : int32 -> [int32;4] = [x,1,2,3]
+        let annotated_arg x : int32 -> [int32;4] = [x,1,2,3]
 
-let complex x : int32 -> [int32;4] =
-    print_int32 x;
-    if x == 0 then
-        [0,0,0,0]
-    else
-        annoated_arg x
-*/
+        let complex x : int32 -> [int32;4] =
+            print_int32 x;
+            if x == 0 then
+                [0,0,0,0]
+            else
+                annoated_arg x
+        */
 
         let ast = crate::Parser::from_source(SRC).module("foo".to_string());
         let mut ctx = super::Context::new(
+            [
+                ("simple".to_string(), Vec::new()),
+                ("annotated_arg".to_string(), Vec::new()),
+                (
+                    "complex".to_string(),
+                    vec!["print_int32".to_string(), "annoated_arg".to_string()],
+                ),
+            ]
+            .into(),
+            [("print_int32".to_string(), types::INT32.fn_ty(&types::UNIT))].into(),
             HashMap::new(),
-            HashMap::new(),
-            [("==".to_string(), vec![types::INT32.fn_ty(&types::INT32.fn_ty(&types::BOOL))])].into(),
+            [(
+                "==".to_string(),
+                vec![types::INT32.fn_ty(&types::INT32.fn_ty(&types::BOOL))],
+            )]
+            .into(),
             HashMap::new(),
         );
-        let ast = ctx.assign_ids_module(ast);
+        let mut ast = ctx.assign_ids_module(ast);
+        ctx.try_to_infer(&mut ast);
+        ctx.apply_equations(&mut ast);
+        ast.decls.sort_by_key(|it| it.get_ident());
+        assert_eq!(
+            ast,
+            super::ast::ModuleDeclaration {
+                loc: (0, 0),
+                name: "foo".to_string(),
+                decls: vec![
+                    super::ast::Declaration::Value(super::ast::ValueDeclaration {
+                        loc: (3, 5),
+                        is_op: false,
+                        ident: "annotated_arg".to_string(),
+                        args: vec![super::ast::ArgDeclaration {
+                            loc: (3, 20),
+                            ident: "x".to_string(),
+                            ty: types::INT32,
+                            id: 1
+                        },],
+                        ty: types::INT32.fn_ty(&ResolvedType::Array {
+                            underlining: types::INT32.boxed(),
+                            size: 4
+                        }),
+                        value: super::ast::ValueType::Expr(super::ast::Expr::ArrayLiteral {
+                            contents: vec![
+                                super::ast::Expr::ValueRead("x".to_string(), (3, 32), 3),
+                                super::ast::Expr::NumericLiteral {
+                                    value: "1".to_string(),
+                                    id: 4,
+                                    ty: types::INT32
+                                },
+                                super::ast::Expr::NumericLiteral {
+                                    value: "2".to_string(),
+                                    id: 5,
+                                    ty: types::INT32
+                                },
+                                super::ast::Expr::NumericLiteral {
+                                    value: "3".to_string(),
+                                    id: 6,
+                                    ty: types::INT32
+                                },
+                            ],
+                            loc: (3, 31),
+                            id: 2
+                        }),
+                        generics: Vec::new(),
+                        id: 0
+                    }),
+                    super::ast::Declaration::Value(super::ast::ValueDeclaration {
+                        loc: (5, 5),
+                        is_op: false,
+                        ident: "complex".to_string(),
+                        args: vec![super::ast::ArgDeclaration {
+                            loc: (5, 13),
+                            ident: "x".to_string(),
+                            ty: types::INT32,
+                            id: 8
+                        },],
+                        ty: types::INT32.fn_ty(&ResolvedType::Array {
+                            underlining: types::INT32.boxed(),
+                            size: 4
+                        }),
+                        value: super::ast::ValueType::Function(vec![
+                            super::ast::Statement::FnCall(super::ast::FnCall {
+                                loc: (6, 17),
+                                value: super::ast::Expr::ValueRead(
+                                    "print_int32".to_string(),
+                                    (6, 5),
+                                    10
+                                )
+                                .boxed(),
+                                arg: super::ast::Expr::ValueRead("x".to_string(), (6, 17), 9)
+                                    .boxed(),
+                                id: 11,
+                                returns: types::UNIT
+                            }),
+                            super::ast::Statement::Return(
+                                super::ast::Expr::If(super::ast::IfExpr {
+                                    cond: super::ast::Expr::BinaryOpCall(
+                                        super::ast::BinaryOpCall {
+                                            loc: (7, 17),
+                                            lhs: super::ast::Expr::ValueRead(
+                                                "x".to_string(),
+                                                (7, 15),
+                                                14
+                                            )
+                                            .boxed(),
+                                            rhs: super::ast::Expr::NumericLiteral {
+                                                value: "0".to_string(),
+                                                id: 15,
+                                                ty: types::INT32
+                                            }
+                                            .boxed(),
+                                            operator: "==".to_string(),
+                                            id: 13,
+                                            result: types::BOOL
+                                        }
+                                    )
+                                    .boxed(),
+                                    true_branch: (
+                                        Vec::new(),
+                                        super::ast::Expr::ArrayLiteral {
+                                            contents: vec![
+                                                super::ast::Expr::ValueRead(
+                                                    "x".to_string(),
+                                                    (7, 28),
+                                                    17
+                                                ),
+                                                super::ast::Expr::NumericLiteral {
+                                                    value: "0".to_string(),
+                                                    id: 18,
+                                                    ty: types::INT32
+                                                },
+                                                super::ast::Expr::NumericLiteral {
+                                                    value: "0".to_string(),
+                                                    id: 19,
+                                                    ty: types::INT32
+                                                },
+                                                super::ast::Expr::NumericLiteral {
+                                                    value: "0".to_string(),
+                                                    id: 20,
+                                                    ty: types::INT32
+                                                },
+                                            ],
+                                            loc: (7, 27),
+                                            id: 16
+                                        }
+                                        .boxed()
+                                    ),
+                                    else_ifs: Vec::new(),
+                                    else_branch: (
+                                        Vec::new(),
+                                        super::ast::Expr::FnCall(super::ast::FnCall {
+                                            loc: (7, 56),
+                                            value: super::ast::Expr::ValueRead(
+                                                "annotated_arg".to_string(),
+                                                (7, 42),
+                                                22
+                                            )
+                                            .boxed(),
+                                            arg: super::ast::Expr::ValueRead(
+                                                "x".to_string(),
+                                                (7, 56),
+                                                21
+                                            )
+                                            .boxed(),
+                                            id: 23,
+                                            returns: ResolvedType::Array {
+                                                underlining: types::INT32.boxed(),
+                                                size: 4
+                                            }
+                                        })
+                                        .boxed()
+                                    ),
+                                    loc: (7, 12),
+                                    id: 12,
+                                    result: ResolvedType::Array {
+                                        underlining: types::INT32.boxed(),
+                                        size: 4
+                                    }
+                                }),
+                                (7, 5)
+                            )
+                        ]),
+                        generics: Vec::new(),
+                        id: 7
+                    }),
+                    // super::ast::ValueDeclaration {
+                    //     loc: (1,4),
+                    //     is_op: false,
+                    //     ident: "simple".to_string(),
+                    //     args: vec![
 
+                    //     ],
+                    //     ty: todo!(),
+                    //     value: todo!(),
+                    //     generics: todo!(),
+                    //     id: todo!()
+                    // }
+                ]
+            }
+        )
     }
 
+    #[test]
+    fn type_bindings() {
+        const SRC: &'static str = "
+let int_unit _ : int32 -> () = ()
+
+let unit_int _ : () -> int32 = 0
+
+let int_int x : int32 -> int32 = x
+
+let unit_unit _ : () -> () = ()
+";
+
+        let module = crate::parser::Parser::from_source(SRC).module("test".to_string());
+
+        let dtree = [
+            ("int_unit".to_string(), Vec::new()),
+            ("unit_int".to_string(), Vec::new()),
+            ("int_int".to_string(), Vec::new()),
+            ("unit_unit".to_string(), Vec::new()),
+        ]
+        .into();
+
+        let mut ctx = super::Context::new(
+            dtree,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+        );
+
+        let mut module = ctx.inference(module);
+
+        module.decls.sort_by_key(super::ast::Declaration::get_ident);
+
+        assert_eq!(
+            module.decls,
+            [
+                super::ast::Declaration::Value(ValueDeclaration {
+                    loc: (5,5),
+                    is_op: false,
+                    ident: "int_int".to_string(),
+                    args: vec![
+                        super::ast::ArgDeclaration{
+                            loc: (5,13),
+                            ident: "x".to_string(),
+                            ty: types::INT32,
+                            id: 6
+                        }
+                    ],
+                    ty: types::INT32.fn_ty(&types::INT32),
+                    value: super::ast::ValueType::Expr(super::ast::Expr::ValueRead("x".to_string(), (5,34), 7)),
+                    generics: Vec::new(),
+                    id: 5
+                }),
+                super::ast::Declaration::Value(ValueDeclaration {
+                    loc: (1,5),
+                    is_op: false,
+                    ident: "int_unit".to_string(),
+                    args: vec![
+                        super::ast::ArgDeclaration{
+                            loc: (1,14),
+                            ident: "_".to_string(),
+                            ty: types::INT32,
+                            id: 1
+                        }
+                    ],
+                    ty: types::INT32.fn_ty(&types::UNIT),
+                    value: super::ast::ValueType::Expr(super::ast::Expr::UnitLiteral),
+                    generics: Vec::new(),
+                    id: 0
+                }),
+                super::ast::Declaration::Value(ValueDeclaration {
+                    loc: (3,5),
+                    is_op: false,
+                    ident: "unit_int".to_string(),
+                    args: vec![
+                        super::ast::ArgDeclaration{
+                            loc: (3,14),
+                            ident: "_".to_string(),
+                            ty: types::UNIT,
+                            id: 3
+                        }
+                    ],
+                    ty: types::UNIT.fn_ty(&types::INT32),
+                    value: super::ast::ValueType::Expr(super::ast::Expr::NumericLiteral { value: "0".to_string(), id: 4, ty: types::INT32 }),
+                    generics: Vec::new(),
+                    id: 2
+                }),
+                super::ast::Declaration::Value(ValueDeclaration {
+                    loc: (7,5),
+                    is_op: false,
+                    ident: "unit_unit".to_string(),
+                    args: vec![
+                        super::ast::ArgDeclaration{
+                            loc: (7,15),
+                            ident: "_".to_string(),
+                            ty: types::UNIT,
+                            id: 9
+                        }
+                    ],
+                    ty: types::UNIT.fn_ty(&types::UNIT),
+                    value: super::ast::ValueType::Expr(super::ast::Expr::UnitLiteral),
+                    generics: Vec::new(),
+                    id: 8
+                }),
+            ]
+        )
+    }
+    #[test]
+    fn if_expr() {
+        const SRC : &'static str = "
+let if_expr a b : bool -> int32 -> int32 = if a then b else 0
+";
+
+        let module = crate::Parser::from_source(SRC).module("".to_string());
+        let mut ctx = super::Context::new(
+            [("if_expr".to_string(),Vec::new())].into(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new()
+        );
+        let module = ctx.inference(module);
+
+        let [if_expr] = &module.decls[..] else { unreachable!() };
+        assert_eq!(
+            if_expr,
+            &super::ast::Declaration::Value(super::ast::ValueDeclaration{
+                loc:(1,5),
+                is_op:false,
+                ident : "if_expr".to_string(),
+                args: vec![
+                    super::ast::ArgDeclaration {
+                        loc: (1,13),
+                        ident: "a".to_string(),
+                        ty: types::BOOL,
+                        id: 1,
+                    },
+                    super::ast::ArgDeclaration {
+                        loc: (1,15),
+                        ident: "b".to_string(),
+                        ty: types::INT32,
+                        id: 2,
+                    },
+                ],
+                ty:types::BOOL.fn_ty(&types::INT32.fn_ty(&types::INT32)),
+                id:0,
+                value: super::ast::ValueType::Expr(super::ast::Expr::If(super::ast::IfExpr {
+                    cond: super::ast::Expr::ValueRead("a".to_string(), (1,47), 4).boxed(),
+                    true_branch: (
+                        Vec::new(),
+                        super::ast::Expr::ValueRead("b".to_string(), (1,54), 5).boxed()
+                    ),
+                    else_ifs: Vec::new(),
+                    else_branch: (
+                        Vec::new(),
+                        super::ast::Expr::NumericLiteral { value: "0".to_string(), id: 6, ty: types::INT32 }.boxed()
+                    ),
+                    loc: (1,44),
+                    id: 3,
+                    result: types::INT32 
+                })),
+                generics:Vec::new()
+            })
+        )
+    }
+
+    #[test]
+    fn returns() {
+        const SRC : &'static str = "
+let returns a : bool -> int32 =
+    if a then
+        return 0;
+    return 1;
+";
+
+        let module = crate::Parser::from_source(SRC).module("".to_string());
+        let mut ctx = super::Context::new(
+            [("returns".to_string(),Vec::new())].into(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new()
+        );
+        let module = ctx.inference(module);
+
+        let [returns] = &module.decls[..] else {unreachable!()};
+        assert_eq!(
+            returns,
+            &super::ast::Declaration::Value(super::ast::ValueDeclaration{
+                loc:(1,5),
+                is_op:false,
+                ident : "returns".to_string(),
+                args: vec![
+                    super::ast::ArgDeclaration {
+                        loc: (1,13),
+                        ident: "a".to_string(),
+                        ty: types::BOOL,
+                        id: 1,
+                    },
+                ],
+                ty:types::BOOL.fn_ty(&types::INT32),
+                generics:Vec::new(),
+                value:super::ast::ValueType::Function(vec![
+                    super::ast::Statement::IfStatement(super::ast::IfBranching{
+                        cond: super::ast::Expr::ValueRead("a".to_string(), (2,8), 2).boxed(),
+                        true_branch: vec![
+                            super::ast::Statement::Return(
+                                super::ast::Expr::NumericLiteral { value: "0".to_string(), id: 3, ty: types::INT32 },
+                                (3,9)
+                            )
+                        ],
+                        else_ifs: Vec::new(),
+                        else_branch: Vec::new(),
+                        loc: (2,5)
+                    }),
+                    super::ast::Statement::Return(
+                        super::ast::Expr::NumericLiteral { value: "1".to_string(), id: 4, ty: types::INT32 },
+                        (4,5)
+                    )
+                ]),
+                id:0
+            })
+        );
+    }
 }

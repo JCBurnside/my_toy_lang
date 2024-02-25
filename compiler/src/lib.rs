@@ -15,6 +15,7 @@ pub mod types;
 mod util;
 
 use code_gen::CodeGen;
+use itertools::Itertools;
 use typed_ast::{ResolvedTypeDeclaration, TypedDeclaration, TypedModuleDeclaration};
 // use code_gen::CodeGen;
 use inkwell::{
@@ -80,10 +81,21 @@ pub fn from_file<'ctx>(
     );
     let mut ast = parser.module(file_name.to_str().unwrap().to_string());
     ast.canonialize(vec![project_name]);
-    let mut dependency_graph = dbg!(ast.get_dependencies());
-
+    let dependency_graph = dbg!(ast.get_dependencies());
+    let dependency_tree = dependency_graph
+        .into_iter()
+        .map(|(key, value)| (key, value.into_iter().collect()))
+        .collect();
+    let mut inference_context = inference::Context::new(
+        dependency_tree,
+        fwd_declarations.clone(),
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+    );
+    let ast = inference_context.inference(ast);
     let mut ast =
-        TypedModuleDeclaration::from(ast, &fwd_declarations, &HashMap::new(), &dependency_graph); //TODO: foward declare std lib
+        TypedModuleDeclaration::from(ast, &fwd_declarations, &HashMap::new()); //TODO: foward declare std lib
 
     ast.lower_generics(&HashMap::new());
     ast.declarations.retain(|it| match it {

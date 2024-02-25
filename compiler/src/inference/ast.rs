@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 
 use crate::{
-    ast::{EnumDeclation, Pattern, StructDefinition, TypeDefinition},
+    ast::{EnumDeclation, StructDefinition},
     types::{self, ResolvedType},
     util::ExtraUtilFunctions,
 };
+
+pub(crate) use crate::ast::{Pattern, TypeDefinition};
 
 #[derive(PartialEq, Debug)]
 pub(crate) struct ModuleDeclaration {
@@ -19,6 +21,22 @@ pub(crate) enum Declaration {
     Type(TypeDefinition),
 }
 
+impl Declaration {
+    pub(crate) fn get_ident(&self) -> String {
+        match self {
+            Self::Type(ty) => ty.get_ident(),
+            Self::Value(v) => v.ident.clone(),
+        }
+    }
+
+    pub(crate) fn has_ty(&self) -> bool {
+        match self {
+            Self::Type(_) => true,
+            Self::Value(v) => !v.ty.is_unknown(),
+        }
+    }
+}
+
 #[derive(PartialEq, Debug)]
 pub(crate) struct ValueDeclaration {
     pub(crate) loc: crate::Location,
@@ -31,7 +49,7 @@ pub(crate) struct ValueDeclaration {
     pub(crate) id: usize,
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone)]
 pub(crate) struct ArgDeclaration {
     pub(crate) loc: crate::Location,
     pub(crate) ident: String,
@@ -119,6 +137,23 @@ pub(crate) enum Expr {
     Match(Match),
 }
 impl Expr {
+    pub(crate) fn get_expr_id(&self) -> usize {
+        match self {
+            Self::Error(id)
+            | Self::BoolLiteral(_, _, id)
+            | Self::ListLiteral { id, .. } 
+            | Self::NumericLiteral { id, .. }
+            | Self::ValueRead(_, _, id)
+            | Self::If(IfExpr{id, ..})
+            | Self::BinaryOpCall(BinaryOpCall{id,..})
+            | Self::FnCall(FnCall{ id, ..})
+            | Self::ArrayLiteral { id, .. }
+            | Self::StructConstruction(StructConstruction { id, ..})
+            | Self::Match(Match{ id, .. })
+            => *id,
+            _ => usize::MAX
+        }
+    }
     pub(crate) fn get_retty(&self, ctx: &mut crate::inference::Context) -> ResolvedType {
         match self {
             Expr::Error(_) => ResolvedType::Error,
@@ -154,9 +189,19 @@ impl Expr {
             },
             Expr::BoolLiteral(_, _, _) => types::BOOL,
             Expr::If(if_) => {
-                todo!()
+                if_.result.clone()
             }
-            Expr::Match(_) => todo!(),
+            Expr::Match(match_) => {
+                match_.arms.iter().map(|arm| {
+                    arm.ret.as_ref().map(|ret| ret.get_retty(ctx)).unwrap_or(types::ERROR)
+                }).reduce(|accum,ty| {
+                    if accum.is_error() || (accum.is_unknown() && !ty.is_unknown()) {
+                        ty
+                    } else {
+                        accum
+                    }
+                }).unwrap_or(types::ERROR)
+            },
         }
     }
 }

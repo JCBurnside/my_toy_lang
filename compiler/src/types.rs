@@ -132,8 +132,50 @@ pub enum ResolvedType {
 }
 
 impl ResolvedType {
-    pub fn fn_ty(&self,returns:&Self) -> Self {
-        Self::Function { arg: self.clone().boxed(), returns: returns.clone().boxed() }
+    pub(crate) fn replace_unkown_with(&mut self, id: usize, ty: Self) {
+        match self {
+            Self::Unknown(i) if *i == id => *self = ty,
+            Self::Ref { underlining }
+            | Self::Pointer { underlining }
+            | Self::Slice { underlining }
+            | Self::Array { underlining, .. } => underlining.replace_unkown_with(id, ty),
+            Self::Function { arg, returns } => {
+                arg.replace_unkown_with(id, ty.clone());
+                returns.replace_unkown_with(id, ty);
+            }
+            Self::User { generics, .. } => {
+                for generic in generics {
+                    generic.replace_unkown_with(id, ty.clone());
+                }
+            }
+            _ => (),
+        }
+    }
+
+    pub(crate) fn check_equality(&self, other: &Self) -> bool {
+        match (self, other) {
+            (&INT8 | &INT16 | &INT32 | &INT64 | &FLOAT32, &Self::Number) => true,
+            (&Self::Number, &INT8 | &INT16 | &INT32 | &INT64 | &FLOAT32) => true,
+            _ => self == other,
+        }
+    }
+
+    pub(crate) fn check_function(&self, args: &[Self]) -> bool {
+        println!("{args:#?}");
+        if args.len() == 0 {
+            true
+        } else if let Self::Function { arg, returns } = self {
+            arg.check_equality(&args[0]) && returns.check_function(&args[1..])
+        } else {
+            false
+        }
+    }
+
+    pub fn fn_ty(&self, returns: &Self) -> Self {
+        Self::Function {
+            arg: self.clone().boxed(),
+            returns: returns.clone().boxed(),
+        }
     }
 
     pub fn is_void_or_unit(&self) -> bool {
@@ -363,7 +405,8 @@ impl ResolvedType {
 
     pub(crate) fn is_unknown(&self) -> bool {
         match self {
-            Self::Unknown(_) => true,
+            Self::Number //since it can be one of many types.
+            | Self::Unknown(_) => true,
             Self::Function { arg, returns } => arg.is_unknown() || returns.is_unknown(),
             _ => false,
         }
@@ -384,17 +427,38 @@ impl ResolvedType {
         matches!(self, Self::Int { .. })
     }
 
-    pub fn replace_by_id(&mut self, x: usize, new_ty: Self) {
+    pub(crate) fn get_dependant_unknowns(&self) -> Vec<usize> {
         match self {
-            Self::Unknown(id) if id == &x => *self = new_ty,
-            Self::Slice { underlining }
-            | Self::Ref { underlining }
-            | Self::Array { underlining, .. } => underlining.replace_by_id(x, new_ty),
+            Self::Unknown(id) => vec![*id],
+            Self::Pointer { underlining }
+            | Self::Slice { underlining }
+            | Self::Array { underlining, .. }
+            | Self::Ref { underlining } => underlining.get_dependant_unknowns(),
             Self::Function { arg, returns } => {
-                arg.replace_by_id(x, new_ty.clone());
-                returns.replace_by_id(x, new_ty);
+                let mut out = arg.get_dependant_unknowns();
+                out.extend(returns.get_dependant_unknowns());
+                out
             }
-            _ => (),
+            Self::User { name, generics } => generics
+                .iter()
+                .flat_map(|it| it.get_dependant_unknowns())
+                .collect(),
+            Self::Alias { actual } => Vec::new(), //aliases can't be infered
+            _ => Vec::new(),
+        }
+    }
+
+    pub(crate) fn contains_unknown(&self, id: usize) -> bool {
+        match self {
+            Self::Unknown(i) => i == &id,
+            Self::Array { underlining, .. }
+            | Self::Ref { underlining }
+            | Self::Pointer { underlining }
+            | Self::Slice { underlining } => underlining.contains_unknown(id),
+            Self::Function { arg, returns } => {
+                arg.contains_unknown(id) || returns.contains_unknown(id)
+            }
+            _ => false,
         }
     }
 }
@@ -414,8 +478,8 @@ impl ToString for ResolvedType {
                 };
                 format!("{}->{}", arg, returns.to_string())
             }
-            ResolvedType::Generic { .. } => {
-                unreachable!("why are you trying to serialize a generic type?")
+            ResolvedType::Generic { name, .. } => {
+                format!("<GenericArg:{name}>")
             }
             ResolvedType::Int {
                 signed: false,
@@ -459,6 +523,7 @@ mod consts {
     use super::*;
     pub const BOOL: ResolvedType = ResolvedType::Bool;
     pub const ERROR: ResolvedType = ResolvedType::Error;
+    pub const NUMBER: ResolvedType = ResolvedType::Number;
     pub const INT8: ResolvedType = ResolvedType::Int {
         signed: true,
         width: IntWidth::Eight,

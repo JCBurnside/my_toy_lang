@@ -20,15 +20,20 @@
         },
         {
             "name": "test",
-            "type": "cppvsdbg",
+            "type": "lldb",
             "request": "launch",
-            "program": "./target/debug/deps/compiler-6aa25a5638cea734.exe",
-            "args": [],
-            "stopAtEntry": false,
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=cli"
+                ],
+                "filter": {
+                    "kind": "bin"
+                }
+            },
+            "args":["--llvm", "-o", "./test_output.llvm", "./cli/test.fb"],
             "cwd": "${workspaceFolder}",
-            "environment": [
-                {"name": "RUST_BACKTRACE", "value": "1"}
-            ],
+            "env": {"RUST_BACKTRACE": "1"},
             "console": "externalTerminal",
         }
     ]
