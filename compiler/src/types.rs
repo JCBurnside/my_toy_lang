@@ -6,6 +6,7 @@ use std::{
 };
 
 use crate::{typed_ast, util::ExtraUtilFunctions};
+#[cfg(feature = "full")]
 use inkwell::{
     context::Context,
     debug_info::{DIFile, DIFlags, DIFlagsConstants, DISubroutineType, DIType, DebugInfoBuilder},
@@ -14,6 +15,8 @@ use inkwell::{
     AddressSpace,
 };
 
+
+use itertools::Itertools;
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
 pub enum IntWidth {
     Eight,
@@ -570,12 +573,15 @@ pub use consts::*;
 use itertools::Itertools;
 use lazy_static::lazy_static;
 
+#[cfg(feature="full")]
 pub struct TypeResolver<'ctx> {
     known: HashMap<ResolvedType, AnyTypeEnum<'ctx>>,
     ctx: &'ctx Context,
     ditypes: HashMap<ResolvedType, DIType<'ctx>>,
     target_data: TargetData,
 }
+
+#[cfg(feature="full")]
 
 impl<'ctx> TypeResolver<'ctx> {
     pub fn new(ctx: &'ctx Context, target_data: TargetData) -> Self {

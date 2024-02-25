@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 pub mod ast;
 // mod langstd;
+#[cfg(feature = "full")]
 mod code_gen;
 mod inference;
 mod lexer;
@@ -16,19 +17,29 @@ mod util;
 
 use code_gen::CodeGen;
 use itertools::Itertools;
+
 use typed_ast::{ResolvedTypeDeclaration, TypedDeclaration, TypedModuleDeclaration};
-// use code_gen::CodeGen;
-use inkwell::{
-    module::Module,
-    targets::{CodeModel, Target, TargetMachine},
-};
+
+
+
 use lexer::TokenStream;
 use parser::Parser;
-use types::{ResolvedType, TypeResolver};
-
-use inkwell::context::Context;
+use types::ResolvedType;
+#[cfg(feature="full")] 
+use types::TypeResolver;
 use multimap::MultiMap;
 type Location = (usize, usize);
+
+
+pub fn get_untyped_ast(input:&str,file_name:&str) -> ast::ModuleDeclaration{
+    let ts = TokenStream::from_source(input);
+    Parser::from_stream(ts).module(file_name.to_string())
+} 
+
+#[cfg(feature="full")]
+use inkwell::{context::Context, module::Module};
+
+#[cfg(feature = "full")]
 
 pub fn from_file<'ctx>(
     file: &PathBuf,
@@ -37,6 +48,11 @@ pub fn from_file<'ctx>(
     is_debug: bool,
     project_name: String,
 ) -> Result<Module<'ctx>, Vec<Box<dyn Display>>> {
+    
+    use code_gen::CodeGen;
+    use inkwell::{
+        targets::{CodeModel, Target, TargetMachine},
+    };
     // TODO: I would like to make this work for now I will read the whole file to a string then
     // let file = File::open(file).map_err(Box::new).map_err(|err| vec![err as Box<dyn Display>])?;
     // let file = BufReader::new(file);
@@ -96,6 +112,7 @@ pub fn from_file<'ctx>(
     let ast = inference_context.inference(ast);
     let mut ast =
         TypedModuleDeclaration::from(ast, &fwd_declarations, &HashMap::new()); //TODO: foward declare std lib
+
 
     ast.lower_generics(&HashMap::new());
     ast.declarations.retain(|it| match it {

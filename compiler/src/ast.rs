@@ -7,14 +7,14 @@ use itertools::Itertools;
 
 use crate::types::ResolvedType;
 #[allow(unused)]
-pub(crate) type File = ModuleDeclaration;
+pub type File = ModuleDeclaration;
 #[allow(unused)]
-pub(crate) type Program = Vec<File>;
+pub type Program = Vec<File>;
 #[derive(Debug, PartialEq)]
-pub(crate) struct ModuleDeclaration {
-    pub(crate) loc: Option<crate::Location>,
-    pub(crate) name: String,
-    pub(crate) declarations: Vec<Declaration>,
+pub struct ModuleDeclaration {
+    pub loc: Option<crate::Location>,
+    pub name: String,
+    pub declarations: Vec<Declaration>,
 }
 
 impl ModuleDeclaration {
@@ -86,13 +86,14 @@ impl ModuleDeclaration {
 #[derive(PartialEq, Debug)]
 pub(crate) enum Declaration {
     TypeDefinition(TypeDefinition),
+
     #[allow(unused)] //TODO submoduling
     Mod(ModuleDeclaration),
     Value(ValueDeclaration),
 }
 
 impl Declaration {
-    pub fn replace(&mut self, nice_name: &str, actual: &str) {
+    pub(crate) fn replace(&mut self, nice_name: &str, actual: &str) {
         match self {
             Self::Mod(_) => (), //do nothing as super mod alias should not leak into submodules
             Self::TypeDefinition(def) => def.replace(nice_name, actual),
@@ -110,7 +111,7 @@ impl Declaration {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub(crate) enum TypeDefinition {
+pub enum TypeDefinition {
     Alias(String, ResolvedType),
     #[allow(unused)]
     Enum(EnumDeclation),
@@ -143,34 +144,34 @@ impl TypeDefinition {
 }
 
 #[derive(PartialEq, Debug, Clone)]
-pub(crate) struct EnumDeclation {
-    pub(crate) ident: String,
-    pub(crate) generics: Vec<String>,
-    pub(crate) values: Vec<EnumVariant>,
-    pub(crate) loc: crate::Location,
+pub struct EnumDeclation {
+    pub ident: String,
+    pub generics: Vec<String>,
+    pub values: Vec<EnumVariant>,
+    pub loc: crate::Location,
 }
 
 #[derive(PartialEq, Debug, Clone)]
 #[allow(unused)]
-pub(crate) enum EnumVariant {
+pub enum EnumVariant {
     Unit(String, crate::Location),
     Tuple(String, Vec<ResolvedType>, crate::Location),
     Struct(String, StructDefinition, crate::Location),
 }
 
 #[derive(PartialEq, Debug, Clone)]
-pub(crate) struct StructDefinition {
-    pub(crate) ident: String,
-    pub(crate) generics: Vec<String>,
-    pub(crate) values: Vec<FieldDecl>,
-    pub(crate) loc: crate::Location,
+pub struct StructDefinition {
+    pub ident: String,
+    pub generics: Vec<String>,
+    pub values: Vec<FieldDecl>,
+    pub loc: crate::Location,
 }
 
 #[derive(PartialEq, Debug, Clone)]
-pub(crate) struct FieldDecl {
-    pub(crate) name: String,
-    pub(crate) ty: ResolvedType,
-    pub(crate) loc: crate::Location,
+pub struct FieldDecl {
+    pub name: String,
+    pub ty: ResolvedType,
+    pub loc: crate::Location,
 }
 
 #[derive(PartialEq, Debug, Clone)]
@@ -178,6 +179,8 @@ pub(crate) struct ArgDeclaration {
     pub(crate) loc: crate::Location,
     pub(crate) ident: String,
     pub(crate) ty: Option<ResolvedType>, // TODO
+    pub loc: crate::Location,
+
 }
 
 #[derive(PartialEq, Debug)]
@@ -275,7 +278,7 @@ impl Statement {
         }
     }
 
-    pub(crate) fn get_loc(&self) -> crate::Location {
+    pub fn get_loc(&self) -> crate::Location {
         match self {
             Self::Declaration(decl) => decl.loc,
             Self::Return(_, loc) => *loc,
@@ -352,11 +355,11 @@ impl Statement {
 
 #[derive(PartialEq, Debug)]
 pub struct IfBranching {
-    pub(crate) cond: Box<Expr>,
-    pub(crate) true_branch: Vec<Statement>,
-    pub(crate) else_ifs: Vec<(Box<Expr>, Vec<Statement>)>,
-    pub(crate) else_branch: Vec<Statement>,
-    pub(crate) loc: crate::Location,
+    pub cond: Box<Expr>,
+    pub true_branch: Vec<Statement>,
+    pub else_ifs: Vec<(Box<Expr>, Vec<Statement>)>,
+    pub else_branch: Vec<Statement>,
+    pub loc: crate::Location,
 }
 
 impl IfBranching {
