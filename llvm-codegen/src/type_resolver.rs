@@ -132,7 +132,7 @@ impl<'ctx> TypeResolver<'ctx> {
                     .as_any_type_enum();
                 self.known.insert(ty, r);
             }
-            ResolvedType::User { name, generics }
+            ResolvedType::User { name, generics, loc:_ }
                 if generics
                     .iter()
                     .map(ResolvedType::is_generic)
@@ -163,7 +163,7 @@ impl<'ctx> TypeResolver<'ctx> {
                     .insert(BOOL, self.ctx.bool_type().as_any_type_enum());
             }
             // ResolvedType::ForwardUser { name } => todo!(),
-            ResolvedType::Alias { actual } => self.resolve_type(actual.as_ref().clone()),
+            ResolvedType::Alias { actual, loc:_ } => self.resolve_type(actual.as_ref().clone()),
             ResolvedType::Unit => (),
             ResolvedType::Generic { .. } =>
             /* not sure what I need to do here yet */
@@ -203,7 +203,7 @@ impl<'ctx> TypeResolver<'ctx> {
     }
 
     pub fn resolve_type_as_function(&mut self, ty: &ResolvedType) -> FunctionType<'ctx> {
-        let ResolvedType::Function { arg, returns } = ty else {
+        let ResolvedType::Function { arg, returns, loc : _ } = ty else {
             unreachable!("trying to make a non function type into a function")
         };
         let arg = self.resolve_arg_type(&arg);

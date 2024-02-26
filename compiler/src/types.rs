@@ -174,8 +174,8 @@ impl ResolvedType {
 
     pub(crate) fn check_equality(&self, other: &Self) -> bool {
         match (self, other) {
-            (&INT8 | &INT16 | &INT32 | &INT64 | &FLOAT32, &Self::Number) => true,
-            (&Self::Number, &INT8 | &INT16 | &INT32 | &INT64 | &FLOAT32) => true,
+            (lhs, &Self::Number) => lhs.is_float() || lhs.is_int() ,
+            (&Self::Number, rhs) => rhs.is_float() || rhs.is_int() ,
             _ => self == other,
         }
     }

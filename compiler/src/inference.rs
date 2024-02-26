@@ -1329,7 +1329,7 @@ mod tests {
                     value: super::untyped_ast::ValueType::Expr(
                         super::untyped_ast::Expr::ValueRead("a".to_string(), (0, 0)),
                     ),
-                    generictypes: Vec::new(),
+                    generictypes: None,
                 },
             )],
         };
@@ -1362,7 +1362,7 @@ mod tests {
                             (0, 0),
                             2
                         )),
-                        generics: Vec::new(),
+                        generics: None,
                         id: 0
                     }
                 )]
@@ -1417,7 +1417,7 @@ mod tests {
                                 result: ResolvedType::Unknown(2),
                             }
                         )),
-                        generics: Vec::new(),
+                        generics: None,
                         id: 0
                     }
                 )]
@@ -1509,7 +1509,7 @@ let foo a = match a where
                                 id: 2
                             }
                         )),
-                        generics: Vec::new(),
+                        generics: None,
                         id: 0,
                     }
                 )]
@@ -1550,7 +1550,7 @@ let foo a = match a where
                                 result: types::ResolvedType::Unknown(2),
                             }
                         )),
-                        generics: Vec::new(),
+                        generics: None,
                         id: 0
                     }
                 )]
@@ -1615,7 +1615,12 @@ for<T> let foo x y : T -> T -> () = ()
                             .fn_ty(&ResolvedType::Unit)
                         ),
                         value: super::ast::ValueType::Expr(super::ast::Expr::UnitLiteral),
-                        generics: vec!["T".to_string()],
+                        generics: Some(crate::ast::GenericsDecl { 
+                            for_loc: (0,0),
+                            decls: vec![
+                                ((0,0),"T".to_string())
+                            ] 
+                        }),
                         id: 0
                     }
                 )]
@@ -1714,7 +1719,7 @@ let complex x =
                             loc: (3, 31),
                             id: 2
                         }),
-                        generics: Vec::new(),
+                        generics: None,
                         id: 0
                     }),
                     super::ast::Declaration::Value(super::ast::ValueDeclaration {
@@ -1833,7 +1838,7 @@ let complex x =
                                 (7, 5)
                             )
                         ]),
-                        generics: Vec::new(),
+                        generics: None,
                         id: 7
                     }),
                     // super::ast::ValueDeclaration {
@@ -1904,7 +1909,7 @@ let unit_unit _ : () -> () = ()
                     ],
                     ty: types::INT32.fn_ty(&types::INT32),
                     value: super::ast::ValueType::Expr(super::ast::Expr::ValueRead("x".to_string(), (5,34), 7)),
-                    generics: Vec::new(),
+                    generics: None,
                     id: 5
                 }),
                 super::ast::Declaration::Value(ValueDeclaration {
@@ -1921,7 +1926,7 @@ let unit_unit _ : () -> () = ()
                     ],
                     ty: types::INT32.fn_ty(&types::UNIT),
                     value: super::ast::ValueType::Expr(super::ast::Expr::UnitLiteral),
-                    generics: Vec::new(),
+                    generics: None,
                     id: 0
                 }),
                 super::ast::Declaration::Value(ValueDeclaration {
@@ -1938,7 +1943,7 @@ let unit_unit _ : () -> () = ()
                     ],
                     ty: types::UNIT.fn_ty(&types::INT32),
                     value: super::ast::ValueType::Expr(super::ast::Expr::NumericLiteral { value: "0".to_string(), id: 4, ty: types::INT32 }),
-                    generics: Vec::new(),
+                    generics: None,
                     id: 2
                 }),
                 super::ast::Declaration::Value(ValueDeclaration {
@@ -1955,7 +1960,7 @@ let unit_unit _ : () -> () = ()
                     ],
                     ty: types::UNIT.fn_ty(&types::UNIT),
                     value: super::ast::ValueType::Expr(super::ast::Expr::UnitLiteral),
-                    generics: Vec::new(),
+                    generics: None,
                     id: 8
                 }),
             ]
@@ -2015,7 +2020,7 @@ let if_expr a b : bool -> int32 -> int32 = if a then b else 0
                     id: 3,
                     result: types::INT32 
                 })),
-                generics:Vec::new()
+                generics:None
             })
         )
     }
@@ -2055,7 +2060,7 @@ let returns a : bool -> int32 =
                     },
                 ],
                 ty:types::BOOL.fn_ty(&types::INT32),
-                generics:Vec::new(),
+                generics:None,
                 value:super::ast::ValueType::Function(vec![
                     super::ast::Statement::IfStatement(super::ast::IfBranching{
                         cond: super::ast::Expr::ValueRead("a".to_string(), (2,8), 2).boxed(),

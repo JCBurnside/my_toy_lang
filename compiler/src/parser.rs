@@ -3295,7 +3295,7 @@ let arr = [0,0,0,0];
                     ],
                     loc: (1, 11)
                 }),
-                generictypes: Vec::new()
+                generictypes: None
             })
         )
     }

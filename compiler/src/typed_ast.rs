@@ -284,10 +284,10 @@ impl ResolvedTypeDeclaration {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct StructDefinition {
-    pub(crate) ident: String,
-    pub(crate) generics: Option<ResolvedGenericsDecl>,
-    pub(crate) fields: Vec<crate::ast::FieldDecl>,
-    pub(crate) loc: crate::Location,
+    pub ident: String,
+    pub generics: Option<ResolvedGenericsDecl>,
+    pub fields: Vec<crate::ast::FieldDecl>,
+    pub loc: crate::Location,
 }
 
 impl StructDefinition {
@@ -361,16 +361,16 @@ impl StructDefinition {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct TypedValueDeclaration {
-    pub(crate) loc: crate::Location,
-    pub(crate) is_op: bool,
-    pub(crate) ident: String,
-    pub(crate) args: Vec<ArgDeclaration>,
-    pub(crate) value: TypedValueType,
-    pub(crate) ty: ResolvedType,
-    pub(crate) generictypes: Option<ResolvedGenericsDecl>,
-    pub(crate) is_curried: bool,
+    pub loc: crate::Location,
+    pub is_op: bool,
+    pub ident: String,
+    pub args: Vec<ArgDeclaration>,
+    pub value: TypedValueType,
+    pub ty: ResolvedType,
+    pub generictypes: Option<ResolvedGenericsDecl>,
+    pub is_curried: bool,
 }
-pub(crate) fn collect_args(t: &ResolvedType) -> Vec<ResolvedType> {
+pub fn collect_args(t: &ResolvedType) -> Vec<ResolvedType> {
     if let ResolvedType::Function { arg, returns, .. } = t {
         [arg.as_ref().clone()]
             .into_iter()
@@ -822,12 +822,12 @@ impl TypedIfBranching {
 #[derive(Debug, PartialEq, Clone)]
 pub struct TypedPipe {
     ///if you need to spread more than an u8's worth of values... wtf are you doing? what would even return that many values as a tuple?  
-    pub(crate) expansion: NonZeroU8,
-    pub(crate) lhs: Box<TypedExpr>,
+    pub expansion: NonZeroU8,
+    pub lhs: Box<TypedExpr>,
     /// THIS HAS A RESTRICTION OF MUST RETURN A FUNCTION
-    pub(crate) rhs: Box<TypedExpr>,
+    pub rhs: Box<TypedExpr>,
     /// should match the final return type as [`TypedPipe::rhs`]
-    pub(crate) rt: ResolvedType,
+    pub rt: ResolvedType,
 }
 
 #[derive(PartialEq, Debug, Clone)]
@@ -2222,9 +2222,9 @@ impl TypedBinaryOpCall {
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct TypedUnaryOpCall {
-    pub(crate) operand: Box<TypedExpr>,
-    pub(crate) operator: String,
-    pub(crate) rt: ResolvedType,
+    pub operand: Box<TypedExpr>,
+    pub operator: String,
+    pub rt: ResolvedType,
 }
 
 fn strip_pointers(ty: &ResolvedType) -> ResolvedType {
