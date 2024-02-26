@@ -50,11 +50,11 @@ pub(crate) struct ValueDeclaration {
 }
 
 #[derive(PartialEq, Debug, Clone)]
-pub(crate) struct ArgDeclaration {
-    pub(crate) loc: crate::Location,
-    pub(crate) ident: String,
-    pub(crate) ty: ResolvedType,
-    pub(crate) id: usize,
+pub struct ArgDeclaration {
+    pub loc: crate::Location,
+    pub ident: String,
+    pub ty: ResolvedType,
+    pub id: usize,
 }
 
 #[derive(PartialEq, Debug)]

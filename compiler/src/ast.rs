@@ -178,9 +178,7 @@ pub struct FieldDecl {
 pub(crate) struct ArgDeclaration {
     pub(crate) loc: crate::Location,
     pub(crate) ident: String,
-    pub(crate) ty: Option<ResolvedType>, // TODO
-    pub loc: crate::Location,
-
+    pub(crate) ty: Option<ResolvedType>, 
 }
 
 #[derive(PartialEq, Debug)]
