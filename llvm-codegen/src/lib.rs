@@ -1,6 +1,6 @@
 mod code_gen;
 mod type_resolver;
-use std::{cell::OnceCell, collections::HashMap, mem::MaybeUninit, path::PathBuf, process::Output, sync::OnceLock};
+use std::{cell::OnceCell, collections::HashMap, hash::Hash, mem::MaybeUninit, path::PathBuf, process::Output, sync::OnceLock};
 
 use code_gen::*;
 use compiler::{typed_ast::TypedDeclaration, types::ResolvedType};
@@ -43,7 +43,6 @@ pub fn compile_file(mut ast:compiler::typed_ast::FileTyped,file:PathBuf,write_ll
     //TODO! handle how to output built files?
 }
 
-type CodeGenCell<'ctx> = OnceCell<CodeGen<'ctx>>;
 
 self_cell::self_cell!{
 
@@ -61,6 +60,7 @@ struct BoundItems<'ctx> {
     engine : ExecutionEngine<'ctx>,
     modules : Vec<Module<'ctx>>//to garuntee they don't get dropped early.
 }
+
 
 pub fn create_jit_runtime() -> JitEngine {
     Target::initialize_native(&InitializationConfig::default()).unwrap();
@@ -98,11 +98,29 @@ pub trait TupleCall {
 } 
 
 macro_rules! impl_unsafe_fn {
-    (@recurse $first:ident $( , $rest:ident )*) => {
+    (@recurse $_:ident $( , $rest:ident )*) => {
         impl_unsafe_fn!($( $rest ),*);
     };
 
     (@recurse) => {};
+
+    ($first:ident) => {
+        impl<Output,  $first > TupleCall for JitFunction<'_,unsafe extern "C" fn($first) -> Output> {
+            type Args = $first;
+            type Output = Output;
+            #[allow(non_snake_case)]
+            unsafe fn call_tuple(&self,$first:$first) -> Output {
+                self.call($first)
+            }
+        }
+        impl<Output> TupleCall for JitFunction<'_,unsafe extern "C" fn() -> Output> {
+            type Args=();
+            type Output=Output;
+            unsafe fn call_tuple(&self, ():()) -> Output {
+                self.call()
+            }
+        }
+    };
 
     ($( $param:ident ),*) => {
         impl<Output, $( $param ),*> TupleCall for JitFunction<'_,unsafe extern "C" fn($( $param ),*) -> Output> {
