@@ -9,13 +9,13 @@ extern "C" let malloc : std::ffi::c_int -> *mut std::ffi::void
 for<T> implements Vec<T> where
     public let fn new = Vec<T> { start:nullptr, count:0, capacity:0};
 
-for<T> public let Vec::push &mut self it : &mut Vec<T> -> T -> ()
-    todo
+    public let push (&mut self) it : &mut Vec<T> -> T -> () =
+        todo
 
-public let Vec::len &self = self.count
+    public let fn len &self = self.count;
 
-public let Vec::capacity &self = self.capacity
-
+    public let fn capacity &self = self.capacity;
+// Should auto implement Index<usize, Output = T>
     public let fn capacity &self = self.capacity;
 // Should auto implement Index<usize, Output = T>
 for<T> public let (!!) &vec idx : &Vec<T> -> usize -> &T = 
@@ -28,8 +28,8 @@ for<T> public let (!^) (&mut self) idx : &mut Vec<T> -> usize -> &mut T =
     if idx > self.count then error "index out of bounds"
     unsafe 
         &mut *std::ptr::offset vec.start idx
-    
 
+// for<T,S implements Seq<T>> Vec<T> -> S -> Vec<T>
 let from_seq_impl (mut v) (mut s)=
     match s.next
     | None -> v

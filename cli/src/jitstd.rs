@@ -44,11 +44,13 @@ pub fn add_printstr<'ctx>(
         "print_str",
     );
     let fun = module.add_function("print_str", fun_ty, None);
-    let bits = builder.build_bitcast(
-        fun.as_global_value().as_pointer_value(),
-        ctx.i8_type().ptr_type(AddressSpace::default()),
-        "",
-    ).unwrap();
+    let bits = builder
+        .build_bitcast(
+            fun.as_global_value().as_pointer_value(),
+            ctx.i8_type().ptr_type(AddressSpace::default()),
+            "",
+        )
+        .unwrap();
     gs.set_initializer(&ctx.const_struct(&[bits], false));
     // let bb = ctx.append_basic_block(fun, "");
     // builder.position_at_end(bb);

@@ -1,14 +1,11 @@
-use std::collections::HashMap;
+use std::{
+    collections::{HashMap, HashSet},
+    mem::size_of,
+    ops::{Range, RangeFrom},
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use crate::{typed_ast, util::ExtraUtilFunctions};
-#[cfg(feature = "full")]
-use inkwell::{
-    context::Context,
-    debug_info::DIType,
-    targets::TargetData,
-    types::{AnyType, AnyTypeEnum, BasicType, BasicTypeEnum, FunctionType},
-    AddressSpace,
-};
 
 
 use itertools::Itertools;
@@ -81,7 +78,9 @@ impl FloatWidth {
 
 #[derive(Hash, Clone, Debug, Eq)]
 pub enum ResolvedType {
+    Unknown(usize),
     Bool,
+    Number,
     Int {
         signed: bool,
         width: IntWidth,
@@ -131,76 +130,53 @@ pub enum ResolvedType {
     Error,
 }
 
-impl PartialEq for ResolvedType {
-    fn eq(&self, other: &Self) -> bool {
-        
-        match (self, other) {
-            (ResolvedType::Error, _) | (_, ResolvedType::Error) => true,
-            (ResolvedType::Alias { actual, .. }, other) => other == actual.as_ref(),
-            (ResolvedType::Void, ResolvedType::Void)
-            | (ResolvedType::Unit, ResolvedType::Unit)
-            | (ResolvedType::Str, ResolvedType::Str)
-            | (ResolvedType::Char, ResolvedType::Char)
-            | (ResolvedType::Bool, ResolvedType::Bool) => true,
-            (other, ResolvedType::Alias { actual, .. }) => other == actual.as_ref(),
-            (
-                ResolvedType::Int {
-                    signed: lhs_signed,
-                    width: lhs_wdith,
-                },
-                ResolvedType::Int {
-                    signed: rhs_signed,
-                    width: rhs_width,
-                },
-            ) => lhs_signed == rhs_signed && lhs_wdith == rhs_width,
-            (
-                ResolvedType::Float { width: lhs_width },
-                ResolvedType::Float { width: rhs_width },
-            ) => lhs_width == rhs_width,
-            (
-                ResolvedType::Array {
-                    underlining: lhs_underlinging,
-                    size: lhs_size,
-                },
-                ResolvedType::Array {
-                    underlining: rhs_underlining,
-                    size: rhs_size,
-                },
-            ) => lhs_size == rhs_size && lhs_underlinging == rhs_underlining,
-            (
-                ResolvedType::Pointer {
-                    underlining: lhs_underling,
-                },
-                ResolvedType::Pointer {
-                    underlining: rhs_underling,
-                },
-            )
-            | (
-                ResolvedType::Ref {
-                    underlining: lhs_underling,
-                },
-                ResolvedType::Ref {
-                    underlining: rhs_underling,
-                },
-            ) => lhs_underling.as_ref() == rhs_underling.as_ref(),
-            (
-                ResolvedType::Function {
-                    arg: lhs_arg,
-                    returns: lhs_ret,
-                    ..
-                },
-                ResolvedType::Function {
-                    arg: rhs_arg,
-                    returns: rhs_ret,
-                    ..
-                },
-            ) => lhs_arg.as_ref() == rhs_ret.as_ref() && lhs_ret.as_ref() == rhs_ret.as_ref(),
-            _ => false,
+impl ResolvedType {
+    pub(crate) fn replace_unkown_with(&mut self, id: usize, ty: Self) {
+        match self {
+            Self::Unknown(i) if *i == id => *self = ty,
+            Self::Ref { underlining }
+            | Self::Pointer { underlining }
+            | Self::Slice { underlining }
+            | Self::Array { underlining, .. } => underlining.replace_unkown_with(id, ty),
+            Self::Function { arg, returns } => {
+                arg.replace_unkown_with(id, ty.clone());
+                returns.replace_unkown_with(id, ty);
+            }
+            Self::User { generics, .. } => {
+                for generic in generics {
+                    generic.replace_unkown_with(id, ty.clone());
+                }
+            }
+            _ => (),
         }
     }
-}
-// impl Eq for ResolvedType {}
-impl ResolvedType {
+
+    pub(crate) fn check_equality(&self, other: &Self) -> bool {
+        match (self, other) {
+            (&INT8 | &INT16 | &INT32 | &INT64 | &FLOAT32, &Self::Number) => true,
+            (&Self::Number, &INT8 | &INT16 | &INT32 | &INT64 | &FLOAT32) => true,
+            _ => self == other,
+        }
+    }
+
+    pub(crate) fn check_function(&self, args: &[Self]) -> bool {
+        println!("{args:#?}");
+        if args.len() == 0 {
+            true
+        } else if let Self::Function { arg, returns } = self {
+            arg.check_equality(&args[0]) && returns.check_function(&args[1..])
+        } else {
+            false
+        }
+    }
+
+    pub fn fn_ty(&self, returns: &Self) -> Self {
+        Self::Function {
+            arg: self.clone().boxed(),
+            returns: returns.clone().boxed(),
+        }
+    }
+
     pub fn is_void_or_unit(&self) -> bool {
         match self {
             Self::Void | Self::Unit => true,
@@ -210,6 +186,36 @@ impl ResolvedType {
 
     pub fn is_user(&self) -> bool {
         matches!(self, Self::User { .. })
+    }
+
+    pub fn get_all_types(&self) -> HashSet<String> {
+        match self {
+            ResolvedType::User { .. }
+            | ResolvedType::Bool
+            | ResolvedType::Int { .. }
+            | ResolvedType::Float { .. }
+            | ResolvedType::Char
+            | ResolvedType::Str => [self.to_string()].into(),
+            ResolvedType::Ref { underlining }
+            | ResolvedType::Pointer { underlining }
+            | ResolvedType::Slice { underlining }
+            | ResolvedType::Array { underlining, .. } => {
+                let tys = underlining.get_all_types();
+                tys
+            }
+            ResolvedType::Function { arg, returns } => {
+                let mut tys = arg.get_all_types();
+                tys.extend(returns.get_all_types().into_iter());
+                tys
+            }
+            ResolvedType::Alias { actual } => actual.get_all_types(),
+            ResolvedType::Unit
+            | ResolvedType::Number
+            | ResolvedType::Void
+            | ResolvedType::Generic { .. }
+            | ResolvedType::Unknown(_) => HashSet::new(),
+            ResolvedType::Error => todo!(),
+        }
     }
 
     pub fn as_c_function(&self) -> (Vec<Self>, Self) {
@@ -351,7 +357,7 @@ impl ResolvedType {
                 *name = new_name;
                 *generics = Vec::new();
             }
-            ResolvedType::Error => (),
+            ResolvedType::Unknown(_) | ResolvedType::Number | ResolvedType::Error => (),
         }
     }
 
@@ -384,11 +390,13 @@ impl ResolvedType {
         }
     }
 
-    pub(crate) fn remove_args(&self, arg: usize) -> Self {
+    pub fn remove_args(&self, arg: usize) -> Self {
         if arg == 0 {
             self.clone()
         } else {
-            let Self::Function { returns, .. } = self else { unreachable!() };
+            let Self::Function { returns, .. } = self else {
+                unreachable!()
+            };
             returns.remove_args(arg - 1)
         }
     }
@@ -399,11 +407,71 @@ impl ResolvedType {
             _ => false,
         }
     }
+
+    pub(crate) fn is_unknown(&self) -> bool {
+        match self {
+            Self::Number //since it can be one of many types.
+            | Self::Unknown(_) => true,
+            Self::Function { arg, returns } => arg.is_unknown() || returns.is_unknown(),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn get_nth_arg(&self, idx: usize) -> Self {
+        match self {
+            Self::Function { arg, .. } if idx == 0 => arg.as_ref().clone(),
+            Self::Function { returns, .. } => returns.get_nth_arg(idx - 1),
+            _ => Self::Error,
+        }
+    }
+    pub fn is_float(&self) -> bool {
+        matches!(self, Self::Float { .. })
+    }
+
+    pub fn is_int(&self) -> bool {
+        matches!(self, Self::Int { .. })
+    }
+
+    pub(crate) fn get_dependant_unknowns(&self) -> Vec<usize> {
+        match self {
+            Self::Unknown(id) => vec![*id],
+            Self::Pointer { underlining }
+            | Self::Slice { underlining }
+            | Self::Array { underlining, .. }
+            | Self::Ref { underlining } => underlining.get_dependant_unknowns(),
+            Self::Function { arg, returns } => {
+                let mut out = arg.get_dependant_unknowns();
+                out.extend(returns.get_dependant_unknowns());
+                out
+            }
+            Self::User { name, generics } => generics
+                .iter()
+                .flat_map(|it| it.get_dependant_unknowns())
+                .collect(),
+            Self::Alias { actual } => Vec::new(), //aliases can't be infered
+            _ => Vec::new(),
+        }
+    }
+
+    pub(crate) fn contains_unknown(&self, id: usize) -> bool {
+        match self {
+            Self::Unknown(i) => i == &id,
+            Self::Array { underlining, .. }
+            | Self::Ref { underlining }
+            | Self::Pointer { underlining }
+            | Self::Slice { underlining } => underlining.contains_unknown(id),
+            Self::Function { arg, returns } => {
+                arg.contains_unknown(id) || returns.contains_unknown(id)
+            }
+            _ => false,
+        }
+    }
 }
 
 impl ToString for ResolvedType {
     fn to_string(&self) -> String {
         match self {
+            ResolvedType::Number => "{number}".to_string(),
             ResolvedType::Bool => "bool".to_string(),
             ResolvedType::Alias { actual, .. } => actual.to_string(),
             ResolvedType::Char => "char".to_string(),
@@ -416,8 +484,8 @@ impl ToString for ResolvedType {
                 };
                 format!("{}->{}", arg, returns.to_string())
             }
-            ResolvedType::Generic { .. } => {
-                unreachable!("why are you trying to serialize a generic type?")
+            ResolvedType::Generic { name, .. } => {
+                format!("<GenericArg:{name}>")
             }
             ResolvedType::Int {
                 signed: false,
@@ -434,7 +502,8 @@ impl ToString for ResolvedType {
             ResolvedType::Str => "str".to_string(),
             ResolvedType::Unit => "()".to_string(),
             ResolvedType::Void => "".to_string(),
-            ResolvedType::User { name, generics, .. } => {
+            ResolvedType::Number => "{number}".to_string(),
+            ResolvedType::User { name, generics } => {
                 if generics.len() > 0 {
                     format!(
                         "{}<{}>",
@@ -451,7 +520,7 @@ impl ToString for ResolvedType {
             } => {
                 format!("[{};{}]", underlying.to_string(), size)
             }
-            ResolvedType::Error => "<ERROR>".to_string(),
+            ResolvedType::Unknown(_) | ResolvedType::Error => "<ERROR>".to_string(),
         }
     }
 }
@@ -460,6 +529,7 @@ mod consts {
     use super::*;
     pub const BOOL: ResolvedType = ResolvedType::Bool;
     pub const ERROR: ResolvedType = ResolvedType::Error;
+    pub const NUMBER: ResolvedType = ResolvedType::Number;
     pub const INT8: ResolvedType = ResolvedType::Int {
         signed: true,
         width: IntWidth::Eight,
@@ -504,281 +574,7 @@ mod consts {
 }
 pub use consts::*;
 
-#[cfg(feature="full")]
-pub struct TypeResolver<'ctx> {
-    known: HashMap<ResolvedType, AnyTypeEnum<'ctx>>,
-    ctx: &'ctx Context,
-    _ditypes: HashMap<ResolvedType, DIType<'ctx>>,
-    target_data: TargetData,
-}
 
-#[cfg(feature="full")]
-
-impl<'ctx> TypeResolver<'ctx> {
-    pub fn new(ctx: &'ctx Context, target_data: TargetData) -> Self {
-        let unit = ctx.const_struct(&[], false);
-        let unit_t = unit.get_type();
-        let char_t = ctx.i8_type();
-        let str_t = ctx.opaque_struct_type("str");
-        let char_ptr_t = char_t.ptr_type(AddressSpace::default());
-        str_t.set_body(&[char_ptr_t.into(), char_ptr_t.into()], false);
-        let i8_t = ctx.i8_type();
-        let i16_t = ctx.i16_type();
-        let i32_t = ctx.i32_type();
-        let i64_t = ctx.i64_type();
-        let f32_t = ctx.f32_type();
-        let f64_t = ctx.f64_type();
-        let known = {
-            let mut out = HashMap::new();
-            out.insert(ResolvedType::Void, ctx.void_type().as_any_type_enum());
-            out.insert(ResolvedType::Char, char_t.as_any_type_enum());
-            out.insert(ResolvedType::Unit, unit_t.as_any_type_enum());
-            out.insert(ResolvedType::Str, str_t.as_any_type_enum());
-            out.insert(
-                ResolvedType::Float {
-                    width: FloatWidth::ThirtyTwo,
-                },
-                f32_t.as_any_type_enum(),
-            );
-            out.insert(
-                ResolvedType::Float {
-                    width: FloatWidth::SixtyFour,
-                },
-                f64_t.as_any_type_enum(),
-            );
-            out.insert(INT8, i8_t.as_any_type_enum());
-            out.insert(INT16, i16_t.as_any_type_enum());
-            out.insert(INT32, i32_t.as_any_type_enum());
-            out.insert(INT64, i64_t.as_any_type_enum());
-            out.insert(UINT8, i8_t.as_any_type_enum());
-            out.insert(UINT16, i16_t.as_any_type_enum());
-            out.insert(UINT32, i32_t.as_any_type_enum());
-            out.insert(UINT64, i64_t.as_any_type_enum());
-            out
-        };
-        Self {
-            known,
-            ctx,
-            _ditypes: HashMap::new(),
-            target_data,
-        }
-    }
-
-    pub fn get_size_in_bits(&mut self, ty: &ResolvedType) -> u64 {
-        let ty = self.resolve_type_as_any(ty.clone());
-        self.target_data.get_store_size(&ty)
-    }
-
-    pub fn has_type(&self, ty: &ResolvedType) -> bool {
-        self.known.contains_key(ty)
-    }
-
-    // pub fn insert_many_user_types(&mut self,types:Vec<(String,Vec<ResolvedType>)>) -> Vec<Result<AnyTypeEnum,Vec<InsertionError>>> {
-    //     let mut out = types.drain_filter(|(name,))
-    //     let names = types.iter().map(|(name,_)| name).collect_vec();
-    //     let mut handle_last = types.drain_filter(|(body,))
-    // }
-
-    // pub fn insert_user_type(&mut self,name:String,body:Vec<ResolvedType>) -> Result<AnyTypeEnum,Vec<InsertionError>> {
-
-    //     if self.known.contains_key(&ResolvedType::User { name : name.clone() }){
-    //         return Err(vec![InsertionError::Redeclaration]);
-    //     }
-    //     let body : Vec<Result<BasicTypeEnum>> = body.into_iter().map(|ty| {
-    //         self.resolve_type_basic(ty).ok_or(InsertionError)
-    //     }).collect();
-    //     let user = self.ctx.opaque_struct_type(&name);
-    //     let body : Vec<_> = body.into_iter().map(Option::unwrap).collect();
-    //     user.set_body(&body, false);
-    //     self.known.insert(ResolvedType::User { name },user.as_any_type_enum()).ok_or(InsertionError::UnknownType)
-    // }
-
-    fn resolve_type(&mut self, ty: ResolvedType) {
-        if self.has_type(&ty) {
-            return;
-        }
-        match &ty {
-            ResolvedType::Ref { ref underlining } | ResolvedType::Pointer { ref underlining } => {
-                if let ResolvedType::Function { .. } = underlining.as_ref() {
-                    let result = self
-                        .resolve_type_as_any(underlining.as_ref().clone())
-                        .into_function_type()
-                        .ptr_type(AddressSpace::default())
-                        .as_any_type_enum();
-                    self.known.insert(ty, result);
-                } else {
-                    let result = self
-                        .resolve_type_as_basic(underlining.as_ref().clone())
-                        .ptr_type(AddressSpace::default())
-                        .as_any_type_enum();
-                    self.known.insert(ty, result);
-                }
-            }
-            ResolvedType::Slice { ref underlining } => {
-                let underlining = self
-                    .resolve_type_as_basic(underlining.as_ref().clone())
-                    .ptr_type(AddressSpace::default());
-                self.known.insert(
-                    ty,
-                    self.ctx
-                        .struct_type(&[underlining.into(), underlining.into()], false)
-                        .as_any_type_enum(),
-                );
-            }
-            ResolvedType::Function { .. } => {
-                let r = self
-                    .ctx
-                    .struct_type(
-                        &[self.resolve_type_as_basic(ResolvedType::Pointer {
-                            underlining: INT8.boxed(),
-                        })],
-                        false,
-                    )
-                    .as_any_type_enum();
-                self.known.insert(ty, r);
-            }
-            ResolvedType::User { name, generics, .. }
-                if generics
-                    .iter()
-                    .map(ResolvedType::is_generic)
-                    .all(|it| it == false)
-                    || generics.is_empty() =>
-            {
-                let new_name = if generics.is_empty() {
-                    name.clone()
-                } else {
-                    format!(
-                        "{}<{}>",
-                        name,
-                        generics.iter().map(ResolvedType::to_string).join(",")
-                    )
-                };
-                match self.ctx.get_struct_type(&new_name) {
-                    None => {
-                        let strct = self.ctx.opaque_struct_type(&new_name);
-                        self.known.insert(ty.clone(), strct.as_any_type_enum());
-                    }
-                    Some(strct) => {
-                        self.known.insert(ty.clone(), strct.as_any_type_enum());
-                    }
-                }
-            }
-            ResolvedType::Bool => {
-                self.known
-                    .insert(BOOL, self.ctx.bool_type().as_any_type_enum());
-            }
-            // ResolvedType::ForwardUser { name } => todo!(),
-            ResolvedType::Alias { actual, .. } => self.resolve_type(actual.as_ref().clone()),
-            ResolvedType::Unit => (),
-            ResolvedType::Generic { .. } =>
-            /* not sure what I need to do here yet */
-            {
-                ()
-            }
-
-            _ => unimplemented!(),
-        }
-    }
-
-    pub fn resolve_arg_type(&mut self, ty: &ResolvedType) -> BasicTypeEnum<'ctx> {
-        self.resolve_type(ty.clone());
-        if let ResolvedType::Function { .. } = ty {
-            let i8_ptr = self
-                .known
-                .get(&INT8)
-                .unwrap()
-                .into_int_type()
-                .ptr_type(AddressSpace::default())
-                .as_basic_type_enum();
-            self.ctx
-                .struct_type(&[i8_ptr.into()], false)
-                .ptr_type(AddressSpace::default())
-                .as_basic_type_enum()
-        } else if ty == &ResolvedType::Str || ty.is_user() {
-            self.resolve_type_as_basic(ty.clone())
-                .ptr_type(AddressSpace::default())
-                .as_basic_type_enum()
-        } else if ty == &ResolvedType::Unit {
-            self.resolve_type_as_basic(ResolvedType::Pointer {
-                underlining: UNIT.boxed(),
-            })
-        } else {
-            self.resolve_type_as_basic(ty.clone())
-        }
-    }
-
-    pub fn resolve_type_as_function(&mut self, ty: &ResolvedType) -> FunctionType<'ctx> {
-        let ResolvedType::Function { arg, returns, .. } = ty else { unreachable!("trying to make a non function type into a function") };
-        let arg = self.resolve_arg_type(&arg);
-        let curry_holder = self
-            .ctx
-            .struct_type(
-                &[self.ctx.i8_type().ptr_type(AddressSpace::default()).into()],
-                false,
-            )
-            .ptr_type(AddressSpace::default());
-        if returns.is_void_or_unit() {
-            return self
-                .ctx
-                .void_type()
-                .fn_type(&[curry_holder.into(), arg.into()], false);
-        }
-
-        if returns.is_user() {
-            return self.ctx.void_type().fn_type(
-                &[
-                    curry_holder.into(),
-                    self.resolve_type_as_basic(ResolvedType::Pointer {
-                        underlining: returns.clone(),
-                    })
-                    .into(),
-                    arg.into(),
-                ],
-                false,
-            );
-        }
-        let rt = if returns.is_function() {
-            curry_holder.as_basic_type_enum()
-        } else {
-            self.resolve_type_as_basic(returns.as_ref().clone())
-        };
-        rt.fn_type(&[curry_holder.into(), arg.into()], false)
-    }
-
-    pub fn resolve_type_as_basic(&mut self, ty: ResolvedType) -> BasicTypeEnum<'ctx> {
-        self.resolve_type(ty.clone());
-        self.known
-            .get(&ty)
-            .map(|ty| match ty {
-                AnyTypeEnum::ArrayType(ty) => ty.as_basic_type_enum(),
-                AnyTypeEnum::FloatType(ty) => ty.as_basic_type_enum(),
-                AnyTypeEnum::FunctionType(ty) => {
-                    ty.ptr_type(AddressSpace::default()).as_basic_type_enum()
-                }
-                AnyTypeEnum::IntType(ty) => ty.as_basic_type_enum(),
-                AnyTypeEnum::PointerType(ty) => ty.as_basic_type_enum(),
-                AnyTypeEnum::StructType(ty) => ty.as_basic_type_enum(),
-                AnyTypeEnum::VectorType(ty) => ty.as_basic_type_enum(),
-                AnyTypeEnum::VoidType(_) => unreachable!(),
-            })
-            .unwrap()
-    }
-
-    pub fn resolve_type_as_any(&mut self, ty: ResolvedType) -> AnyTypeEnum<'ctx> {
-        self.resolve_type(ty.clone());
-        *self.known.get(&ty).unwrap()
-    }
-}
-
-impl ResolvedType {
-    pub fn is_float(&self) -> bool {
-        matches!(self, Self::Float { .. })
-    }
-
-    pub fn is_int(&self) -> bool {
-        matches!(self, Self::Int { .. })
-    }
-}
 
 #[cfg(test)]
 mod tests {
