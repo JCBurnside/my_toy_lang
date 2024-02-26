@@ -5,7 +5,6 @@ use inkwell::values::GlobalValue;
 use inkwell::AddressSpace;
 use inkwell::{context::Context, module::Module, values::FunctionValue};
 
-use crate::util::ExtraUtilFunctions;
 use itertools::Itertools;
 use multimap::MultiMap;
 
@@ -15,32 +14,32 @@ macro_rules! create_op_types {
     ($t:expr) => {
         [
             ResolvedType::Function {
-                arg:$t.boxed(),
-                returns: ResolvedType::Function {
-                    arg:$t.boxed(),
-                    returns:$t.boxed()
-                }.boxed()
+                arg:Box::new($t),
+                returns: Box::new(ResolvedType::Function {
+                    arg:Box::new($t),
+                    returns:Box::new($t)
+                })
             },
             ResolvedType::Function {
-                arg:ResolvedType::Ref { underlining:$t.boxed() }.boxed(),
-                returns: ResolvedType::Function {
-                    arg:$t.boxed(),
-                    returns:$t.boxed()
-                }.boxed()
+                arg:Box::new(ResolvedType::Ref { underlining:Box::new($t) }),
+                returns: Box::new(ResolvedType::Function {
+                    arg:Box::new($t),
+                    returns:Box::new($t)
+                })
             },
             ResolvedType::Function {
-                arg:$t.boxed(),
-                returns: ResolvedType::Function {
-                    arg:ResolvedType::Ref { underlining:$t.boxed() }.boxed(),
-                    returns:$t.boxed()
-                }.boxed()
+                arg:Box::new($t),
+                returns: Box::new(ResolvedType::Function {
+                    arg:Box::new(ResolvedType::Ref { underlining:Box::new($t) }),
+                    returns:Box::new($t)
+                })
             },
             ResolvedType::Function {
-                arg:ResolvedType::Ref { underlining:$t.boxed() }.boxed(),
-                returns: ResolvedType::Function {
-                    arg:ResolvedType::Ref { underlining:$t.boxed() }.boxed(),
-                    returns:$t.boxed()
-                }.boxed()
+                arg:Box::new(ResolvedType::Ref { underlining:Box::new($t) }),
+                returns: Box::new(ResolvedType::Function {
+                    arg:Box::new(ResolvedType::Ref { underlining:Box::new($t) }),
+                    returns:Box::new($t)
+                })
             },
         ].into_iter()
     };

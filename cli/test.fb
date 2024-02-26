@@ -40,7 +40,8 @@ let show_something_else _ : () -> bool =
 
 let main _ : () -> () =
     let a : bool = true;
-    match 0 where
+    let x : int32 = 0;
+    match x where
     | 1 -> print_str "one",
     | 2 -> print_str "two",
     print_str "main";

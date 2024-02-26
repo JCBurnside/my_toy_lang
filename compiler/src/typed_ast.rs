@@ -14,9 +14,9 @@ pub type FileTyped = TypedModuleDeclaration;
 pub type ProgramTyped = Vec<FileTyped>;
 #[derive(Debug, PartialEq, Clone)]
 pub struct TypedModuleDeclaration {
-    pub(crate) loc: crate::Location,
-    pub(crate) name: String,
-    pub(crate) declarations: Vec<TypedDeclaration>,
+    pub loc: crate::Location,
+    pub name: String,
+    pub declarations: Vec<TypedDeclaration>,
 }
 
 impl TypedModuleDeclaration {
@@ -117,6 +117,13 @@ impl TypedDeclaration {
         match self {
             Self::Value(v) => v.ident.clone(),
             Self::TypeDefinition(decl) => decl.get_ident(),
+        }
+    }
+
+    pub fn is_generic(&self) -> bool {
+        match self {
+            Self::Value(v) => v.ty.is_generic(),
+            Self::TypeDefinition(decl) => decl.is_generic(),
         }
     }
 
@@ -228,14 +235,20 @@ impl ResolvedTypeDeclaration {
             ResolvedTypeDeclaration::Struct(strct) => strct.replace_types(types, context),
         }
     }
+    
+    fn is_generic(&self) -> bool {
+        match self {
+            Self::Struct(strct) => strct.generics.is_empty(),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct StructDefinition {
-    pub(crate) ident: String,
-    pub(crate) generics: Vec<String>,
-    pub(crate) fields: Vec<crate::ast::FieldDecl>,
-    pub(crate) loc: crate::Location,
+    pub ident: String,
+    pub generics: Vec<String>,
+    pub fields: Vec<crate::ast::FieldDecl>,
+    pub loc: crate::Location,
 }
 
 impl StructDefinition {
@@ -302,20 +315,20 @@ impl StructDefinition {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct TypedValueDeclaration {
-    pub(crate) loc: crate::Location,
-    pub(crate) is_op: bool,
-    pub(crate) ident: String,
-    pub(crate) args: Vec<ArgDeclaration>,
-    pub(crate) value: TypedValueType,
-    pub(crate) ty: ResolvedType,
-    pub(crate) generictypes: Vec<String>,
-    pub(crate) is_curried: bool,
+    pub loc: crate::Location,
+    pub is_op: bool,
+    pub ident: String,
+    pub args: Vec<ArgDeclaration>,
+    pub value: TypedValueType,
+    pub ty: ResolvedType,
+    pub generictypes: Vec<String>,
+    pub is_curried: bool,
 }
-pub(crate) fn collect_args(t: &ResolvedType) -> Vec<ResolvedType> {
+pub fn collect_args(t: &ResolvedType) -> Vec<ResolvedType> {
     if let ResolvedType::Function { arg, returns } = t {
         [arg.as_ref().clone()]
             .into_iter()
-            .chain(collect_args(&returns).into_iter())
+            .chain(collect_args(&returns))
             .collect()
     } else {
         vec![]
@@ -584,11 +597,11 @@ impl TypedStatement {
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct TypedIfBranching {
-    pub(crate) cond: Box<TypedExpr>,
-    pub(crate) true_branch: Vec<TypedStatement>,
-    pub(crate) else_ifs: Vec<(Box<TypedExpr>, Vec<TypedStatement>)>,
-    pub(crate) else_branch: Vec<TypedStatement>,
-    pub(crate) loc: crate::Location,
+    pub cond: Box<TypedExpr>,
+    pub true_branch: Vec<TypedStatement>,
+    pub else_ifs: Vec<(Box<TypedExpr>, Vec<TypedStatement>)>,
+    pub else_branch: Vec<TypedStatement>,
+    pub loc: crate::Location,
 }
 
 impl TypedIfBranching {
@@ -773,11 +786,11 @@ pub struct TypedPipe {
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct TypedFnCall {
-    pub(crate) loc: crate::Location,
-    pub(crate) value: Box<TypedExpr>,
-    pub(crate) arg: Option<Box<TypedExpr>>,
-    pub(crate) rt: ResolvedType,
-    pub(crate) arg_t: ResolvedType,
+    pub loc: crate::Location,
+    pub value: Box<TypedExpr>,
+    pub arg: Option<Box<TypedExpr>>,
+    pub rt: ResolvedType,
+    pub arg_t: ResolvedType,
 }
 
 impl TypedFnCall {
@@ -874,10 +887,10 @@ impl TypedFnCall {
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct TypedStructConstruction {
-    pub(crate) loc: crate::Location,
-    pub(crate) fields: HashMap<String, (TypedExpr, crate::Location)>,
-    pub(crate) generics: Vec<ResolvedType>,
-    pub(crate) ident: String,
+    pub loc: crate::Location,
+    pub fields: HashMap<String, (TypedExpr, crate::Location)>,
+    pub generics: Vec<ResolvedType>,
+    pub ident: String,
 }
 
 impl TypedStructConstruction {
@@ -1148,7 +1161,7 @@ impl TypedExpr {
         }
     }
 
-    pub(crate) fn get_ty(&self) -> ResolvedType {
+    pub fn get_ty(&self) -> ResolvedType {
         match self {
             Self::BoolLiteral(_, _) => types::BOOL,
             Self::IntegerLiteral { size, .. } => ResolvedType::Int {
@@ -1313,11 +1326,11 @@ impl TypedExpr {
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct TypedIfExpr {
-    pub(crate) cond: Box<TypedExpr>,
-    pub(crate) true_branch: (Vec<TypedStatement>, Box<TypedExpr>),
-    pub(crate) else_ifs: Vec<(Box<TypedExpr>, Vec<TypedStatement>, Box<TypedExpr>)>,
-    pub(crate) else_branch: (Vec<TypedStatement>, Box<TypedExpr>),
-    pub(crate) loc: crate::Location,
+    pub cond: Box<TypedExpr>,
+    pub true_branch: (Vec<TypedStatement>, Box<TypedExpr>),
+    pub else_ifs: Vec<(Box<TypedExpr>, Vec<TypedStatement>, Box<TypedExpr>)>,
+    pub else_branch: (Vec<TypedStatement>, Box<TypedExpr>),
+    pub loc: crate::Location,
 }
 
 impl TypedIfExpr {
@@ -1548,18 +1561,18 @@ impl TypedIfExpr {
         self.else_branch.1.lower_generics(context);
     }
 
-    pub(crate) fn get_ty(&self) -> ResolvedType {
+    pub fn get_ty(&self) -> ResolvedType {
         self.true_branch.1.get_ty()
     }
 }
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct TypedMemberRead {
-    pub(crate) target: Box<TypedExpr>,
-    pub(crate) member: String,
-    pub(crate) offset: Option<usize>,
-    pub(crate) ty: ResolvedType,
-    pub(crate) loc: crate::Location,
+    pub target: Box<TypedExpr>,
+    pub member: String,
+    pub offset: Option<usize>,
+    pub ty: ResolvedType,
+    pub loc: crate::Location,
 }
 impl TypedMemberRead {
     pub(crate) fn try_from(
@@ -1753,11 +1766,11 @@ fn ok_or_err_node(it: Result<TypedExpr, TypingError>) -> TypedExpr {
 
 #[derive(PartialEq, Debug, Clone)]
 pub struct TypedBinaryOpCall {
-    pub(crate) loc: crate::Location,
-    pub(crate) lhs: Box<TypedExpr>,
-    pub(crate) rhs: Box<TypedExpr>,
-    pub(crate) operator: String,
-    pub(crate) rt: ResolvedType,
+    pub loc: crate::Location,
+    pub lhs: Box<TypedExpr>,
+    pub rhs: Box<TypedExpr>,
+    pub operator: String,
+    pub rt: ResolvedType,
 }
 
 impl TypedBinaryOpCall {
@@ -2205,9 +2218,9 @@ fn strip_pointers(ty: &ResolvedType) -> ResolvedType {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct TypedMatch {
-    pub(crate) loc: crate::Location,
-    pub(crate) on: Box<TypedExpr>,
-    pub(crate) arms: Vec<TypedMatchArm>,
+    pub loc: crate::Location,
+    pub on: Box<TypedExpr>,
+    pub arms: Vec<TypedMatchArm>,
 }
 
 impl TypedMatch {
@@ -2273,7 +2286,7 @@ impl TypedMatch {
         }
     }
 
-    pub(crate) fn get_ty(&self) -> ResolvedType {
+    pub fn get_ty(&self) -> ResolvedType {
         if self
             .arms
             .iter()
@@ -2334,10 +2347,10 @@ impl TypedMatch {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct TypedMatchArm {
-    pub(crate) loc: crate::Location,
-    pub(crate) cond: TypedPattern,
-    pub(crate) block: Vec<TypedStatement>,
-    pub(crate) ret: Option<Box<TypedExpr>>,
+    pub loc: crate::Location,
+    pub cond: TypedPattern,
+    pub block: Vec<TypedStatement>,
+    pub ret: Option<Box<TypedExpr>>,
 }
 
 impl TypedMatchArm {

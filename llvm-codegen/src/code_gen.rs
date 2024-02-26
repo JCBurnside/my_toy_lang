@@ -21,19 +21,19 @@ use inkwell::{AddressSpace, IntPredicate};
 
 use itertools::Itertools;
 
-use multimap::MultiMap;
 
-use crate::typed_ast::{
+use compiler::typed_ast::{
     collect_args, ResolvedTypeDeclaration, StructDefinition, TypedBinaryOpCall, TypedDeclaration,
     TypedExpr, TypedFnCall, TypedIfBranching, TypedIfExpr, TypedMatch, TypedMatchArm,
     TypedMemberRead, TypedPattern, TypedStatement, TypedValueDeclaration, TypedValueType,
 };
-use crate::types::{self, ResolvedType, TypeResolver};
-use crate::util::ExtraUtilFunctions;
+use compiler::types::{self, ResolvedType};
+use multimap::MultiMap;
+use crate::type_resolver::TypeResolver;
 
 pub struct CodeGen<'ctx> {
     ctx: &'ctx Context,
-    module: Module<'ctx>,
+    pub(crate) module: Module<'ctx>,
     builder: Builder<'ctx>,
     type_resolver: TypeResolver<'ctx>,
     known_functions: HashMap<String, GlobalValue<'ctx>>,
@@ -1494,7 +1494,7 @@ impl<'ctx> CodeGen<'ctx> {
 
             TypedExpr::ValueRead(ident, _, _) => self
                 .locals
-                .get(&ident)
+                .get(dbg!(&ident))
                 .map(|val| val.as_any_value_enum())
                 .or(self
                     .known_values
@@ -1725,7 +1725,7 @@ impl<'ctx> CodeGen<'ctx> {
                 self.compile_function(data);
             }
             TypedDeclaration::TypeDefinition(def) => match def {
-                crate::typed_ast::ResolvedTypeDeclaration::Struct(def) => {
+                compiler::typed_ast::ResolvedTypeDeclaration::Struct(def) => {
                     if !def.generics.is_empty() {
                         return self.module.clone();
                     }
@@ -1762,7 +1762,7 @@ impl<'ctx> CodeGen<'ctx> {
         self.module.clone()
     }
 
-    fn create_define(&mut self, decl: &TypedDeclaration) {
+    pub(crate) fn create_define(&mut self, decl: &TypedDeclaration) {
         match decl {
             TypedDeclaration::Value(decl) => {
                 if decl.ty.is_function() {
@@ -1771,7 +1771,7 @@ impl<'ctx> CodeGen<'ctx> {
                 }
             }
             TypedDeclaration::TypeDefinition(def) => match def {
-                crate::typed_ast::ResolvedTypeDeclaration::Struct(decl) => {
+                compiler::typed_ast::ResolvedTypeDeclaration::Struct(decl) => {
                     if decl.generics.len() != 0 {
                         return;
                     }
@@ -1949,7 +1949,7 @@ impl<'ctx> CodeGen<'ctx> {
 
     pub fn compile_module(
         &mut self,
-        mut ast: crate::typed_ast::TypedModuleDeclaration,
+        mut ast: compiler::typed_ast::TypedModuleDeclaration,
     ) -> Module<'ctx> {
         if self.dibuilder.is_some() {
             let debug_metadata_version = self.ctx.i32_type().const_int(3, false);
@@ -2002,13 +2002,16 @@ impl<'ctx> CodeGen<'ctx> {
         self.module.clone()
     }
 
+    pub(crate) fn replace_module(&mut self, new_module:Module<'ctx>) -> Module<'ctx> {
+        std::mem::replace(&mut self.module, new_module)
+    }
+
     pub fn compile_program(
         mut self,
-        ast: crate::typed_ast::ProgramTyped,
+        ast: compiler::typed_ast::ProgramTyped,
         is_lib: bool,
         is_debug: bool,
     ) -> Module<'ctx> {
-        use crate::util::ExtraUtilFunctions;
 
         let main_name = ast.iter().find_map(|file| {
             file.declarations.iter().find_map(|decl| {
@@ -2016,8 +2019,8 @@ impl<'ctx> CodeGen<'ctx> {
                     if (decl.ident.ends_with("::main")
                         && decl.ty
                             == ResolvedType::Function {
-                                arg: types::UNIT.boxed(),
-                                returns: types::UNIT.boxed(),
+                                arg: Box::new(types::UNIT),
+                                returns: Box::new(types::UNIT),
                             })
                     {
                         Some(decl.ident.clone())
@@ -2256,7 +2259,8 @@ impl<'ctx> CodeGen<'ctx> {
         if !cond_ty.is_int() && cond_ty != types::CHAR {
             unimplemented!("need to implement for strings and enums");
         }
-        let on = self.compile_expr(*on).into_int_value(); //TODO handle if on is an enum.
+        let value = convert_to_basic_value(self.compile_expr(*on));
+        let on = self.value_or_load(value).into_int_value(); //TODO handle if on is an enum.
         let fun = current_block.get_parent().unwrap();
         let ret_block = self.ctx.append_basic_block(fun, "");
         let default_block = if let Some(arm) = arms
@@ -2286,9 +2290,13 @@ impl<'ctx> CodeGen<'ctx> {
                 .build_switch(on, default_block.map_or(ret_block, |(bb, _)| bb), &arms);
             let _ = ret_block.move_after(*arms.last().map(|(_, bb)| bb).unwrap());
             self.builder.position_at_end(ret_block);
+            #[cfg(debug_assertions)]
+            self.module.print_to_file("./debug.ll");
             self.module
                 .get_global("()")
-                .unwrap()
+                .unwrap_or_else(|| {
+                    self.module.add_global(self.ctx.struct_type(&[], false), None, "()")
+                })
                 .as_pointer_value()
                 .as_any_value_enum()
         } else {
