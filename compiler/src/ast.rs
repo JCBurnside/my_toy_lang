@@ -84,7 +84,7 @@ impl ModuleDeclaration {
 }
 
 #[derive(PartialEq, Debug)]
-pub(crate) enum Declaration {
+pub enum Declaration {
     TypeDefinition(TypeDefinition),
 
     #[allow(unused)] //TODO submoduling
@@ -175,21 +175,21 @@ pub struct FieldDecl {
 }
 
 #[derive(PartialEq, Debug, Clone)]
-pub(crate) struct ArgDeclaration {
-    pub(crate) loc: crate::Location,
-    pub(crate) ident: String,
-    pub(crate) ty: Option<ResolvedType>, 
+pub struct ArgDeclaration {
+    pub loc: crate::Location,
+    pub ident: String,
+    pub ty: Option<ResolvedType>, 
 }
 
 #[derive(PartialEq, Debug)]
 pub struct ValueDeclaration {
-    pub(crate) loc: crate::Location, //should be location of the ident.
-    pub(crate) is_op: bool,
-    pub(crate) ident: String,
-    pub(crate) args: Vec<ArgDeclaration>,
-    pub(crate) ty: Option<ResolvedType>,
-    pub(crate) value: ValueType,
-    pub(crate) generictypes: Vec<String>,
+    pub loc: crate::Location, //should be location of the ident.
+    pub is_op: bool,
+    pub ident: String,
+    pub args: Vec<ArgDeclaration>,
+    pub ty: Option<ResolvedType>,
+    pub value: ValueType,
+    pub generictypes: Vec<String>,
 }
 impl ValueDeclaration {
     fn replace(&mut self, nice_name: &str, actual: &str) {
@@ -379,6 +379,7 @@ impl IfBranching {
 }
 
 #[derive(PartialEq, Debug)]
+// TODO! spread pipes
 pub struct Pipe {
     ///if you need to spread more than an u8's worth of values... wtf are you doing? what would even return that many values as a tuple?  
     pub(crate) expansion: NonZeroU8,
@@ -396,10 +397,10 @@ pub struct UnaryOpCall {
 
 #[derive(PartialEq, Debug)]
 pub struct BinaryOpCall {
-    pub(crate) loc: crate::Location,
-    pub(crate) lhs: Box<Expr>,
-    pub(crate) rhs: Box<Expr>,
-    pub(crate) operator: String,
+    pub loc: crate::Location,
+    pub lhs: Box<Expr>,
+    pub rhs: Box<Expr>,
+    pub operator: String,
 }
 impl BinaryOpCall {
     fn replace(&mut self, nice_name: &str, actual: &str) {
@@ -410,9 +411,9 @@ impl BinaryOpCall {
 
 #[derive(PartialEq, Debug)]
 pub struct FnCall {
-    pub(crate) loc: crate::Location,
-    pub(crate) value: Box<Expr>,
-    pub(crate) arg: Option<Box<Expr>>,
+    pub loc: crate::Location,
+    pub value: Box<Expr>,
+    pub arg: Option<Box<Expr>>,
 }
 impl FnCall {
     fn replace(&mut self, nice_name: &str, actual: &str) {
@@ -433,10 +434,10 @@ impl FnCall {
 
 #[derive(PartialEq, Debug)]
 pub struct StructConstruction {
-    pub(crate) loc: crate::Location,
-    pub(crate) fields: HashMap<String, (Expr, crate::Location)>,
-    pub(crate) generics: Vec<ResolvedType>,
-    pub(crate) ident: String,
+    pub loc: crate::Location,
+    pub fields: HashMap<String, (Expr, crate::Location)>,
+    pub generics: Vec<ResolvedType>,
+    pub ident: String,
 }
 impl StructConstruction {
     fn replace(&mut self, nice_name: &str, actual: &str) {
@@ -536,7 +537,7 @@ impl Expr {
         }
     }
 
-    pub(crate) fn is_function_call(&self) -> bool {
+    pub fn is_function_call(&self) -> bool {
         matches!(self, Expr::FnCall(_))
     }
 
@@ -641,11 +642,11 @@ impl Expr {
 
 #[derive(PartialEq, Debug)]
 pub struct IfExpr {
-    pub(crate) cond: Box<Expr>,
-    pub(crate) true_branch: (Vec<Statement>, Box<Expr>),
-    pub(crate) else_ifs: Vec<(Box<Expr>, Vec<Statement>, Box<Expr>)>,
-    pub(crate) else_branch: (Vec<Statement>, Box<Expr>),
-    pub(crate) loc: crate::Location,
+    pub cond: Box<Expr>,
+    pub true_branch: (Vec<Statement>, Box<Expr>),
+    pub else_ifs: Vec<(Box<Expr>, Vec<Statement>, Box<Expr>)>,
+    pub else_branch: (Vec<Statement>, Box<Expr>),
+    pub loc: crate::Location,
 }
 
 impl IfExpr {
@@ -673,9 +674,9 @@ impl IfExpr {
 
 #[derive(Debug, PartialEq)]
 pub struct Match {
-    pub(crate) loc: crate::Location,
-    pub(crate) on: Box<Expr>,
-    pub(crate) arms: Vec<MatchArm>,
+    pub loc: crate::Location,
+    pub on: Box<Expr>,
+    pub arms: Vec<MatchArm>,
 }
 impl Match {
     fn replace(&mut self, nice_name: &str, actual: &str) {
@@ -687,11 +688,11 @@ impl Match {
 }
 
 #[derive(Debug, PartialEq)]
-pub(crate) struct MatchArm {
-    pub(crate) block: Vec<Statement>,
-    pub(crate) ret: Option<Box<Expr>>,
-    pub(crate) cond: Pattern,
-    pub(crate) loc: crate::Location,
+pub struct MatchArm {
+    pub block: Vec<Statement>,
+    pub ret: Option<Box<Expr>>,
+    pub cond: Pattern,
+    pub loc: crate::Location,
 }
 impl MatchArm {
     fn replace(&mut self, nice_name: &str, actual: &str) {
@@ -705,7 +706,7 @@ impl MatchArm {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Pattern {
+pub enum Pattern {
     Default,
     ConstNumber(String), // todo! conditional branch
     ConstStr(String),
