@@ -632,7 +632,7 @@ where
     }
 
     fn struct_construct(&mut self) -> Result<StructConstruction, ParseError> {
-        let ResolvedType::User { name, generics } = self.collect_type()? else {
+        let ResolvedType::User { name, generics, loc:_ } = self.collect_type()? else {
             unreachable!("what are you doing?")
         };
         let Some((Token::CurlOpen, loc)) = self.stream.next() else {
@@ -1037,9 +1037,14 @@ where
                     reason: ParseErrorReason::DeclarationError,
                 });
             };
-            let ty = generics.iter().fold(self.collect_type()?, |result, it| {
-                result.replace_user_with_generic(&it)
-            });
+            let ty = self.collect_type()?;
+            let ty = if let Some(generics) = &generics {
+                generics.decls.iter().map(|(_,it)| it).fold(ty, |result, it| {
+                    result.replace_user_with_generic(it)
+                }) 
+            }else {
+                ty
+            };
             if let Some((Token::Comma, _)) = self.stream.clone().next() {
                 self.stream.next();
             } else {
@@ -1177,13 +1182,24 @@ where
                             }),
                         }
                     } else if let Some((Token::Ident(arg0), arg_start)) = next {
-                        let mut args = vec![ast::ArgDeclation {
+                        let ty = if let Some((Token::Colon,_)) = self.stream.peek() {
+                            Some(self.collect_type()?)
+                        } else {
+                            None
+                        };
+                        let mut args = vec![ast::ArgDeclaration {
                             ident: arg0,
                             loc: arg_start,
+                            ty
                         }];
                         while let Some((Token::Ident(_), _)) = self.stream.peek() {
+                            let ty = if let Some((Token::Colon,_)) = self.stream.peek() {
+                                Some(self.collect_type()?)
+                            } else {
+                                None
+                            };
                             if let (Token::Ident(arg), loc) = self.stream.next().unwrap() {
-                                args.push(ast::ArgDeclation { loc, ident: arg });
+                                args.push(ast::ArgDeclaration { loc, ident: arg, ty });
                             } else {
                                 return Err(ParseError {
                                     span: (0, 0),
@@ -1309,15 +1325,27 @@ where
                             }),
                         }
                     } else if let Some((Token::Ident(arg0), arg_start)) = next {
-                        let mut args = vec![ast::ArgDeclation {
+                        let ty = if let Some((Token::Colon,_)) = self.stream.peek() {
+                            Some(self.collect_type()?)
+                        } else {
+                            None
+                        };
+                        let mut args = vec![ast::ArgDeclaration {
                             ident: arg0,
                             loc: arg_start,
+                            ty
                         }];
                         while let Some((Token::Ident(_), _)) = self.stream.peek() {
                             if let (Token::Ident(arg), arg_start) = self.stream.next().unwrap() {
-                                args.push(ast::ArgDeclation {
+                                let ty = if let Some((Token::Colon,_)) = self.stream.peek() {
+                                    Some(self.collect_type()?)
+                                } else {
+                                    None
+                                };
+                                args.push(ast::ArgDeclaration {
                                     ident: arg,
                                     loc: arg_start,
+                                    ty
                                 });
                             } else {
                                 return Err(ParseError {

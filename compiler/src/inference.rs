@@ -271,6 +271,7 @@ impl Context {
             Some(ResolvedType::Function {
                 arg: arg_t,
                 returns: result_t.clone().boxed(),
+                loc
             }),
         );
         ast::FnCall {
@@ -530,11 +531,13 @@ impl Context {
                         {
                             let ResolvedType::Function { 
                                 arg:lhs_ty,
-                                returns: temp
+                                returns: temp,
+                                loc:_
                             } = result else { unreachable!()};
                             let ResolvedType::Function { 
                                 arg:rhs_ty,
-                                returns: result
+                                returns: result,
+                                loc:_
                             } = temp.as_ref() else { unreachable!()};
                             
                             self.expr_ty.insert(lhs.get_expr_id(),lhs_ty.as_ref().clone());
@@ -803,6 +806,7 @@ impl Context {
         if let ResolvedType::Function {
             arg: arg_t,
             returns: return_t,
+            loc
         } = dbg!(self.get_actual_type(value.as_mut(), None, fun_ret_ty))
         {
             self.get_actual_type(
@@ -1068,6 +1072,7 @@ impl Context {
         if let ResolvedType::Function {
             arg: _,
             returns: fn_ret,
+            loc:_
         } = fn_expr
         {
             if returns.is_unknown() || returns.is_error() {
@@ -1166,6 +1171,7 @@ impl Context {
                         let ResolvedType::Function {
                             arg: lhs_t,
                             returns,
+                            loc:_
                         } = result
                         else {
                             unreachable!()
@@ -1173,6 +1179,7 @@ impl Context {
                         let ResolvedType::Function {
                             arg: rhs_t,
                             returns,
+                            loc:_
                         } = returns.as_ref()
                         else {
                             unreachable!()
@@ -1227,6 +1234,7 @@ impl Context {
                 ResolvedType::User {
                     name: "List".to_string(),
                     generics: vec![underlining],
+                    loc:(0,0)
                 }
             }
             ast::Expr::StructConstruction(_) => todo!(),
@@ -1580,7 +1588,8 @@ for<T> let foo x y : T -> T -> () = ()
                                 loc: (1, 16),
                                 ident: "x".to_string(),
                                 ty: ResolvedType::Generic {
-                                    name: "T".to_string()
+                                    name: "T".to_string(),
+                                    loc:(0,0)
                                 },
                                 id: 1
                             },
@@ -1588,17 +1597,20 @@ for<T> let foo x y : T -> T -> () = ()
                                 loc: (1, 18),
                                 ident: "y".to_string(),
                                 ty: ResolvedType::Generic {
-                                    name: "T".to_string()
+                                    name: "T".to_string(),
+                                    loc:(0,0)
                                 },
                                 id: 2
                             },
                         ],
                         ty: ResolvedType::Generic {
-                            name: "T".to_string()
+                            name: "T".to_string(),
+                            loc:(0,0)
                         }
                         .fn_ty(
                             &ResolvedType::Generic {
-                                name: "T".to_string()
+                                name: "T".to_string(),
+                                loc:(0,0)
                             }
                             .fn_ty(&ResolvedType::Unit)
                         ),

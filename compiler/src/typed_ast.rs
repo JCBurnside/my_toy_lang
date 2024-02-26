@@ -183,7 +183,6 @@ impl TypedDeclaration {
 
     pub(crate) fn get_generics(&self) -> Vec<String> {
         match self {
-            TypedDeclaration::Mod(_) => Vec::new(),
             TypedDeclaration::Value(v) => v.generictypes.as_ref().map(|g| g.decls.iter().map(|(_,it)|{
                 let ResolvedType::Generic { name, .. } = it else {unreachable!()};
                 name.clone()
@@ -278,7 +277,7 @@ impl ResolvedTypeDeclaration {
     
     fn is_generic(&self) -> bool {
         match self {
-            Self::Struct(strct) => strct.generics.is_empty(),
+            Self::Struct(strct) => strct.generics.is_none(),
         }
     }
 }
@@ -287,7 +286,7 @@ impl ResolvedTypeDeclaration {
 pub struct StructDefinition {
     pub(crate) ident: String,
     pub(crate) generics: Option<ResolvedGenericsDecl>,
-    pub(crate) fields: Vec<ast::FieldDecl>,
+    pub(crate) fields: Vec<crate::ast::FieldDecl>,
     pub(crate) loc: crate::Location,
 }
 
@@ -365,7 +364,7 @@ pub struct TypedValueDeclaration {
     pub(crate) loc: crate::Location,
     pub(crate) is_op: bool,
     pub(crate) ident: String,
-    pub(crate) args: Vec<ArgDeclation>,
+    pub(crate) args: Vec<ArgDeclaration>,
     pub(crate) value: TypedValueType,
     pub(crate) ty: ResolvedType,
     pub(crate) generictypes: Option<ResolvedGenericsDecl>,
@@ -439,7 +438,7 @@ impl TypedValueDeclaration {
             is_curried,
             ty: if is_curried { value.get_ty() } else { ty },
             value,
-            generictypes : generictypes.map(ResolvedGenericsDecl::from),
+            generictypes : generics.map(ResolvedGenericsDecl::from),
         })
     }
     fn lower_generics(&mut self, context: &mut LoweringContext) {
@@ -2862,9 +2861,10 @@ let main _ : () -> () =
                     value: ast::ValueType::Expr(ast::Expr::NumericLiteral {
                         value: "1".to_string(),
                         ty: types::INT32,
-                        id: 0
+                        id: 1
                     }),
-                    generictypes: None
+                    generics: None,
+                    id:0
                 }),
                 &HashMap::new(),
                 &HashMap::new(),
@@ -2950,13 +2950,13 @@ let main _ : () -> () =
                         ident: "a".to_string(),
                         loc: (0, 0),
                         ty: types::INT32,
-                        id: 0
+                        id: 1
                     }],
                     ty: ResolvedType::Function {
                         arg: types::INT32.boxed(),
                         returns: types::INT32.boxed(),
                         loc:(0,0)
-                    }),
+                    },
                     value: ast::ValueType::Function(vec![ast::Statement::Return(
                         ast::Expr::NumericLiteral {
                             value: "1".to_string(),
@@ -2965,7 +2965,8 @@ let main _ : () -> () =
                         },
                         (0, 0)
                     )]),
-                    generictypes: None,
+                    generics: None,
+                    id:0
                 }),
                 &HashMap::new(),
                 &HashMap::new(),
@@ -3049,7 +3050,12 @@ let main _ : () -> () =
                 ident: "test".to_string(),
                 args: vec![ArgDeclaration {
                     ident: "a".to_string(),
-                    loc: (1, 16)
+                    loc: (1, 16),
+                    id:0,
+                    ty:ResolvedType::Generic {
+                        name: "T".to_string(),
+                        loc:(1,20)
+                    }
                 }],
                 value: TypedValueType::Expr(TypedExpr::ValueRead(
                     "a".to_string(),
@@ -3094,9 +3100,11 @@ let main _ : () -> () =
                 loc: (3, 4),
                 is_op: false,
                 ident: "main".to_string(),
-                args: vec![ArgDeclation {
+                args: vec![ast::ArgDeclaration {
                     ident: "_".to_string(),
-                    loc: (3, 9)
+                    loc: (3, 9),
+                    ty:types::UNIT,
+                    id:0
                 }],
                 value: TypedValueType::Function(vec![TypedStatement::FnCall(TypedFnCall {
                     loc: (4, 4),
@@ -3236,10 +3244,10 @@ let first a : Tuple<int32,float64> -> int32 =
                 loc: (6, 4),
                 is_op: false,
                 ident: "first".to_string(),
-                args: vec![ArgDeclation {
+                args: vec![ast::ArgDeclaration {
                     loc: (6, 10),
                     ident: "a".to_string(),
-                    ty: ResolvedType::User { name: "Tuple".to_string(), generics: vec![types::INT32, types::FLOAT64] },
+                    ty: ResolvedType::User { name: "Tuple".to_string(), generics: vec![types::INT32, types::FLOAT64], loc:(0,0) },
                     id: 1
                 }],
                 value: TypedValueType::Function(vec![TypedStatement::Return(
@@ -3333,7 +3341,12 @@ let main x : int32 -> int32 =
                 ident: "test".to_string(),
                 args: vec![ArgDeclaration {
                     ident: "a".to_string(),
-                    loc: (1, 16)
+                    loc: (1, 16),
+                    ty:ResolvedType::Generic {
+                        name:"T".to_string(),
+                        loc:(1,20)
+                    },
+                    id:0
                 }],
                 value: TypedValueType::Function(vec![TypedStatement::Return(
                     TypedExpr::ValueRead(
@@ -3381,9 +3394,11 @@ let main x : int32 -> int32 =
                 loc: (4, 4),
                 is_op: false,
                 ident: "main".to_string(),
-                args: vec![ArgDeclation {
+                args: vec![ArgDeclaration {
                     ident: "_".to_string(),
-                    loc: (4, 9)
+                    loc: (4, 9),
+                    ty:types::UNIT,
+                    id:0
                 }],
                 value: TypedValueType::Function(vec![
                     TypedStatement::FnCall(TypedFnCall {
@@ -3430,7 +3445,9 @@ let main x : int32 -> int32 =
                 ident: "test<int32>".to_string(),
                 args: vec![ArgDeclaration {
                     ident: "a".to_string(),
-                    loc: (1, 16)
+                    loc: (1, 16),
+                    ty:types::INT32,
+                    id: 0
                 }],
                 value: crate::typed_ast::TypedValueType::Function(vec![TypedStatement::Return(
                     TypedExpr::ValueRead("a".to_string(), types::INT32, (2, 11)),
@@ -3498,9 +3515,11 @@ let statement_with_else_if a b : bool -> bool -> int32 =
                 loc: (1, 4),
                 is_op: false,
                 ident: "Tests::test::expr_with_statement".to_string(),
-                args: vec![crate::ast::ArgDeclation {
+                args: vec![ast::ArgDeclaration {
                     loc: (1, 24),
-                    ident: "a".to_string()
+                    ident: "a".to_string(),
+                    ty:types::BOOL,
+                    id:1
                 }],
                 value: TypedValueType::Expr(TypedExpr::IfExpr(TypedIfExpr {
                     cond: TypedExpr::ValueRead("a".to_string(), types::BOOL, (1, 47)).boxed(),
@@ -3582,13 +3601,17 @@ let statement_with_else_if a b : bool -> bool -> int32 =
                 is_op: false,
                 ident: "statement_with_else_if".to_string(),
                 args: vec![
-                    crate::ast::ArgDeclation {
+                    ast::ArgDeclaration {
                         loc: (8, 27),
-                        ident: "a".to_string()
+                        ident: "a".to_string(),
+                        ty:types::BOOL,
+                        id:0
                     },
-                    crate::ast::ArgDeclation {
+                    ast::ArgDeclaration {
                         loc: (8, 29),
-                        ident: "b".to_string()
+                        ident: "b".to_string(),
+                        ty:types::BOOL,
+                        id:0
                     },
                 ],
                 ty: ResolvedType::Function {
@@ -3704,13 +3727,17 @@ let as_statement a b : int32 -> int32 -> () =
                 is_op: false,
                 ident: "simple_expr".to_string(),
                 args: vec![
-                    ast::ArgDeclation {
+                    ast::ArgDeclaration {
                         loc: (1, 16),
-                        ident: "a".to_string()
+                        ident: "a".to_string(),
+                        ty:types::INT32,
+                        id:1
                     },
-                    ast::ArgDeclation {
+                    ast::ArgDeclaration {
                         loc: (1, 18),
-                        ident: "fun".to_string()
+                        ident: "fun".to_string(),
+                        ty:types::INT32.fn_ty(&types::INT32),
+                        id:2
                     },
                 ],
                 value: TypedValueType::Expr(TypedExpr::Match(TypedMatch {
@@ -3822,13 +3849,17 @@ let as_statement a b : int32 -> int32 -> () =
                 is_op: false,
                 ident: "nest_in_call".to_string(),
                 args: vec![
-                    ast::ArgDeclation {
+                    ast::ArgDeclaration {
                         loc: (6, 17),
-                        ident: "a".to_string()
+                        ident: "a".to_string(),
+                        ty:types::INT32,
+                        id:0
                     },
-                    ast::ArgDeclation {
+                    ast::ArgDeclaration {
                         loc: (6, 19),
-                        ident: "fun".to_string()
+                        ident: "fun".to_string(),
+                        ty:types::INT32.fn_ty(&types::INT32),
+                        id:0
                     },
                 ],
                 value: TypedValueType::Expr(TypedExpr::FnCall(TypedFnCall {
@@ -3938,13 +3969,17 @@ let as_statement a b : int32 -> int32 -> () =
                 is_op: false,
                 ident: "as_statement".to_string(),
                 args: vec![
-                    ast::ArgDeclation {
+                    ast::ArgDeclaration {
                         loc: (12, 17),
-                        ident: "a".to_string()
+                        ident: "a".to_string(),
+                        ty:types::INT32,
+                        id:0
                     },
-                    ast::ArgDeclation {
+                    ast::ArgDeclaration {
                         loc: (12, 19),
-                        ident: "b".to_string()
+                        ident: "b".to_string(),
+                        ty:types::INT32,
+                        id:0
                     },
                 ],
                 value: TypedValueType::Function(vec![TypedStatement::Match(TypedMatch {
