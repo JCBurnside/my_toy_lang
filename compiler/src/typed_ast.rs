@@ -5,10 +5,12 @@ use std::{
 };
 
 use crate::{
-    inference::ast::{self, ArgDeclaration, Declaration, Expr},
+    inference::ast::{self, Declaration, Expr},
     types::{self, FloatWidth, IntWidth, ResolvedType},
     util::ExtraUtilFunctions,
 };
+
+pub use crate::inference::ast::ArgDeclaration;
 
 pub type FileTyped = TypedModuleDeclaration;
 pub type ProgramTyped = Vec<FileTyped>;
@@ -110,8 +112,8 @@ impl TypedModuleDeclaration {
 
 #[derive(Debug,PartialEq,Clone)]
 pub struct ResolvedGenericsDecl {
-    for_loc : crate::Location,
-    decls : Vec<(crate::Location,ResolvedType)>
+    pub for_loc : crate::Location,
+    pub decls : Vec<(crate::Location,ResolvedType)>
 }
 
 impl ResolvedGenericsDecl {
