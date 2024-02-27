@@ -1495,7 +1495,7 @@ impl<'ctx> CodeGen<'ctx> {
 
             TypedExpr::ValueRead(ident, _, _) => self
                 .locals
-                .get(dbg!(&ident))
+                .get(&ident)
                 .map(|val| val.as_any_value_enum())
                 .or(self
                     .known_values

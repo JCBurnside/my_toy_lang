@@ -141,11 +141,11 @@ impl PartialEq for ResolvedType {
             (Self::Ref { underlining: l_underlining }, Self::Ref { underlining: r_underlining }) => l_underlining == r_underlining,
             (Self::Pointer { underlining: l_underlining }, Self::Pointer { underlining: r_underlining }) => l_underlining == r_underlining,
             (Self::Slice { underlining: l_underlining }, Self::Slice { underlining: r_underlining }) => l_underlining == r_underlining,
-            (Self::Function { arg: l_arg, returns: l_returns, loc: l_loc }, Self::Function { arg: r_arg, returns: r_returns, loc: r_loc }) => l_arg == r_arg && l_returns == r_returns && l_loc == r_loc,
-            (Self::User { name: l_name, generics: l_generics, loc: l_loc }, Self::User { name: r_name, generics: r_generics, loc: r_loc }) => l_name == r_name && l_generics == r_generics && l_loc == r_loc,
+            (Self::Function { arg: l_arg, returns: l_returns,.. }, Self::Function { arg: r_arg, returns: r_returns, ..}) => l_arg == r_arg && l_returns == r_returns,
+            (Self::User { name: l_name, generics: l_generics, .. }, Self::User { name: r_name, generics: r_generics, ..}) => l_name == r_name && l_generics == r_generics,
             (Self::Array { underlining: l_underlining, size: l_size }, Self::Array { underlining: r_underlining, size: r_size }) => l_underlining == r_underlining && l_size == r_size,
-            (Self::Alias { actual: l_actual, loc: l_loc }, Self::Alias { actual: r_actual, loc: r_loc }) => l_actual == r_actual && l_loc == r_loc,
-            (Self::Generic { name: l_name, loc: l_loc }, Self::Generic { name: r_name, loc: r_loc }) => l_name == r_name && l_loc == r_loc,
+            (Self::Alias { actual: l_actual, .. }, Self::Alias { actual: r_actual, .. }) => l_actual == r_actual ,
+            (Self::Generic { name: l_name, .. }, Self::Generic { name: r_name, .. }) => l_name == r_name,
             _ => core::mem::discriminant(self) == core::mem::discriminant(other),
         }
     }

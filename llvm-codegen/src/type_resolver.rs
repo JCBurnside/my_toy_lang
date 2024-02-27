@@ -176,7 +176,7 @@ impl<'ctx> TypeResolver<'ctx> {
     }
 
     pub fn resolve_arg_type(&mut self, ty: &ResolvedType) -> BasicTypeEnum<'ctx> {
-        self.resolve_type(dbg!(ty.clone()));
+        self.resolve_type(ty.clone());
         if let ResolvedType::Function { .. } = ty {
             let i8_ptr = self
                 .known

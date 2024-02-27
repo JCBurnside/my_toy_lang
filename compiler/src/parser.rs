@@ -936,7 +936,7 @@ where
     fn declaration(&mut self) -> Result<ast::Declaration, ParseError> {
         let generics = self.collect_generics()?;
         let next = self.stream.clone().next();
-        match dbg!(next) {
+        match next {
             Some((Token::For, loc)) => Err(ParseError {
                 span: loc,
                 reason: ParseErrorReason::DeclarationError,
@@ -1146,300 +1146,155 @@ where
         Ok(generics)
     }
 
+    fn collect_args(&mut self) -> Result<Vec<ast::ArgDeclaration>, ParseError> {
+        let mut out = Vec::new();
+        while let Some((t, _)) = self.stream.clone().next() {
+            match t {
+                Token::GroupOpen => {
+                    let _ = self.stream.next();
+                    let Some((Token::Ident(name), loc)) = self.stream.next() else {
+                        unimplemented!("unit arg destructring not allowed yet.")
+                    };
+                    let ty = if let Some((Token::Colon, _)) = self.stream.clone().next() {
+                        let _ = self.stream.next();
+                        let ty = self.collect_type()?;
+                        if let Some((Token::GroupClose, _)) = self.stream.clone().next() {
+                            let _ = self.stream.next();
+                        } else {
+                            return Err(ParseError {
+                                span: loc,
+                                reason: ParseErrorReason::UnbalancedBraces,
+                            });
+                        }
+                        Some(ty)
+                    } else {
+                        None
+                    };
+                    out.push(ast::ArgDeclaration {
+                        loc,
+                        ident: name,
+                        ty,
+                    });
+                }
+                Token::Ident(_) => {
+                    let Some((Token::Ident(ident), loc)) = self.stream.next() else {
+                        unreachable!()
+                    };
+                    out.push(ast::ArgDeclaration {
+                        loc,
+                        ident,
+                        ty: None,
+                    })
+                }
+                _ => break,
+            }
+        }
+        Ok(out)
+    }
+
     fn fn_declaration(&mut self, generics: Option<ast::GenericsDecl>) -> Result<ValueDeclaration, ParseError> {
         if let Some((Token::Let, start)) = self.stream.next() {
             let (token, ident_span) = self.stream.next().unwrap();
-            return match token {
-                Token::Ident(ident) => {
-                    let next = self.stream.next();
-                    if let Some((Token::Colon, _next)) = next {
-                        let ty = self.collect_type()?;
-                        match self.stream.next() {
-                            Some((Token::Op(eq), _)) if eq == "=" => {
-                                let value = match self.stream.clone().next() {
-                                    Some((Token::BeginBlock, _)) => {
-                                        ValueType::Function(self.collect_block()?)
-                                    }
-                                    Some((Token::Compose, _)) => ValueType::Expr(self.compose()?),
-                                    Some((Token::Op(op), _)) if is_pipe_op(&op) => {
-                                        ValueType::Expr(self.pipe()?)
-                                    }
-                                    _ => ValueType::Expr(self.next_expr()?.0),
-                                };
-                                Ok(ValueDeclaration {
-                                    loc: ident_span,
-                                    is_op: false,
-                                    ident,
-                                    ty: Some(ty),
-                                    args: Vec::new(),
-                                    value,
-                                    generictypes: None,
-                                })
+            let (ident, is_op) = match token {
+                Token::Ident(ident) => (ident, false),
+                Token::Op(ident) => (ident, true),
+                _ => {
+                    return Err(ParseError {
+                        span: ident_span,
+                        reason: ParseErrorReason::DeclarationError,
+                    })
+                }
+            };
+            let mut args = self.collect_args()?;
+            if is_op && (args.len() > 2 || args.len() == 0) {
+                if let Some((Token::Colon, _)) = self.stream.clone().next() {
+                    let _ = self.stream.next();
+                    let _ = self.collect_type()?;
+                }
+                if let Some((Token::Op(op), _)) = self.stream.clone().next() {
+                    if op == "=" {
+                        let _ = self.stream.next();
+                        match self.stream.clone().next() {
+                            Some((Token::BeginBlock, _)) => {
+                                let _ = self.collect_block();
                             }
-                            _ => Err(ParseError {
-                                span: ident_span,
-                                reason: ParseErrorReason::DeclarationError,
-                            }),
-                        }
-                    } else if let Some((Token::Ident(arg0), arg_start)) = next {
-                        let ty = if let Some((Token::Colon,_)) = self.stream.peek() {
-                            Some(self.collect_type()?)
-                        } else {
-                            None
-                        };
-                        let mut args = vec![ast::ArgDeclaration {
-                            ident: arg0,
-                            loc: arg_start,
-                            ty
-                        }];
-                        while let Some((Token::Ident(_), _)) = self.stream.peek() {
-                            let ty = if let Some((Token::Colon,_)) = self.stream.peek() {
-                                Some(self.collect_type()?)
-                            } else {
-                                None
-                            };
-                            if let (Token::Ident(arg), loc) = self.stream.next().unwrap() {
-                                args.push(ast::ArgDeclaration { loc, ident: arg, ty });
-                            } else {
-                                return Err(ParseError {
-                                    span: (0, 0),
-                                    reason: ParseErrorReason::ArgumentError,
-                                });
+                            Some(_) => {
+                                let _ = self.next_expr();
                             }
+                            _ => (),
                         }
-                        let count = args.len();
-                        args.dedup();
-                        if count != args.len() {
-                            return Err(ParseError {
-                                span: (0, 0),
-                                reason: ParseErrorReason::IndentError,
-                            });
-                        }
-                        if let Some((Token::Colon, _next)) = self.stream.peek() {
-                            self.stream.next();
-                            let ty = self.collect_type()?;
-                            let ty = if let Some(generics) = &generics {
-                                generics.decls
-                                .iter()
-                                .fold(ty, |ty, (_,name)| ty.replace_user_with_generic(&name))
-                            } else {
-                                ty
-                            };
-                            let next = self.stream.next();
-                            match next {
-                                Some((Token::Op(eq), _)) if eq == "=" => {
-                                    let value = match self.stream.clone().next() {
-                                        Some((Token::BeginBlock, _)) => {
-                                            ValueType::Function(self.collect_block()?)
-                                        }
-                                        Some((Token::Compose, _)) => {
-                                            ValueType::Expr(self.compose()?)
-                                        }
-                                        Some((Token::Op(op), _)) if is_pipe_op(&op) => {
-                                            ValueType::Expr(self.pipe()?)
-                                        }
-                                        _ => ValueType::Expr(self.next_expr()?.0),
-                                    };
-                                    Ok(ValueDeclaration {
-                                        loc: ident_span,
-                                        is_op: false,
-                                        ident,
-                                        ty: Some(ty),
-                                        args,
-                                        value,
-                                        generictypes: generics,
-                                    })
-                                }
-                                _ => Err(ParseError {
-                                    span: start,
-                                    reason: ParseErrorReason::DeclarationError,
-                                }),
-                            }
-                        } else {
-                            match self.stream.next() {
-                                Some((Token::Op(eq), _)) if eq == "=" => {
-                                    let value = match self.stream.clone().next() {
-                                        Some((Token::BeginBlock, _)) => {
-                                            ValueType::Function(self.collect_block()?)
-                                        }
-                                        Some((Token::Compose, _)) => {
-                                            ValueType::Expr(self.compose()?)
-                                        }
-                                        Some((Token::Op(op), _)) if is_pipe_op(&op) => {
-                                            ValueType::Expr(self.pipe()?)
-                                        }
-                                        _ => ValueType::Expr(self.next_expr()?.0),
-                                    };
-                                    Ok(ValueDeclaration {
-                                        loc: ident_span,
-                                        is_op: false,
-                                        ident,
-                                        ty: None,
-                                        args,
-                                        value: value,
-                                        generictypes: generics,
-                                    })
-                                }
-                                _ => Err(ParseError {
-                                    span: ident_span,
-                                    reason: ParseErrorReason::DeclarationError,
-                                }),
-                            }
-                        }
-                    } else {
-                        Err(ParseError {
-                            span: ident_span,
-                            reason: ParseErrorReason::DeclarationError,
-                        })
                     }
                 }
-                Token::Op(ident) => {
-                    let next = self.stream.next();
-                    if let Some((Token::Colon, _next)) = next {
-                        let ty = self.collect_type()?;
-                        match self.stream.next() {
-                            Some((Token::Op(eq), _)) if eq == "=" => {
-                                let value = match self.stream.clone().next() {
-                                    Some((Token::BeginBlock, _)) => {
-                                        ValueType::Function(self.collect_block()?)
-                                    }
-                                    Some((Token::Compose, _)) => ValueType::Expr(self.compose()?),
-                                    Some((Token::Op(op), _)) if is_pipe_op(&op) => {
-                                        ValueType::Expr(self.pipe()?)
-                                    }
-                                    _ => ValueType::Expr(self.next_expr()?.0),
-                                };
-                                Ok(ValueDeclaration {
-                                    loc: ident_span,
-                                    is_op: false,
-                                    ident,
-                                    ty: Some(ty),
-                                    args: Vec::new(),
-                                    value: value,
-                                    generictypes: generics,
-                                })
-                            }
-                            _ => Err(ParseError {
-                                span: start,
-                                reason: ParseErrorReason::DeclarationError,
-                            }),
-                        }
-                    } else if let Some((Token::Ident(arg0), arg_start)) = next {
-                        let ty = if let Some((Token::Colon,_)) = self.stream.peek() {
-                            Some(self.collect_type()?)
-                        } else {
-                            None
-                        };
-                        let mut args = vec![ast::ArgDeclaration {
-                            ident: arg0,
-                            loc: arg_start,
-                            ty
-                        }];
-                        while let Some((Token::Ident(_), _)) = self.stream.peek() {
-                            if let (Token::Ident(arg), arg_start) = self.stream.next().unwrap() {
-                                let ty = if let Some((Token::Colon,_)) = self.stream.peek() {
-                                    Some(self.collect_type()?)
-                                } else {
-                                    None
-                                };
-                                args.push(ast::ArgDeclaration {
-                                    ident: arg,
-                                    loc: arg_start,
-                                    ty
-                                });
-                            } else {
-                                return Err(ParseError {
-                                    span: arg_start,
-                                    reason: ParseErrorReason::ArgumentError,
-                                });
-                            }
-                        }
-
-                        let count = args.len();
-                        args.dedup_by_key(|it| it.ident.clone());
-                        if count != args.len() {
-                            return Err(ParseError {
-                                span: (0, 0),
-                                reason: ParseErrorReason::IndentError,
-                            });
-                        }
-                        if let Some((Token::Colon, _next)) = self.stream.peek() {
-                            self.stream.next();
-                            let ty = self.collect_type()?;
-                            let ty = if let Some(generics) = &generics {
-                                generics.decls
-                                .iter()
-                                .fold(ty, |ty, (_,name)| ty.replace_user_with_generic(name))
-                            } else {
-                                ty
-                            };
-                            match self.stream.next() {
-                                Some((Token::Op(eq), _)) if eq == "=" => {
-                                    let value = match self.stream.clone().nth(0) {
-                                        Some((Token::BeginBlock, _)) => {
-                                            ValueType::Function(self.collect_block()?)
-                                        }
-                                        Some((Token::Compose, _)) => {
-                                            ValueType::Expr(self.compose()?)
-                                        }
-                                        Some((Token::Op(op), _)) if is_pipe_op(&op) => {
-                                            ValueType::Expr(self.pipe()?)
-                                        }
-                                        _ => ValueType::Expr(self.next_expr()?.0),
-                                    };
-                                    Ok(ValueDeclaration {
-                                        loc: ident_span,
-                                        is_op: true,
-                                        ident,
-                                        ty: Some(ty),
-                                        args,
-                                        value,
-                                        generictypes: generics,
-                                    })
-                                }
-                                _ => Err(ParseError {
-                                    span: start,
-                                    reason: ParseErrorReason::DeclarationError,
-                                }),
-                            }
-                        } else {
-                            match self.stream.next() {
-                                Some((Token::Op(eq), _)) if eq == "=" => {
-                                    let value =
-                                        if let Some((Token::BeginBlock, _)) = self.stream.peek() {
-                                            ValueType::Function(self.collect_block()?)
-                                        } else {
-                                            // TODO check for math expresions
-                                            ValueType::Expr(self.literal()?)
-                                        };
-                                    Ok(ValueDeclaration {
-                                        loc: ident_span,
-                                        is_op: true,
-                                        ident,
-                                        ty: None,
-                                        args,
-                                        value: value,
-                                        generictypes: generics,
-                                    })
-                                }
-                                _ => Err(ParseError {
-                                    span: ident_span,
-                                    reason: ParseErrorReason::DeclarationError,
-                                }),
-                            }
-                        }
-                    } else {
-                        Err(ParseError {
-                            span: ident_span,
-                            reason: ParseErrorReason::DeclarationError,
-                        })
-                    }
-                }
-                _ => Err(ParseError {
+                return Err(ParseError {
                     span: ident_span,
                     reason: ParseErrorReason::DeclarationError,
-                }),
+                });
+            }
+
+            let mut ty = if let Some((Token::Colon, _)) = self.stream.clone().next() {
+                let _ = self.stream.next();
+                Some(self.collect_type()?)
+            } else {
+                None
             };
+
+            let Some((Token::Op(op), _)) = self.stream.next() else {
+                //TODO! progress to valid point.
+                return Err(ParseError {
+                    span: ident_span,
+                    reason: ParseErrorReason::DeclarationError,
+                });
+            };
+
+            if op != "=" {
+                //TODO! progress to until valid point.
+                return Err(ParseError {
+                    span: ident_span,
+                    reason: ParseErrorReason::DeclarationError,
+                });
+            }
+
+            let value = match self.stream.clone().next() {
+                Some((Token::BeginBlock, _)) => ValueType::Function(self.collect_block()?),
+                Some((_, _)) => ValueType::Expr(self.next_expr()?.0),
+                _ => {
+                    return Err(ParseError {
+                        span: ident_span,
+                        reason: ParseErrorReason::UnexpectedToken,
+                    })
+                }
+            };
+            if let Some(generics) = &generics {
+
+                for arg in &mut args {
+                    if let Some(ty) = &mut arg.ty {
+                        
+                        *ty = generics
+                            .decls
+                            .iter()
+                            .map(|(_,it)|it)
+                            .fold(ty.clone(), |ty, name| ty.replace_user_with_generic(name));
+                    }
+                }
+
+                if let Some(ty) = &mut ty {
+                    *ty = generics
+                        .decls
+                        .iter()
+                        .map(|(_,it)|it)
+                        .fold(ty.clone(), |ty, name| ty.replace_user_with_generic(name));
+                }
+            }
+
+            return Ok(ValueDeclaration {
+                loc: ident_span,
+                is_op,
+                ident,
+                args,
+                ty,
+                value,
+                generictypes: generics,
+            });
         }
         Err(ParseError {
             span: (0, 0),
@@ -2063,7 +1918,7 @@ mod tests {
                 ty: Some(ResolvedType::Function {
                     arg: types::INT32.boxed(),
                     returns: types::INT32.boxed(),
-                    loc:(0,0)
+                    loc:(0,18)
                 }),
                 args: vec![ArgDeclaration {
                     loc: (0, 8),
@@ -2098,11 +1953,11 @@ let foo _ : ( int32 -> int32 ) -> int32 =
                     arg: ResolvedType::Function {
                         arg: types::INT32.boxed(),
                         returns: types::INT32.boxed(),
-                        loc:(0,0)
+                        loc:(1,20)
                     }
                     .boxed(),
                     returns: types::INT32.boxed(),
-                    loc:(0,0)
+                    loc:(1,31)
                 }),
                 args: vec![ast::ArgDeclaration {
                     ident: "_".to_string(),
@@ -2135,10 +1990,10 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                     returns: ResolvedType::Function {
                         arg: types::INT32.boxed(),
                         returns: types::INT32.boxed(),
-                        loc:(0,0)
+                        loc:(1,29)
                     }
                     .boxed(),
-                    loc:(0,0)
+                    loc:(1 ,18)
                 }),
                 args: vec![ast::ArgDeclaration {
                     ident: "_".to_string(),
@@ -2185,7 +2040,7 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                 ty: Some(ResolvedType::Function {
                     arg: types::INT32.boxed(),
                     returns: types::INT32.boxed(),
-                    loc:(0,0)
+                    loc:(2,20)
                 }),
                 args: vec![ast::ArgDeclaration {
                     ident: "quz".to_string(),
@@ -2224,10 +2079,10 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                     returns: ResolvedType::Function {
                         arg: types::INT32.boxed(),
                         returns: types::INT32.boxed(),
-                        loc:(0,0)
+                        loc:(6,32)
                     }
                     .boxed(),
-                    loc:(0,0)
+                    loc:(6,23)
                 }),
                 args: vec![
                     ast::ArgDeclaration {
@@ -2279,7 +2134,7 @@ let main _ : int32 -> int32 =
                 ty: Some(ResolvedType::Function {
                     arg: types::INT32.boxed(),
                     returns: types::INT32.boxed(),
-                    loc:(0,0)
+                    loc:(1,19)
                 }),
                 args: vec![ast::ArgDeclaration {
                     ident: "_".to_string(),
@@ -2485,7 +2340,7 @@ let main _ : int32 -> int32 =
                         loc: (0,25)
                     }
                     .boxed(),
-                    loc:(0,0)
+                    loc:(0,22)
                 }),
                 value: ast::ValueType::Expr(ast::Expr::ValueRead("a".to_string(), (0, 29))),
                 generictypes: Some(ast::GenericsDecl {
@@ -2596,10 +2451,10 @@ for<T,U> type Tuple = {
                         }
                         .boxed(),
                         returns: types::INT32.boxed(),
-                        loc:(0,0)
+                        loc:(0,47)
                     }
                     .boxed(),
-                    loc:(0,0)
+                    loc:(0,25)
                 }),
                 value: ValueType::Function(vec![Statement::Return(
                     Expr::NumericLiteral {
@@ -2672,7 +2527,7 @@ for<T,U> type Tuple = {
                 ty: Some(ResolvedType::Function {
                     arg: types::BOOL.boxed(),
                     returns: types::INT32.boxed(),
-                    loc:(0,0)
+                    loc:(0,25)
                 }),
                 value: ast::ValueType::Expr(ast::Expr::If(IfExpr {
                     cond: ast::Expr::ValueRead("a".to_string(), (0, 39)).boxed(),
@@ -2712,7 +2567,7 @@ for<T,U> type Tuple = {
                 ty: Some(ResolvedType::Function {
                     arg: types::BOOL.boxed(),
                     returns: types::INT32.boxed(),
-                    loc:(0,0)
+                    loc:(2,30)
                 }),
                 value: ast::ValueType::Expr(ast::Expr::If(IfExpr {
                     cond: ast::Expr::ValueRead("a".to_string(), (2, 44)).boxed(),
@@ -2759,7 +2614,7 @@ for<T,U> type Tuple = {
                 ty: Some(ResolvedType::Function {
                     arg: types::BOOL.boxed(),
                     returns: types::INT32.boxed(),
-                    loc:(0,0)
+                    loc:(7,33)
                 }),
                 value: ast::ValueType::Expr(ast::Expr::If(IfExpr {
                     cond: ast::Expr::ValueRead("a".to_string(), (7, 47)).boxed(),
@@ -2826,10 +2681,10 @@ for<T,U> type Tuple = {
                     returns: ResolvedType::Function {
                         arg: types::BOOL.boxed(),
                         returns: types::INT32.boxed(),
-                        loc:(0,0)
+                        loc:(14,41)
                     }
                     .boxed(),
-                    loc:(0,0)
+                    loc:(14,33)
                 }),
                 value: ValueType::Expr(ast::Expr::If(IfExpr {
                     cond: ast::Expr::ValueRead("a".to_string(), (14, 55)).boxed(),
@@ -2876,7 +2731,7 @@ for<T,U> type Tuple = {
                 ty: Some(ResolvedType::Function {
                     arg: types::BOOL.boxed(),
                     returns: types::INT32.boxed(),
-                    loc:(0,0)
+                    loc:(16,23)
                 }),
                 value: ast::ValueType::Function(vec![ast::Statement::IfStatement(IfBranching {
                     cond: ast::Expr::ValueRead("a".to_string(), (17, 7)).boxed(),
@@ -2947,10 +2802,10 @@ for<T,U> type Tuple = {
                     returns: ResolvedType::Function {
                         arg: types::BOOL.boxed(),
                         returns: types::INT32.boxed(),
-                        loc:(0,0)
+                        loc:(24,46)
                     }
                     .boxed(),
-                    loc:(0,0)
+                    loc:(24,38)
                 }),
                 value: ast::ValueType::Function(vec![ast::Statement::IfStatement(IfBranching {
                     cond: ast::Expr::ValueRead("a".to_string(), (25, 7)).boxed(),
@@ -3005,10 +2860,10 @@ for<T,U> type Tuple = {
                     returns: ResolvedType::Function {
                         arg: types::BOOL.boxed(),
                         returns: types::INT32.boxed(),
-                        loc:(0,0)
+                        loc:(32,46)
                     }
                     .boxed(),
-                    loc:(0,0)
+                    loc:(32,38)
                 }),
                 value: ValueType::Expr(ast::Expr::If(IfExpr {
                     cond: ast::Expr::ValueRead("a".to_string(), (32, 60)).boxed(),
@@ -3059,7 +2914,7 @@ for<T,U> type Tuple = {
                 ty: Some(ResolvedType::Function {
                     arg: types::INT32.boxed(),
                     returns: types::INT32.boxed(),
-                    loc:(0,0)
+                    loc:(0, 30)
                 }),
                 value: ast::ValueType::Expr(ast::Expr::Match(Match {
                     loc: (0, 41),
@@ -3119,7 +2974,7 @@ for<T,U> type Tuple = {
                 ty: Some(ResolvedType::Function {
                     arg: types::INT32.boxed(),
                     returns: types::INT32.boxed(),
-                    loc:(0,0)
+                    loc:(5, 36) 
                 }),
                 value: ValueType::Expr(ast::Expr::Match(Match {
                     loc: (5, 47),
@@ -3200,7 +3055,7 @@ for<T,U> type Tuple = {
                 ty: Some(ResolvedType::Function {
                     arg: types::INT32.boxed(),
                     returns: types::UNIT.boxed(),
-                    loc:(0,0)
+                    loc:(12, 30)
                 }),
                 value: ValueType::Function(vec![ast::Statement::Match(Match {
                     loc: (13, 4),
@@ -3273,7 +3128,7 @@ let arr = [0,0,0,0];
         assert_eq!(
             arr,
             ast::Declaration::Value(ast::ValueDeclaration {
-                loc: (1, 5),
+                loc: (1, 4),
                 is_op: false,
                 ident: "arr".to_string(),
                 args: Vec::new(),
