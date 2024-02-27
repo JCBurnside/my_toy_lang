@@ -29,6 +29,20 @@ pub fn get_untyped_ast(input:&str,file_name:&str) -> ast::ModuleDeclaration{
     Parser::from_stream(ts).module(file_name.to_string())
 } 
 
+pub fn get_ast(input:&str, file_name:&str) -> typed_ast::TypedModuleDeclaration {
+    let ts = TokenStream::from_source(input);
+    let module = Parser::from_stream(ts).module(file_name.to_string());
+    // TODO! get prelude.
+    let dep_tree= module.get_dependencies().into_iter().map(|(k,v)| (k,v.into_iter().collect())).collect();
+    let ops : HashMap<_,_> = [
+        ("+".to_string(), vec![
+            types::INT32.fn_ty(&types::INT32.fn_ty(&types::INT32))
+        ])
+    ].into();
+    let mut infer_context = inference::Context::new(dep_tree, HashMap::new(), HashMap::new(), ops.clone(), HashMap::new());
+    let ast = infer_context.inference(module);
+    TypedModuleDeclaration::from(ast, &HashMap::new(), &ops)
+}
 
 pub fn from_file<'ctx>(
     file: &PathBuf,
