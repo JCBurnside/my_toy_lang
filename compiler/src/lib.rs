@@ -67,7 +67,7 @@ pub fn from_file<'ctx>(
 
     let mut ast = parser.module(file_name.to_str().unwrap().to_string());
     ast.canonialize(vec![project_name]);
-    let dependency_graph = dbg!(ast.get_dependencies());
+    let dependency_graph = ast.get_dependencies();
     let dependency_tree = dependency_graph
         .into_iter()
         .map(|(key, value)| (key, value.into_iter().collect()))

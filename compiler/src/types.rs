@@ -27,7 +27,7 @@ impl IntWidth {
             _ => unimplemented!("custom width ints not supported currently"),
         }
     }
-
+    #[allow(unused)]
     fn as_bits(&self) -> u64 {
         match self {
             Self::Eight => 8,
@@ -60,7 +60,7 @@ impl FloatWidth {
             _ => unimplemented!("custom width floats not supported"),
         }
     }
-
+    #[allow(unused)]
     fn as_bits(&self) -> u64 {
         match self {
             Self::ThirtyTwo => 32,
@@ -76,7 +76,7 @@ impl FloatWidth {
     }
 }
 
-#[derive(Hash, Clone, Debug, PartialEq, Eq)]
+#[derive(Hash, Clone, Debug, Eq)]
 pub enum ResolvedType {
     Unknown(usize),
     Bool,
@@ -106,10 +106,12 @@ pub enum ResolvedType {
     Function {
         arg: Box<ResolvedType>,
         returns: Box<ResolvedType>,
+        loc : crate::Location,
     },
     User {
         name: String,
         generics: Vec<ResolvedType>,
+        loc:crate::Location
     },
 
     Array {
@@ -119,11 +121,34 @@ pub enum ResolvedType {
     // ForwardUser{name:String},
     Alias {
         actual: Box<ResolvedType>,
+        loc:crate::Location,
     },
     Generic {
         name: String,
+        loc:crate::Location,
     },
     Error,
+}
+
+impl PartialEq for ResolvedType {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Unknown(l0), Self::Unknown(r0)) => l0 == r0,
+            (Self::Int{..}|Self::Float{..}, Self::Number) => true,
+            (Self::Number,Self::Int{..}|Self::Float{..}) => true,
+            (Self::Int { signed: l_signed, width: l_width }, Self::Int { signed: r_signed, width: r_width }) => l_signed == r_signed && l_width == r_width,
+            (Self::Float { width: l_width }, Self::Float { width: r_width }) => l_width == r_width,
+            (Self::Ref { underlining: l_underlining }, Self::Ref { underlining: r_underlining }) => l_underlining == r_underlining,
+            (Self::Pointer { underlining: l_underlining }, Self::Pointer { underlining: r_underlining }) => l_underlining == r_underlining,
+            (Self::Slice { underlining: l_underlining }, Self::Slice { underlining: r_underlining }) => l_underlining == r_underlining,
+            (Self::Function { arg: l_arg, returns: l_returns,.. }, Self::Function { arg: r_arg, returns: r_returns, ..}) => l_arg == r_arg && l_returns == r_returns,
+            (Self::User { name: l_name, generics: l_generics, .. }, Self::User { name: r_name, generics: r_generics, ..}) => l_name == r_name && l_generics == r_generics,
+            (Self::Array { underlining: l_underlining, size: l_size }, Self::Array { underlining: r_underlining, size: r_size }) => l_underlining == r_underlining && l_size == r_size,
+            (Self::Alias { actual: l_actual, .. }, Self::Alias { actual: r_actual, .. }) => l_actual == r_actual ,
+            (Self::Generic { name: l_name, .. }, Self::Generic { name: r_name, .. }) => l_name == r_name,
+            _ => core::mem::discriminant(self) == core::mem::discriminant(other),
+        }
+    }
 }
 
 impl ResolvedType {
@@ -134,7 +159,7 @@ impl ResolvedType {
             | Self::Pointer { underlining }
             | Self::Slice { underlining }
             | Self::Array { underlining, .. } => underlining.replace_unkown_with(id, ty),
-            Self::Function { arg, returns } => {
+            Self::Function { arg, returns, loc:_ } => {
                 arg.replace_unkown_with(id, ty.clone());
                 returns.replace_unkown_with(id, ty);
             }
@@ -149,8 +174,8 @@ impl ResolvedType {
 
     pub(crate) fn check_equality(&self, other: &Self) -> bool {
         match (self, other) {
-            (&INT8 | &INT16 | &INT32 | &INT64 | &FLOAT32, &Self::Number) => true,
-            (&Self::Number, &INT8 | &INT16 | &INT32 | &INT64 | &FLOAT32) => true,
+            (lhs, &Self::Number) => lhs.is_float() || lhs.is_int() ,
+            (&Self::Number, rhs) => rhs.is_float() || rhs.is_int() ,
             _ => self == other,
         }
     }
@@ -159,7 +184,7 @@ impl ResolvedType {
         println!("{args:#?}");
         if args.len() == 0 {
             true
-        } else if let Self::Function { arg, returns } = self {
+        } else if let Self::Function { arg, returns, loc:_ } = self {
             arg.check_equality(&args[0]) && returns.check_function(&args[1..])
         } else {
             false
@@ -170,6 +195,7 @@ impl ResolvedType {
         Self::Function {
             arg: self.clone().boxed(),
             returns: returns.clone().boxed(),
+            loc:(0,0)
         }
     }
 
@@ -199,12 +225,12 @@ impl ResolvedType {
                 let tys = underlining.get_all_types();
                 tys
             }
-            ResolvedType::Function { arg, returns } => {
+            ResolvedType::Function { arg, returns, loc:_ } => {
                 let mut tys = arg.get_all_types();
                 tys.extend(returns.get_all_types().into_iter());
                 tys
             }
-            ResolvedType::Alias { actual } => actual.get_all_types(),
+            ResolvedType::Alias { actual, loc:_ } => actual.get_all_types(),
             ResolvedType::Unit
             | ResolvedType::Number
             | ResolvedType::Void
@@ -217,7 +243,7 @@ impl ResolvedType {
     pub fn as_c_function(&self) -> (Vec<Self>, Self) {
         // (args, return type)
         match self {
-            Self::Function { arg, returns } => {
+            Self::Function { arg, returns, .. } => {
                 let (mut args, rt) = returns.as_c_function();
                 args.push(arg.as_ref().clone());
                 (args, rt)
@@ -228,10 +254,11 @@ impl ResolvedType {
 
     pub fn replace_generic(&self, name: &str, new_ty: Self) -> Self {
         match self {
-            Self::Generic { name: old_name } if old_name == name => new_ty,
-            Self::Function { arg, returns } => Self::Function {
+            Self::Generic { name: old_name, .. } if old_name == name => new_ty,
+            Self::Function { arg, returns , loc} => Self::Function {
                 arg: Box::new(arg.replace_generic(name, new_ty.clone())),
                 returns: Box::new(returns.replace_generic(name, new_ty)),
+                loc: *loc,
             },
             _ => self.clone(),
         }
@@ -239,14 +266,14 @@ impl ResolvedType {
 
     fn find_first_generic_arg(&self) -> String {
         match self {
-            Self::Function { arg, returns } => {
+            Self::Function { arg, returns, .. } => {
                 if arg.is_generic() {
                     arg.find_first_generic_arg()
                 } else {
                     returns.find_first_generic_arg()
                 }
             }
-            Self::Generic { name } => name.clone(),
+            Self::Generic { name, .. } => name.clone(),
             _ => unreachable!(),
         }
     }
@@ -258,8 +285,8 @@ impl ResolvedType {
 
     pub fn is_generic(&self) -> bool {
         match self {
-            Self::Function { arg, returns } => arg.is_generic() || returns.is_generic(),
-            Self::Alias { actual } => actual.is_generic(),
+            Self::Function { arg, returns, .. } => arg.is_generic() || returns.is_generic(),
+            Self::Alias { actual, .. } => actual.is_generic(),
             Self::Slice { underlining }
             | Self::Pointer { underlining }
             | Self::Ref { underlining } => underlining.is_generic(),
@@ -271,7 +298,7 @@ impl ResolvedType {
     pub fn is_function(&self) -> bool {
         match self {
             Self::Function { .. } => true,
-            Self::Alias { actual } => actual.is_function(),
+            Self::Alias { actual, .. } => actual.is_function(),
             Self::Pointer { underlining } | Self::Ref { underlining } => underlining.is_function(),
             _ => false,
         }
@@ -288,9 +315,10 @@ impl ResolvedType {
             ResolvedType::Slice { underlining } => Self::Slice {
                 underlining: underlining.replace_user_with_generic(target_name).boxed(),
             },
-            ResolvedType::Function { arg, returns } => Self::Function {
+            ResolvedType::Function { arg, returns, loc } => Self::Function {
                 arg: arg.replace_user_with_generic(target_name).boxed(),
                 returns: returns.replace_user_with_generic(target_name).boxed(),
+                loc:loc,
             },
             ResolvedType::Array {
                 underlining: underlying,
@@ -299,8 +327,8 @@ impl ResolvedType {
                 underlining: underlying.replace_user_with_generic(target_name).boxed(),
                 size,
             },
-            ResolvedType::User { name, .. } if &name == target_name => {
-                ResolvedType::Generic { name }
+            ResolvedType::User { name, loc, .. } if &name == target_name => {
+                ResolvedType::Generic { name, loc }
             }
             _ => self,
         }
@@ -321,13 +349,14 @@ impl ResolvedType {
             | ResolvedType::Array { underlining, .. }
             | ResolvedType::Alias {
                 actual: underlining,
+                ..
             }
             | ResolvedType::Ref { underlining } => underlining.as_mut().lower_generics(context),
-            ResolvedType::Function { arg, returns } => {
+            ResolvedType::Function { arg, returns, .. } => {
                 arg.as_mut().lower_generics(context);
                 returns.as_mut().lower_generics(context);
             }
-            ResolvedType::User { name, generics } => {
+            ResolvedType::User { name, generics, .. } => {
                 if generics.iter().any(ResolvedType::is_generic) || generics.len() == 0 {
                     return;
                 }
@@ -356,11 +385,12 @@ impl ResolvedType {
 
     pub fn replace(&self, nice_name: &str, actual: &str) -> Self {
         match self {
-            Self::User { name, generics } => {
+            Self::User { name, generics, loc } => {
                 if name == nice_name {
                     Self::User {
                         name: actual.to_string(),
                         generics: generics.clone(),
+                        loc:*loc,
                     }
                 } else {
                     Self::User {
@@ -369,12 +399,14 @@ impl ResolvedType {
                             .iter()
                             .map(|it| it.replace(nice_name, actual))
                             .collect(),
+                        loc:*loc,
                     }
                 }
             }
-            Self::Function { arg, returns } => Self::Function {
+            Self::Function { arg, returns, loc } => Self::Function {
                 arg: arg.replace(nice_name, actual).boxed(),
                 returns: returns.replace(nice_name, actual).boxed(),
+                loc: *loc,
             },
             _ => self.clone(),
         }
@@ -402,7 +434,7 @@ impl ResolvedType {
         match self {
             Self::Number //since it can be one of many types.
             | Self::Unknown(_) => true,
-            Self::Function { arg, returns } => arg.is_unknown() || returns.is_unknown(),
+            Self::Function { arg, returns, loc:_ } => arg.is_unknown() || returns.is_unknown(),
             _ => false,
         }
     }
@@ -429,16 +461,16 @@ impl ResolvedType {
             | Self::Slice { underlining }
             | Self::Array { underlining, .. }
             | Self::Ref { underlining } => underlining.get_dependant_unknowns(),
-            Self::Function { arg, returns } => {
+            Self::Function { arg, returns, loc:_ } => {
                 let mut out = arg.get_dependant_unknowns();
                 out.extend(returns.get_dependant_unknowns());
                 out
             }
-            Self::User { name, generics } => generics
+            Self::User { name, generics, loc:_ } => generics
                 .iter()
                 .flat_map(|it| it.get_dependant_unknowns())
                 .collect(),
-            Self::Alias { actual } => Vec::new(), //aliases can't be infered
+            Self::Alias { actual, loc:_ } => Vec::new(), //aliases can't be infered
             _ => Vec::new(),
         }
     }
@@ -450,7 +482,7 @@ impl ResolvedType {
             | Self::Ref { underlining }
             | Self::Pointer { underlining }
             | Self::Slice { underlining } => underlining.contains_unknown(id),
-            Self::Function { arg, returns } => {
+            Self::Function { arg, returns, loc:_ } => {
                 arg.contains_unknown(id) || returns.contains_unknown(id)
             }
             _ => false,
@@ -461,11 +493,12 @@ impl ResolvedType {
 impl ToString for ResolvedType {
     fn to_string(&self) -> String {
         match self {
+            ResolvedType::Number => "{number}".to_string(),
             ResolvedType::Bool => "bool".to_string(),
-            ResolvedType::Alias { actual } => actual.to_string(),
+            ResolvedType::Alias { actual, .. } => actual.to_string(),
             ResolvedType::Char => "char".to_string(),
             ResolvedType::Float { width } => "float".to_string() + &width.to_string(),
-            ResolvedType::Function { arg, returns } => {
+            ResolvedType::Function { arg, returns, .. } => {
                 let arg = if arg.is_function() {
                     format!("({})", arg.to_string())
                 } else {
@@ -492,7 +525,7 @@ impl ToString for ResolvedType {
             ResolvedType::Unit => "()".to_string(),
             ResolvedType::Void => "".to_string(),
             ResolvedType::Number => "{number}".to_string(),
-            ResolvedType::User { name, generics } => {
+            ResolvedType::User { name, generics, loc:_ } => {
                 if generics.len() > 0 {
                     format!(
                         "{}<{}>",
@@ -576,10 +609,12 @@ mod tests {
             "{}",
             super::ResolvedType::Function {
                 arg: super::INT32.boxed(),
-                returns: super::INT32.boxed()
+                returns: super::INT32.boxed(),
+                loc:(0,0)
             } == super::ResolvedType::Function {
                 arg: super::INT32.boxed(),
-                returns: super::INT32.boxed()
+                returns: super::INT32.boxed(),
+                loc:(1,0)
             }
         )
     }

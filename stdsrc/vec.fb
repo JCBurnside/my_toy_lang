@@ -4,7 +4,9 @@ for<T> public type Vec = {
     capacity : usize,
 }
 
-for<T> implements Vec<T> =
+extern "C" let malloc : std::ffi::c_int -> *mut std::ffi::void
+
+for<T> implements Vec<T> where
     public let fn new = Vec<T> { start:nullptr, count:0, capacity:0};
 
     public let push (&mut self) it : &mut Vec<T> -> T -> () =
@@ -14,13 +16,15 @@ for<T> implements Vec<T> =
 
     public let fn capacity &self = self.capacity;
 // Should auto implement Index<usize, Output = T>
-for<T> public let !! &vec idx : &Vec<T> -> usize -> &T = 
+    public let fn capacity &self = self.capacity;
+// Should auto implement Index<usize, Output = T>
+for<T> public let (!!) &vec idx : &Vec<T> -> usize -> &T = 
     if idx > self.count then error "index out of bounds"
     unsafe 
         &*std::ptr::offset vec.start idx
 
 // Should atuo implement IndexMut<usize, Output = T>
-for<T> public let !^ &mut self idx : &mut Vec<T> -> usize -> &mut T =
+for<T> public let (!^) (&mut self) idx : &mut Vec<T> -> usize -> &mut T =
     if idx > self.count then error "index out of bounds"
     unsafe 
         &mut *std::ptr::offset vec.start idx
@@ -34,4 +38,6 @@ let from_seq_impl (mut v) (mut s)=
         from_seq_impl v s
 
 for<T> implements seq::FromSeq<T> for Vec<T> =
-    for<I : seq::IntoSequence<Item = T>> let from_seq s = from_seq_impl Vec::new 
+    for<I : seq::IntoSequence<Item = T>> let from_seq s = from_seq_impl Vec::new
+        
+

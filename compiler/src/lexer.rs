@@ -76,6 +76,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
             };
         }
         if let Some(c) = self.source_stream.next() {
+            let start_col = self.curr_col;
             self.curr_col += 1;
             if c == '\n' {
                 self.start_line = true;
@@ -85,12 +86,12 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
             }
 
             match c {
-                ';' => (Token::Seq, (self.curr_line, self.curr_col)),
-                ',' => (Token::Comma, (self.curr_line, self.curr_col)),
-                '(' => (Token::GroupOpen, (self.curr_line, self.curr_col)),
-                ')' => (Token::GroupClose, (self.curr_line, self.curr_col)),
-                '{' => (Token::CurlOpen, (self.curr_line, self.curr_col)),
-                '}' => (Token::CurlClose, (self.curr_line, self.curr_col)),
+                ';' => (Token::Seq, (self.curr_line, start_col)),
+                ',' => (Token::Comma, (self.curr_line, start_col)),
+                '(' => (Token::GroupOpen, (self.curr_line, start_col)),
+                ')' => (Token::GroupClose, (self.curr_line, start_col)),
+                '{' => (Token::CurlOpen, (self.curr_line, start_col)),
+                '}' => (Token::CurlClose, (self.curr_line, start_col)),
                 '\'' => {
                     let mut prev = '\0';
                     let inside = self
@@ -114,8 +115,34 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     } else {
                         self.source_stream.next();
                         self.curr_col += 1;
-                        (Token::CharLiteral(inside), (self.curr_line, self.curr_col))
+                        (Token::CharLiteral(inside), (self.curr_line, start_col))
                     }
+                }
+                '/' if self.source_stream.clone().next() == Some('/') => {
+                    let _comment = self.source_stream.peeking_take_while(|c| c!=&'\n').collect::<String>();
+                    self.lex()
+                }
+                '/' if self.source_stream.clone().next() == Some('*') => {
+                    let mut prev = '\0';
+                    let _comment = self
+                        .source_stream
+                        .peeking_take_while(|c| {
+                            if prev == '*' && c == &'/' {
+                                self.curr_col+=1;
+                                false
+                            } else {
+                                if c==&'\n' {
+                                    self.curr_line +=1;
+                                    self.curr_col = 0;
+                                } else {
+                                    self.curr_col +=1;
+                                }
+                                prev = *c;
+                                true
+                            }
+                        }).collect::<String>();
+                    let _close_comment = self.source_stream.next();
+                    self.lex()
                 }
                 '"' => {
                     let mut prev = '\0';
@@ -131,17 +158,16 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                             }
                         })
                         .collect::<String>();
-                    let start = self.curr_col;
                     self.curr_col += inside.len();
                     if prev == '\n' {
                         (
                             Token::Error("unclosed litteral"),
-                            (self.curr_line, self.curr_col),
+                            (self.curr_line, start_col),
                         )
                     } else {
                         self.source_stream.next();
                         self.curr_col += 1;
-                        (Token::StringLiteral(inside), (self.curr_line, start))
+                        (Token::StringLiteral(inside), (self.curr_line, start_col))
                     }
                 }
 
@@ -154,7 +180,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                 {
                     self.curr_col += 1;
                     self.source_stream.next();
-                    (Token::Arrow, (self.curr_line, self.curr_col))
+                    (Token::Arrow, (self.curr_line, start_col))
                 }
 
                 '-' | '+'
@@ -168,15 +194,14 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                         .source_stream
                         .peeking_take_while(|c| !c.is_whitespace())
                         .collect();
-                    let start = self.curr_col;
                     self.curr_col += inside.len();
                     if inside.contains('.') {
                         (
                             Token::FloatingPoint(c == '-', inside),
-                            (self.curr_line, start),
+                            (self.curr_line, start_col),
                         )
                     } else {
-                        (Token::Integer(c == '-', inside), (self.curr_line, start))
+                        (Token::Integer(c == '-', inside), (self.curr_line, start_col))
                     }
                 }
                 c if c.is_numeric() && self.source_stream.peek() == Some(&'.') => {
@@ -188,10 +213,9 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     for _ in 0..inner.len() {
                         self.source_stream.next();
                     }
-                    let start = self.curr_col;
                     self.curr_col += inner.len();
                     let inner = c.to_string() + &inner;
-                    (Token::FloatingPoint(false, inner), (self.curr_line, start))
+                    (Token::FloatingPoint(false, inner), (self.curr_line, start_col))
                 }
                 '[' => (Token::ArrayOpen, (self.curr_line, self.curr_col)),
                 ']' => (Token::ArrayClose, (self.curr_line, self.curr_col)),
@@ -200,10 +224,9 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                         .source_stream
                         .peeking_take_while(|c| matches!(c, operators!()))
                         .collect();
-                    let start = self.curr_col;
                     self.curr_col += inside.len();
                     let inside = c.to_string() + &inside;
-                    (Token::Op(inside), (self.curr_line, start))
+                    (Token::Op(inside), (self.curr_line, start_col))
                 }
                 'f' if self
                     .source_stream
@@ -216,7 +239,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     self.source_stream.next();
                     self.source_stream.next();
                     self.curr_col += 2;
-                    (Token::For, (self.curr_line, self.curr_col))
+                    (Token::For, (self.curr_line, start_col))
                 }
 
                 't' if self
@@ -229,9 +252,8 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     for _ in 0..3 {
                         let _ = self.source_stream.next();
                     }
-                    let curr_col = self.curr_col;
                     self.curr_col += 3;
-                    (Token::True, (self.curr_line, curr_col))
+                    (Token::True, (self.curr_line, start_col))
                 }
                 'f' if self
                     .source_stream
@@ -243,9 +265,8 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     for _ in 0..4 {
                         let _ = self.source_stream.next();
                     }
-                    let curr_col = self.curr_col;
                     self.curr_col += 4;
-                    (Token::False, (self.curr_line, curr_col))
+                    (Token::False, (self.curr_line, start_col))
                 }
                 'm' if self
                     .source_stream
@@ -257,9 +278,8 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     for _ in 0..4 {
                         let _ = self.source_stream.next();
                     }
-                    let curr_col = self.curr_col;
                     self.curr_col += 4;
-                    (Token::Match, (self.curr_line, curr_col))
+                    (Token::Match, (self.curr_line, start_col))
                 }
 
                 'w' if self
@@ -273,14 +293,13 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                         let _ = self.source_stream.next();
                     }
                     self.curr_col += 4;
-                    (Token::Where, (self.curr_line, self.curr_col))
+                    (Token::Where, (self.curr_line, start_col))
                 }
 
                 'i' if self.source_stream.clone().take_while(ident_char).collect::<String>() == "f" => {
                     let _ = self.source_stream.next();
-                    let col = self.curr_col;
                     self.curr_col += 1;
-                    (Token::If, (self.curr_line, col))
+                    (Token::If, (self.curr_line, start_col))
                 }
 
                 't' if self
@@ -294,7 +313,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     let _ = self.source_stream.next();
                     let _ = self.source_stream.next();
                     self.curr_col += 3;
-                    (Token::Then, (self.curr_line, self.curr_col))
+                    (Token::Then, (self.curr_line, start_col))
                 }
 
                 'e' if self
@@ -308,7 +327,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     let _ = self.source_stream.next();
                     let _ = self.source_stream.next();
                     self.curr_col += 3;
-                    (Token::Else, (self.curr_line, self.curr_col))
+                    (Token::Else, (self.curr_line, start_col))
                 }
 
                 'l' if self
@@ -321,7 +340,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     self.source_stream.next();
                     self.source_stream.next();
                     self.curr_col += 2;
-                    (Token::Let, (self.curr_line, self.curr_col))
+                    (Token::Let, (self.curr_line, start_col))
                 }
                 'r' if self
                     .source_stream
@@ -334,9 +353,8 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     for _ in 0..5 {
                         self.source_stream.next();
                     }
-                    let col = self.curr_col;
                     self.curr_col += 5;
-                    (Token::Return, (self.curr_line, col))
+                    (Token::Return, (self.curr_line, start_col))
                 }
                 't' if self
                     .source_stream
@@ -348,9 +366,8 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     for _ in 0..3 {
                         self.source_stream.next();
                     }
-                    let col = self.curr_col;
                     self.curr_col += 3;
-                    (Token::Type, (self.curr_line, col))
+                    (Token::Type, (self.curr_line, start_col))
                 }
                 'e' if self
                     .source_stream
@@ -362,11 +379,10 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     for _ in 0..3 {
                         self.source_stream.next();
                     }
-                    let col = self.curr_col;
                     self.curr_col += 3;
-                    (Token::Enum, (self.curr_line, col))
+                    (Token::Enum, (self.curr_line, start_col))
                 }
-                ':' => (Token::Colon, (self.curr_line, self.curr_col)),
+                ':' => (Token::Colon, (self.curr_line, start_col)),
                 c => {
                     let inner: String = self
                         .source_stream
@@ -377,15 +393,14 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     for _ in 0..inner.len() {
                         self.source_stream.next();
                     }
-                    let start = self.curr_col;
                     self.curr_col += inner.len();
                     let inner = c.to_string() + &inner;
                     if inner.chars().all(|c| c.is_numeric()) {
-                        (Token::Integer(false, inner), (self.curr_line, start))
+                        (Token::Integer(false, inner), (self.curr_line, start_col))
                     } else if inner.chars().all(|c| c.is_numeric() || c == '.') {
-                        (Token::FloatingPoint(false, inner), (self.curr_line, start))
+                        (Token::FloatingPoint(false, inner), (self.curr_line, start_col))
                     } else {
-                        (Token::Ident(inner), (self.curr_line, start))
+                        (Token::Ident(inner), (self.curr_line, start_col))
                     }
                 }
             }
@@ -824,6 +839,24 @@ let main _ : int32 -> int32 =
                 Ident("print_str".to_owned()), StringLiteral("v".to_owned()),Seq,
                 Return, Integer(false, "32".to_owned()),Seq,
             EoF
+            ]
+        )
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn ingore_comments() {
+        const SRC :&'static str = r#"
+//first comment
+let foo /*inline*/ x = 0;
+"#;
+
+        use Token::*;
+        assert_eq!(
+            TokenStream::from_source(SRC).collect_vec(),
+            &[
+                (Let,(2,0)), (Ident("foo".to_string()),(2,4)), (Ident("x".to_string()),(2,19)), (Op("=".to_string()),(2,21)), (Integer(false, "0".to_string()),(2,23)), (Seq,(2,24)),
+                (EoF,(3,0))
             ]
         )
     }

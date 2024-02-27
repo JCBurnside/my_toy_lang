@@ -1,3 +1,4 @@
+
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::iter::once;
@@ -1494,7 +1495,7 @@ impl<'ctx> CodeGen<'ctx> {
 
             TypedExpr::ValueRead(ident, _, _) => self
                 .locals
-                .get(dbg!(&ident))
+                .get(&ident)
                 .map(|val| val.as_any_value_enum())
                 .or(self
                     .known_values
@@ -1726,7 +1727,7 @@ impl<'ctx> CodeGen<'ctx> {
             }
             TypedDeclaration::TypeDefinition(def) => match def {
                 compiler::typed_ast::ResolvedTypeDeclaration::Struct(def) => {
-                    if !def.generics.is_empty() {
+                    if !def.generics.is_none() {
                         return self.module.clone();
                     }
                     let strct = self.ctx.get_struct_type(&def.ident).unwrap();
@@ -1772,7 +1773,7 @@ impl<'ctx> CodeGen<'ctx> {
             }
             TypedDeclaration::TypeDefinition(def) => match def {
                 compiler::typed_ast::ResolvedTypeDeclaration::Struct(decl) => {
-                    if decl.generics.len() != 0 {
+                    if decl.generics.is_some() {
                         return;
                     }
                     let _strct = self.ctx.opaque_struct_type(&decl.ident);
@@ -1812,6 +1813,7 @@ impl<'ctx> CodeGen<'ctx> {
                 let ResolvedType::Function {
                     arg: arg_t,
                     returns,
+                    loc:_
                 } = result_ty.clone()
                 else {
                     unreachable!()
@@ -1836,6 +1838,7 @@ impl<'ctx> CodeGen<'ctx> {
         let ResolvedType::Function {
             arg: arg_t,
             returns: rt,
+            loc:_
         } = result_ty
         else {
             unreachable!()
@@ -2021,6 +2024,7 @@ impl<'ctx> CodeGen<'ctx> {
                             == ResolvedType::Function {
                                 arg: Box::new(types::UNIT),
                                 returns: Box::new(types::UNIT),
+                                loc:(0,0)
                             })
                     {
                         Some(decl.ident.clone())

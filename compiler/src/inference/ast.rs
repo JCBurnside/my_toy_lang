@@ -7,7 +7,7 @@ use crate::{
 };
 
 pub(crate) use crate::ast::{Pattern, TypeDefinition};
-
+pub use crate::ast::GenericsDecl;
 #[derive(PartialEq, Debug)]
 pub(crate) struct ModuleDeclaration {
     pub(crate) loc: crate::Location,
@@ -45,7 +45,7 @@ pub(crate) struct ValueDeclaration {
     pub(crate) args: Vec<ArgDeclaration>,
     pub(crate) ty: ResolvedType,
     pub(crate) value: ValueType,
-    pub(crate) generics: Vec<String>,
+    pub(crate) generics: Option<GenericsDecl>,
     pub(crate) id: usize,
 }
 
@@ -186,6 +186,7 @@ impl Expr {
             Expr::StructConstruction(strct) => ResolvedType::User {
                 name: strct.ident.clone(),
                 generics: strct.generics.clone(),
+                loc:(0,0)
             },
             Expr::BoolLiteral(_, _, _) => types::BOOL,
             Expr::If(if_) => {
@@ -204,6 +205,7 @@ impl Expr {
             },
         }
     }
+
 }
 
 #[derive(PartialEq, Debug)]

@@ -111,6 +111,12 @@ impl Declaration {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub struct GenericsDecl {
+    pub for_loc : crate::Location,
+    pub decls : Vec<(crate::Location,String)>
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub enum TypeDefinition {
     Alias(String, ResolvedType),
     #[allow(unused)]
@@ -146,7 +152,7 @@ impl TypeDefinition {
 #[derive(PartialEq, Debug, Clone)]
 pub struct EnumDeclation {
     pub ident: String,
-    pub generics: Vec<String>,
+    pub generics: Option<GenericsDecl>,
     pub values: Vec<EnumVariant>,
     pub loc: crate::Location,
 }
@@ -162,7 +168,7 @@ pub enum EnumVariant {
 #[derive(PartialEq, Debug, Clone)]
 pub struct StructDefinition {
     pub ident: String,
-    pub generics: Vec<String>,
+    pub generics: Option<GenericsDecl>,
     pub values: Vec<FieldDecl>,
     pub loc: crate::Location,
 }
@@ -189,7 +195,7 @@ pub struct ValueDeclaration {
     pub args: Vec<ArgDeclaration>,
     pub ty: Option<ResolvedType>,
     pub value: ValueType,
-    pub generictypes: Vec<String>,
+    pub generictypes: Option<GenericsDecl>,
 }
 impl ValueDeclaration {
     fn replace(&mut self, nice_name: &str, actual: &str) {
