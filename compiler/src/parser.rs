@@ -38,6 +38,14 @@ enum ParseErrorReason {
     UnknownError, //internal use.  should basically never be hit.
 }
 
+
+pub struct ParserReturns<T> {
+    pub ast:T,
+    pub loc:crate::Location,
+    pub warnings:Vec<()>, //TODO! add warnings and a way to treat warnings as errors
+    pub errors : Vec<ParseError>
+}
+
 pub(crate) struct Parser<T: Clone>
 where
     T: Iterator<Item = (Token, crate::Location)>,
@@ -104,6 +112,7 @@ where
                     self.stream.next();
                 } else {
                     println!("expected ; on line {}", inner.get_loc().0);
+                    //TODO! convert to a warning that is added and returned as part of the ast.
                 }
                 Ok(inner)
             }
@@ -111,11 +120,13 @@ where
             Some((Token::Ident(_), _)) =>
             // for now last statement in a block is not treated as return though will allow for that soon.
             {
-                let inner = Statement::FnCall(self.function_call()?.0);
+                let ParserReturns { ast, loc:_, mut warnings, mut errors }= self.function_call();
+                let inner = Statement::FnCall(ast);
                 if let Some((Token::Seq, _)) = self.stream.clone().next() {
                     self.stream.next();
                 } else {
                     println!("expected ; on line {}", inner.get_loc().0);
+                    //TODO! convert to a warning that is added and returned as part of the ast.
                 }
                 Ok(inner)
             }
@@ -125,22 +136,35 @@ where
                 Ok(inner)
             }
             Some((Token::Match, _)) => {
-                let match_ = Statement::Match(self.match_()?.0);
-                Ok(match_)
+                let ParserReturns {ast:match_, loc, warnings, errors } = self.match_();
+                Ok(Statement::Match(match_))
             }
             _ => unreachable!("how?"),
         }
     }
 
-    pub fn next_expr(&mut self) -> Result<(crate::ast::Expr, crate::Location), ParseError> {
+    pub fn next_expr(&mut self) -> ParserReturns<ast::Expr>{
         match self.stream.clone().next() {
-            Some((Token::If, loc)) => Ok((ast::Expr::If(self.ifexpr()?.0), loc)),
+            Some((Token::If, loc)) => {
+                let ParserReturns { ast, loc:_, warnings, errors } = self.ifexpr();
+                ParserReturns {
+                    ast: Expr::If(ast),
+                    loc,
+                    warnings,
+                    errors
+                }
+            },
             Some((Token::GroupOpen, loc))
                 if matches!(self.stream.clone().nth(1), Some((Token::GroupClose, _))) =>
             {
                 self.stream.next();
                 self.stream.next();
-                return Ok((Expr::UnitLiteral, loc));
+                return ParserReturns {
+                    ast:Expr::UnitLiteral,
+                    loc,
+                    warnings:Vec::new(),
+                    errors:Vec::new()
+                };
             }
             Some((Token::GroupOpen, _)) => {
                 let mut group_opens = 0;
@@ -170,11 +194,11 @@ where
                     self.binary_op()
                 } else {
                     self.stream.next();
-                    let out = self.next_expr()?;
+                    let out = self.next_expr();
                     if let Some((Token::GroupClose, _)) = self.stream.peek() {
                         self.stream.next();
                     }
-                    return Ok(out);
+                    return out;
                 }
             }
             Some((Token::Ident(_), _))
@@ -202,21 +226,29 @@ where
                     }
                 });
                 if let Some((Token::CurlOpen, _)) = skipped.next() {
-                    let strct = self.struct_construct()?;
-                    let loc = strct.loc;
-                    Ok((Expr::StructConstruction(strct), loc))
+                    let ParserReturns { ast, loc, warnings, errors, } = self.struct_construct();
+                    ParserReturns {
+                        ast : Expr::StructConstruction(ast),
+                        loc,
+                        warnings,
+                        errors,
+                    }
                 } else {
                     self.binary_op()
                 }
             }
             Some((Token::ArrayOpen, loc)) => {
                 let mut contents = Vec::new();
+                let mut errs = Vec::new();
+                let mut warnings = Vec::new();
                 let _ = self.stream.next();
                 while let Some((tkn, _)) = self.stream.clone().next() {
                     match tkn {
                         Token::ArrayClose => break,
                         _ => {
-                            let (value, _) = self.next_expr()?;
+                            let ParserReturns {ast:value, errors : new_errs, loc:_, warnings:new_warnings} = self.next_expr();
+                            errs.extend(new_errs);
+                            warnings.extend(new_warnings);
                             contents.push(value);
                             match self.stream.clone().next() {
                                 Some((Token::Comma, _)) => {
@@ -224,10 +256,18 @@ where
                                 }
                                 Some((Token::ArrayClose, _)) => (), // do nothing as to generate an error if anything but these two
                                 _ => {
-                                    return Err(ParseError {
-                                        span: loc,
-                                        reason: ParseErrorReason::UnexpectedToken,
-                                    });
+                                    if let Some((_,loc)) = self.stream.clone().next() {
+                                        errs.push(ParseError {
+                                            span:loc,
+                                            reason:ParseErrorReason::UnexpectedToken
+                                        });
+                                    }
+                                    else {
+                                        errs.push(ParseError {
+                                            span:(0,0),
+                                            reason:ParseErrorReason::UnexpectedEndOfFile
+                                        });
+                                    }
                                 }
                             }
                         }
@@ -236,7 +276,12 @@ where
 
                 let _ = self.stream.next();
 
-                Ok((Expr::ArrayLiteral { contents, loc }, loc))
+                ParserReturns {
+                    ast:Expr::ArrayLiteral { contents, loc }, 
+                    loc,
+                    warnings,
+                    errors:errs
+                }
             }
             Some((
                 Token::Integer(_, _)
@@ -260,7 +305,9 @@ where
                 | Token::FloatingPoint(_, _)
                 | Token::Integer(_, _),
                 loc,
-            )) => Ok((self.literal()?, loc)),
+            )) => {
+                self.literal()
+            },
             Some((Token::Ident(_), _)) => {
                 if let Some((
                     Token::Ident(_)
@@ -272,8 +319,13 @@ where
                     _,
                 )) = self.stream.clone().nth(1)
                 {
-                    let (call, loc) = self.function_call()?;
-                    Ok((Expr::FnCall(call), loc))
+                    let ParserReturns { ast, loc, warnings, errors } = self.function_call();
+                    ParserReturns {
+                        ast: Expr::FnCall(ast),
+                        loc,
+                        warnings,
+                        errors,
+                    }
                 } else if let Some((Token::CurlOpen, _)) = self
                     .stream
                     .clone()
@@ -281,64 +333,71 @@ where
                     .skip_while(|(it, _)| matches!(it, Token::BeginBlock))
                     .next()
                 {
-                    let strct = self.struct_construct()?;
-                    let loc = strct.loc;
-                    Ok((Expr::StructConstruction(strct), loc))
+                    let ParserReturns { ast, loc, warnings, errors, } = self.struct_construct();
+                    ParserReturns {
+                        ast : Expr::StructConstruction(ast),
+                        loc,
+                        warnings,
+                        errors,
+                    }
                 } else {
                     self.value()
                 }
             }
             Some((Token::True, loc)) => {
                 let _ = self.stream.next();
-                Ok((Expr::BoolLiteral(true, loc), loc))
+                ParserReturns {
+                    ast : Expr::BoolLiteral(true, loc),
+                    loc,
+                    warnings:Vec::new(),
+                    errors: Vec::new(),
+                }
             }
             Some((Token::False, loc)) => {
                 let _ = self.stream.next();
-                Ok((Expr::BoolLiteral(false, loc), loc))
+                ParserReturns {
+                    ast : Expr::BoolLiteral(false, loc),
+                    loc,
+                    warnings:Vec::new(),
+                    errors: Vec::new(),
+                }
             }
             Some((Token::Match, _)) => {
-                let match_ = self.match_().map_or_else(
-                    |e| {
-                        println!("{e:?}");
-                        (Expr::Error, e.span)
-                    },
-                    |(match_, loc)| (Expr::Match(match_), loc),
-                );
-                Ok(match_)
+                let ParserReturns { ast, loc, warnings, errors } = self.match_();
+                ParserReturns {
+                    ast: Expr::Match(ast),
+                    loc,
+                    warnings,
+                    errors,
+                }
             }
-            _ => Err(ParseError {
-                span: (100000, 0),
-                reason: ParseErrorReason::UnknownError,
-            }),
+            _ => ParserReturns {
+                ast : Expr::Error,
+                loc:(0,0),
+                warnings : Vec::new(),
+                errors : vec![
+                    ParseError {
+                        span: (0,0),
+                        reason: ParseErrorReason::UnknownError,
+                    }
+                ]
+            },
         }
     }
 
-    fn ifexpr(&mut self) -> Result<(ast::IfExpr, crate::Location), ParseError> {
-        let Some((Token::If, loc)) = self.stream.next() else {
+    fn ifexpr(&mut self) -> ParserReturns<ast::IfExpr> {
+        let Some((Token::If, if_loc)) = self.stream.next() else {
             unreachable!()
         };
-        let cond = match self.next_expr() {
-            Err(e) => {
-                println!("{e:?}");
-                ast::Expr::Error
-            }
-            Ok(cond) => cond.0,
-        }
-        .boxed();
+        let ParserReturns {ast:root_cond, loc:_,mut warnings, mut errors } = self.next_expr();
         if let Some((Token::Then, _)) = self.stream.peek() {
             let _ = self.stream.next();
         } else {
             let (token, loc) = self.stream.next().unwrap();
-            println!(
-                "Expected then but got {:?} at line:{} col:{}",
-                token, loc.0, loc.1
-            );
-            return Err(ParseError {
-                span: loc,
-                reason: ParseErrorReason::UnexpectedToken,
-            });
-        };
-        let body = match self.stream.clone().next() {
+            // TODO! recovery?
+            errors.push(ParseError{ span:loc, reason:ParseErrorReason::UnexpectedToken});
+        }
+        let true_body = match self.stream.clone().next() {
             Some((Token::BeginBlock, _)) => {
                 let _ = self.stream.next();
                 let mut body = Vec::new();
@@ -353,32 +412,25 @@ where
                     body.push(match self.next_statement() {
                         Ok(stmnt) => stmnt,
                         Err(e) => {
-                            println!("{e:?}");
+                            errors.push(e);
                             Statement::Error
                         }
                     });
                 }
-                let ret = match self.next_expr() {
-                    Ok(expr) => expr.0,
-                    Err(e) => {
-                        println!("{e:?}");
-                        Expr::Error
-                    }
-                }
-                .boxed();
+                let ret = self.next_expr();
+                errors.extend(ret.errors);
+                warnings.extend(ret.warnings);
                 let _ = self.stream.next();
-                (body, ret)
+                (body, ret.ast)
             }
             _ => (
-                vec![],
-                match self.next_expr() {
-                    Ok(expr) => expr.0,
-                    Err(e) => {
-                        println!("{e:?}");
-                        Expr::Error
-                    }
-                }
-                .boxed(),
+                Vec::new(),
+                {
+                    let ret = self.next_expr();
+                    warnings.extend(ret.warnings);
+                    errors.extend(ret.errors);
+                    ret.ast
+                },
             ),
         };
         if let Some((Token::Else, _)) = self.stream.peek() {
@@ -389,28 +441,18 @@ where
                 let Some((Token::If, loc)) = self.stream.next() else {
                     unreachable!()
                 };
-                let cond = match self.next_expr() {
-                    Err(e) => {
-                        println!("{e:?}");
-                        ast::Expr::Error
-                    }
-                    Ok(cond) => cond.0,
-                }
-                .boxed();
+                let cond = self.next_expr();
+                warnings.extend(cond.warnings);
+                errors.extend(cond.errors);
+                let cond = cond.ast.boxed();
 
                 if let Some((Token::Then, _)) = self.stream.peek() {
                     let _ = self.stream.next();
                 } else {
                     let (token, loc) = self.stream.next().unwrap();
-                    println!(
-                        "Expected then but got {:?} at line:{} col:{}",
-                        token, loc.0, loc.1
-                    );
-                    return Err(ParseError {
-                        span: loc,
-                        reason: ParseErrorReason::UnexpectedToken,
-                    });
-                };
+                    // TODO! recovery?
+                    errors.push(ParseError{ span:loc, reason:ParseErrorReason::UnexpectedToken});
+                }
                 let (body, ret) = match self.stream.clone().next() {
                     Some((Token::BeginBlock, _)) => {
                         let _ = self.stream.next();
@@ -431,39 +473,49 @@ where
                                 }
                             });
                         }
-                        let ret = match self.next_expr() {
-                            Ok(expr) => expr.0,
-                            Err(e) => {
-                                println!("{e:?}");
-                                Expr::Error
-                            }
-                        };
-
+                        let ret = self.next_expr();
+                        errors.extend(ret.errors);
+                        warnings.extend(ret.warnings);
                         let _ = self.stream.next();
-                        (body, ret)
+                        (body, ret.ast)
                     }
-                    _ => (
-                        vec![],
-                        match self.next_expr() {
-                            Ok(expr) => expr.0,
-                            Err(e) => {
-                                println!("{e:?}");
-                                Expr::Error
-                            }
-                        },
-                    ),
+                    _ => 
+                    {
+                        let ret = self.next_expr();
+                        warnings.extend(ret.warnings);
+                        errors.extend(ret.errors);
+                        (
+                            Vec::new(),
+                            ret.ast
+                        )
+                    },
                 };
                 else_ifs.push((cond, body, ret.boxed()));
 
-                let Some((Token::Else, _)) = self.stream.next() else {
-                    return Err(ParseError {
-                        span: loc,
-                        reason: ParseErrorReason::NoElseBlock,
+                if let Some((Token::Else, _loc)) = self.stream.clone().next() {
+                    let _else_token = self.stream.next();
+                } else {
+                    //todo! recovery?
+                    errors.push(ParseError{
+                        span:loc,
+                        reason: ParseErrorReason::UnexpectedToken
                     });
+                    return ParserReturns {
+                        ast : ast::IfExpr {
+                            cond:root_cond.boxed(),
+                            loc:if_loc,
+                            true_branch:(true_body.0,true_body.1.boxed()),
+                            else_ifs,
+                            else_branch:(Vec::new(),ast::Expr::Error.boxed())
+                        },
+                        loc:if_loc,
+                        warnings,
+                        errors,
+                    }
                 };
             }
 
-            let else_branch = match self.stream.clone().next() {
+            let else_branch = match dbg!(self.stream.clone().next()) {
                 Some((Token::BeginBlock, _)) => {
                     let _ = self.stream.next();
 
@@ -484,61 +536,107 @@ where
                             }
                         });
                     }
-                    let ret = match self.next_expr() {
-                        Ok(expr) => expr.0,
-                        Err(e) => {
-                            println!("{e:?}");
-                            Expr::Error
-                        }
-                    }
-                    .boxed();
+                    let ret = self.next_expr();
+                    warnings.extend(ret.warnings);
+                    errors.extend(ret.errors);
 
                     let _ = self.stream.next();
-                    (body, ret)
+                    (body, ret.ast.boxed())
                 }
-                _ => (
-                    vec![],
-                    match self.next_expr() {
-                        Ok(expr) => expr.0,
-                        Err(e) => {
-                            println!("{e:?}");
-                            Expr::Error
-                        }
-                    }
-                    .boxed(),
-                ),
+                _ => 
+                {
+                    let ret = self.next_expr();
+                    warnings.extend(ret.warnings);
+                    errors.extend(ret.errors);
+                    (
+                        Vec::new(),
+                        ret.ast.boxed()
+                    )
+                },
             };
-            Ok((
-                ast::IfExpr {
-                    cond,
-                    true_branch: body,
+            
+            ParserReturns {
+                ast:ast::IfExpr {
+                    cond:root_cond.boxed(),
+                    true_branch: (true_body.0,true_body.1.boxed()),
                     else_ifs,
                     else_branch,
-                    loc,
+                    loc:if_loc,
                 },
+                loc:if_loc,
+                warnings,
+                errors
+            }
+            
+        } else {
+            if let Some((_,loc)) = self.stream.clone().next() {
+                errors.push(ParseError {
+                    span:loc,
+                    reason:ParseErrorReason::UnexpectedToken
+                });
+            } 
+            // TODO! recover
+            ParserReturns {
+                ast:ast::IfExpr {
+                    cond: root_cond.boxed(),
+                    true_branch:(true_body.0,true_body.1.boxed()),
+                    else_ifs:Vec::new(),
+                    else_branch : (
+                        Vec::new(),
+                        Expr::Error.boxed()
+                    ),
+                    loc:if_loc,
+                },
+                loc:if_loc,
+                warnings,
+                errors,
+            }
+        }
+    }
+
+    fn value(&mut self) -> ParserReturns<Expr> {
+        if let Some((Token::Ident(ident), loc)) = self.stream.clone().next() {
+            let _ = self.stream.next();
+            ParserReturns {
+                ast:ast::Expr::ValueRead(ident, loc),
                 loc,
-            ))
+                warnings:Vec::new(),
+                errors : Vec::new(),
+            }
         } else {
-            Err(ParseError {
-                span: loc,
-                reason: ParseErrorReason::NoElseBlock,
-            })
+            let loc = if let Some((_,loc))=self.stream.peek() {
+                *loc 
+            } else {
+                return ParserReturns {
+                    ast:Expr::Error,
+                    loc:(0,0),
+                    warnings:Vec::new(),
+                    errors : vec![
+                        ParseError {
+                            span:(0,0),
+                            reason : ParseErrorReason::UnexpectedEndOfFile
+                        }
+                    ]
+                } 
+            };
+            ParserReturns {
+                ast:Expr::Error,
+                loc:loc,
+                warnings:Vec::new(),
+                errors :vec![
+                    ParseError {
+                        span : loc,
+                        reason: ParseErrorReason::UnknownError
+                    }
+                ]
+            }
         }
     }
 
-    fn value(&mut self) -> Result<(Expr, crate::Location), ParseError> {
-        if let Some((Token::Ident(ident), loc)) = self.stream.next() {
-            Ok((ast::Expr::ValueRead(ident, loc), loc))
-        } else {
-            Err(ParseError {
-                span: (100, 100),
-                reason: ParseErrorReason::UnknownError,
-            })
-        }
-    }
-
-    fn function_call(&mut self) -> Result<(FnCall, crate::Location), ParseError> {
-        if let Some((Token::Ident(ident), loc)) = self.stream.next() {
+    fn function_call(&mut self) -> ParserReturns<FnCall> {
+        let mut errors = Vec::new();
+        let mut warnings = Vec::new();
+        if let Some((Token::Ident(ident), value_loc)) = self.stream.next() {
             let mut values = Vec::<(ast::Expr, (usize, usize))>::new();
             while let Some((
                 | Token::GroupOpen
@@ -556,12 +654,23 @@ where
                     Some(Token::Ident(_)) => {
                         let test = self.stream.clone().nth(1);
                         if let Some((Token::Op(_),_)) = test {
-                            values.push(self.binary_op()?)
+                            let ParserReturns { ast:expr, loc, warnings:expr_warnings, errors:expr_errors } =self.binary_op();
+                            values.push((expr,loc));
+                            warnings.extend(expr_warnings);
+                            errors.extend(expr_errors);
                         } else {
-                            values.push(self.value()?)
+                            let ParserReturns { ast:expr, loc, warnings:expr_warnings, errors:expr_errors } =self.value();
+                            values.push((expr,loc));
+                            warnings.extend(expr_warnings);
+                            errors.extend(expr_errors);
                         }
                     }
-                    Some(Token::GroupOpen) => values.push(self.next_expr()?),
+                    Some(Token::GroupOpen) =>{
+                        let value = self.next_expr();
+                        errors.extend(value.errors);
+                        warnings.extend(value.warnings);
+                        values.push((value.ast,value.loc))
+                    },
                     Some(
                         | Token::Integer(_,_)
                         | Token::FloatingPoint(_, _)
@@ -578,30 +687,39 @@ where
                             | Token::CharLiteral(_)
                             | Token::StringLiteral(_)
                         ,loc)) = test {
-                            values.push((self.literal()?,loc))
+                            let ParserReturns { ast, loc:_, warnings:lit_warnings, errors:lit_errors, }= self.literal();
+                            warnings.extend(lit_warnings);
+                            errors.extend(lit_errors);
+                            values.push((ast,loc))
                         } else if let Some((Token::Op(_),_)) = test {
-                            values.push(self.binary_op()?)
+                            let ParserReturns { ast:expr, loc, warnings:expr_warnings, errors:expr_errors } =self.binary_op();
+                            values.push((expr,loc));
+                            warnings.extend(expr_warnings);
+                            errors.extend(expr_errors);
                         } else {
-                            values.push((self.literal()?,loc))
+                            let ParserReturns { ast, loc:_, warnings:lit_warnings, errors:lit_errors, }= self.literal();
+                            warnings.extend(lit_warnings);
+                            errors.extend(lit_errors);
+                            values.push((ast,value_loc))
                         }
                     },
                     _ => unreachable!()
                     // TODO! add in operator case special handling
                 }
             }
-            Ok(values.into_iter().fold(
+            let (ast,loc) = values.into_iter().fold(
                 (
                     FnCall {
-                        loc,
-                        value: ast::Expr::ValueRead(ident, loc).boxed(),
+                        loc:value_loc,
+                        value: ast::Expr::ValueRead(ident, value_loc).boxed(),
                         arg: None,
                     },
-                    loc,
+                    value_loc,
                 ),
-                |inner, (next, loc)| {
+                |(inner,loc), (next, next_loc)| {
                     if let FnCall {
                         value, arg: None, ..
-                    } = inner.0
+                    } = inner
                     {
                         (
                             FnCall {
@@ -609,34 +727,78 @@ where
                                 value,
                                 arg: Some(next.boxed()),
                             },
-                            loc,
+                            next_loc,
                         )
                     } else {
                         (
                             FnCall {
                                 loc,
-                                value: Expr::FnCall(inner.0).boxed(),
+                                value: Expr::FnCall(inner).boxed(),
                                 arg: Some(next.boxed()),
                             },
-                            loc,
+                            next_loc,
                         )
                     }
                 },
-            ))
+            );
+            ParserReturns {
+                ast,
+                loc:value_loc,
+                warnings,
+                errors,
+            }
         } else {
-            Err(ParseError {
+            errors.push(ParseError {
                 span: (0, 0),
                 reason: ParseErrorReason::UnknownError,
-            })
+            });
+            ParserReturns {
+                ast:FnCall {
+                    value : Expr::Error.boxed(),
+                    arg : Some(Expr::Error.boxed()),
+                    loc:(0,0)
+                },
+                loc:(0,0),
+                warnings,
+                errors
+            }
         }
     }
 
-    fn struct_construct(&mut self) -> Result<StructConstruction, ParseError> {
-        let ResolvedType::User { name, generics, loc:_ } = self.collect_type()? else {
-            unreachable!("what are you doing?")
+    fn struct_construct(&mut self) -> ParserReturns<StructConstruction> {
+        let mut warnings = Vec::new();
+        let mut errors = Vec::new();
+        let Some((_,loc)) = self.stream.clone().next() else { unreachable!("ICE: somehow reached struct construction with no token?")};
+        let (name,generics) = match self.collect_type() {
+            Ok(ResolvedType::User { name, generics, loc:_ }) => (name,generics),
+            Ok(_) => {
+                errors.push(ParseError{
+                    span:loc,
+                    reason:ParseErrorReason::InvalidIdent,
+                });
+                ("<error>".to_string(), vec![types::ERROR])
+            }
+            Err(e) => {
+                errors.push(e);
+                ("<error>".to_string(), vec![types::ERROR])
+            },
         };
         let Some((Token::CurlOpen, loc)) = self.stream.next() else {
-            unreachable!()
+            /* TODO? handle blocks?
+                EG: ```
+                let x = Foo 
+                    {
+                        y:0
+                    }
+                ```
+                though idomatic would be the following or inline.
+                ```
+                let x = Foo {
+                    y:0
+                }
+                ```
+            */
+            unreachable!("ICE: reached struct construction with no braces?")
         };
         let mut fields = HashMap::new();
         while let Some((Token::Ident(_), _)) = self.stream.peek() {
@@ -646,16 +808,15 @@ where
             let Some((Token::Colon, _)) = self.stream.next() else {
                 todo!("handle infered assignment")
             };
-            let expr = match self.next_expr() {
-                Ok((expr, _)) => expr,
-                Err(e) => {
-                    println!("{:?}", e);
-                    Expr::Error
-                }
-            };
+            let ParserReturns { ast:expr, loc:_, warnings:expr_warnings, errors:expr_errors } = self.next_expr();
+            warnings.extend(expr_warnings);
+            errors.extend(expr_errors);
             if fields.contains_key(&ident) {
                 let (_, loc): &(_, crate::Location) = &fields[&ident];
-                println!("already declared at line {} column {}", loc.0, loc.1)
+                errors.push(ParseError {
+                    span:*loc,
+                    reason:ParseErrorReason::DeclarationError,
+                })
             } else {
                 fields.insert(ident, (expr, loc));
             }
@@ -668,24 +829,40 @@ where
             .peeking_take_while(|(t, _)| matches!(t, Token::EndBlock))
             .collect();
         let Some((Token::CurlClose, _)) = self.stream.next() else {
-            println!("not closed");
-            return Err(ParseError {
+            errors.push(ParseError {
                 span: loc,
                 reason: ParseErrorReason::UnbalancedBraces,
             });
+            fields.insert("".to_string(), (Expr::Error,(0,0)));
+            return ParserReturns {
+                ast : StructConstruction {
+                    loc,
+                    fields,
+                    generics,
+                    ident: "".to_string(),
+                },
+                loc,
+                warnings,
+                errors,
+            }
         };
-        Ok(StructConstruction {
+        ParserReturns {
+            ast:StructConstruction {
+                loc,
+                fields,
+                generics,
+                ident: name,
+            },
             loc,
-            fields,
-            generics,
-            ident: name,
-        })
+            warnings,
+            errors
+        }
     }
 
     fn ret(&mut self) -> Result<Statement, ParseError> {
         let (token, span) = self.stream.next().unwrap();
         if token == Token::Return {
-            let expr = self.next_expr()?.0;
+            let ParserReturns { ast:expr, loc, warnings, errors } = self.next_expr();
             Ok(ast::Statement::Return(expr, span))
         } else {
             Err(ParseError {
@@ -695,23 +872,34 @@ where
         }
     }
 
-    fn literal(&mut self) -> Result<crate::ast::Expr, ParseError> {
+    fn literal(&mut self) -> ParserReturns<Expr> {
         let (token, span) = self.stream.next().unwrap();
-        make_literal(token, span)
+        match make_literal(token, span) {
+            Ok(lit) => {
+                ParserReturns {
+                    ast:lit,
+                    loc:span,
+                    warnings:Vec::new(),
+                    errors:Vec::new(),
+                }
+            }
+            Err(e) => {
+                ParserReturns {
+                    ast:Expr::Error,
+                    loc:span,
+                    warnings:Vec::new(),
+                    errors:vec![e]
+                }
+            }
+        }
     }
 
     fn ifstatement(&mut self) -> Result<crate::ast::IfBranching, ParseError> {
-        let Some((Token::If, loc)) = self.stream.next() else {
+        let Some((Token::If, if_loc)) = self.stream.next() else {
             unreachable!()
         };
-        let cond = match self.next_expr() {
-            Err(e) => {
-                println!("{e:?}");
-                ast::Expr::Error
-            }
-            Ok(cond) => cond.0,
-        }
-        .boxed();
+        let ParserReturns { ast:cond, mut warnings, mut errors, loc } = self.next_expr();
+        let cond = cond.boxed();
         if let Some((Token::Then, _)) = self.stream.peek() {
             let _ = self.stream.next();
         } else {
@@ -752,14 +940,11 @@ where
                 let Some((Token::If, loc)) = self.stream.next() else {
                     unreachable!()
                 };
-                let cond = match self.next_expr() {
-                    Err(e) => {
-                        println!("{e:?}");
-                        ast::Expr::Error
-                    }
-                    Ok(cond) => cond.0,
-                }
-                .boxed();
+
+                let ParserReturns { ast:cond, warnings:new_warnings, errors:new_errors, loc:_ }= self.next_expr();
+                warnings.extend(new_warnings);
+                errors.extend(new_errors);
+                let cond = cond.boxed();
                 if let Some((Token::Then, _)) = self.stream.peek() {
                     let _ = self.stream.next();
                 } else {
@@ -819,7 +1004,7 @@ where
                 true_branch: body,
                 else_ifs,
                 else_branch,
-                loc,
+                loc:if_loc,
             })
         } else {
             Ok(ast::IfBranching {
@@ -827,7 +1012,7 @@ where
                 true_branch: body,
                 else_ifs: Vec::new(),
                 else_branch: Vec::new(),
-                loc,
+                loc:if_loc,
             })
         }
     }
@@ -1256,7 +1441,10 @@ where
 
             let value = match self.stream.clone().next() {
                 Some((Token::BeginBlock, _)) => ValueType::Function(self.collect_block()?),
-                Some((_, _)) => ValueType::Expr(self.next_expr()?.0),
+                Some((_, _)) => {
+                    let ParserReturns {ast, loc, warnings, errors} =self.next_expr();
+                    ValueType::Expr(ast)
+                },
                 _ => {
                     return Err(ParseError {
                         span: ident_span,
@@ -1324,8 +1512,10 @@ where
         }
     }
 
-    fn binary_op(&mut self) -> Result<(ast::Expr, crate::Location), ParseError> {
-        let loc = self.stream.clone().nth(2).unwrap().1;
+    fn binary_op(&mut self) -> ParserReturns<Expr> {
+        let op_loc = self.stream.clone().nth(2).unwrap().1;
+        let mut warnings = Vec::new();
+        let mut errors = Vec::new();
         let mut group_opens = 0;
         let tokens = self
             .stream
@@ -1394,8 +1584,10 @@ where
                     for _ in 0..sub_tokens.len() {
                         token_iter.next();
                     }
-                    let result = Parser::from_stream(sub_tokens.into_iter()).next_expr()?;
-                    output.push(ShuntingYardOptions::Expr(result));
+                    let ParserReturns {ast:result, loc, warnings:expr_warnings, errors:expr_errors, } = Parser::from_stream(sub_tokens.into_iter()).next_expr();
+                    warnings.extend(expr_warnings);
+                    errors.extend(expr_errors);
+                    output.push(ShuntingYardOptions::Expr((result,loc)));
                 }
                 Token::GroupClose => {
                     let _ = token_iter.next();
@@ -1432,8 +1624,11 @@ where
                         for _ in 0..sub_tokens.len() {
                             token_iter.next();
                         }
-                        let result = Parser::from_stream(sub_tokens.into_iter()).next_expr()?;
-                        output.push(ShuntingYardOptions::Expr(result))
+                        let ParserReturns {ast:result, loc, warnings:expr_warnings, errors:expr_errors, } = Parser::from_stream(sub_tokens.into_iter()).next_expr();
+                        warnings.extend(expr_warnings);
+                        errors.extend(expr_errors);
+                    
+                        output.push(ShuntingYardOptions::Expr((result,loc)));
                     } else {
                         let Some((Token::Ident(ident), loc)) = token_iter.next() else {
                             unreachable!()
@@ -1449,12 +1644,28 @@ where
                 | Token::CharLiteral(_)
                 | Token::StringLiteral(_) => output.push(ShuntingYardOptions::Expr({
                     let Some((token, span)) = token_iter.next() else {
-                        return Err(ParseError {
-                            span: (0, 0),
-                            reason: ParseErrorReason::UnknownError,
-                        });
+                        return ParserReturns {
+                            ast : Expr::Error,
+                            loc:(0,0),
+                            warnings: Vec::new(),
+                            errors : vec![
+                                ParseError {
+                                    span: (0,0), 
+                                    reason: ParseErrorReason::UnknownError,
+                                }
+                            ]
+                        }
                     };
-                    (make_literal(token, span)?, span)
+
+
+                    let result = match make_literal(token, span) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            errors.push(e);
+                            ast::Expr::Error
+                        }
+                    };
+                    (result, span)
                 })),
                 Token::Op(_) => {
                     let Some((Token::Op(ident), loc)) = token_iter.next() else {
@@ -1528,31 +1739,46 @@ where
         }
 
         if final_expr.len() != 1 {
-            Err(ParseError {
-                span: loc,
+            errors.push(ParseError {
+                span: op_loc,
                 reason: ParseErrorReason::UnknownError,
-            })
+            });
+            ParserReturns {
+                ast:Expr::Error,
+                loc:op_loc,
+                warnings,
+                errors,
+            }
         } else {
-            Ok(final_expr.into_iter().next().unwrap())
+            let (expr,loc) = final_expr.into_iter().next().unwrap();
+
+            ParserReturns {
+                ast:expr,
+                loc:op_loc,
+                warnings,
+                errors
+            }
         }
     }
 
-    fn match_(&mut self) -> Result<(Match, crate::Location), ParseError> {
+    fn match_(&mut self) -> ParserReturns<Match> {
         let Some((Token::Match, match_loc)) = self.stream.next() else {
             unreachable!()
         };
-        let on = match self.next_expr() {
-            Ok(it) => it,
-            Err(e) => {
-                println!("{e:?}");
-                (ast::Expr::Error, e.span)
-            }
-        };
-        let Some((Token::Where, _)) = self.stream.next() else {
-            return Err(ParseError {
-                span: on.1,
+        let ParserReturns { ast:on, loc, mut warnings, mut errors } = self.next_expr();
+        if let Some((Token::Where, _)) = self.stream.clone().next() {
+            let _ = self.stream.next();
+        } else {
+            //TODO? recovery?
+            let loc = if let Some((_,loc)) = self.stream.clone().next() {
+                loc
+            } else {
+                (0,0)
+            };
+            errors.push(ParseError {
+                span: loc,
                 reason: ParseErrorReason::UnexpectedToken,
-            });
+            })
         };
         let expect_block = if let Some((Token::BeginBlock, _)) = self.stream.clone().next() {
             let _ = self.stream.next();
@@ -1684,32 +1910,23 @@ where
                             (body, None)
                         }
                         _ => {
-                            let ret = match self.next_expr() {
-                                Ok(expr) => expr.0,
-                                Err(e) => {
-                                    println!("{e:?}");
-                                    Expr::Error
-                                }
-                            }
-                            .boxed();
+                            let ParserReturns { ast:ret, warnings:ret_warnings, errors:ret_errors, loc } = self.next_expr();
+                            warnings.extend(ret_warnings);
+                            errors.extend(ret_errors);
                             if let Some((Token::EndBlock, _)) = self.stream.peek() {
                                 let _ = self.stream.next();
                             } else {
                                 println!("did you mean to move back a block?");
                             }
-                            (body, Some(ret))
+                            (body, Some(ret.boxed()))
                         }
                     }
                 }
                 _ => {
-                    let expr = match self.next_expr() {
-                        Ok(it) => it.0,
-                        Err(e) => {
-                            println!("{e:?}");
-                            ast::Expr::Error
-                        }
-                    }
-                    .boxed();
+                    let ParserReturns { ast:expr, warnings:ret_warnings, errors:ret_errors, loc } = self.next_expr();
+                    warnings.extend(ret_warnings);
+                    errors.extend(ret_errors);
+                            
                     if let Some((Token::Comma, _)) = self.stream.peek() {
                         let _ = self.stream.next();
                     } else {
@@ -1721,7 +1938,7 @@ where
                             peeked, loc.0, loc.1
                         )
                     }
-                    (Vec::new(), Some(expr))
+                    (Vec::new(), Some(expr.boxed()))
                 }
             };
             arms.push(ast::MatchArm {
@@ -1740,14 +1957,17 @@ where
             }
         }
 
-        Ok((
-            Match {
+        ParserReturns {
+            ast:Match {
                 loc: match_loc,
-                on: on.0.boxed(),
+                on: on.boxed(),
                 arms,
             },
-            match_loc,
-        ))
+            loc:match_loc,
+            warnings,
+            errors
+        }
+        
     }
 }
 
@@ -1883,7 +2103,7 @@ mod tests {
                 .boxed(),
                 operator: "&&".to_string()
             }),
-            parser.next_expr().unwrap().0,
+            parser.next_expr().ast,
             "(foo bar) && (baz quz)"
         );
     }
@@ -2098,7 +2318,7 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                 ],
                 value: ValueType::Function(vec![
                     Statement::FnCall(FnCall {
-                        loc: (7, 8), // TODO there is an error here.  somewhere in lexer
+                        loc: (7, 4),
                         value: Expr::ValueRead("bar".to_string(), (7, 4)).boxed(),
                         arg: Some(Expr::ValueRead("foo".to_string(), (7, 8)).boxed()),
                     }),
@@ -2211,11 +2431,11 @@ let main _ : int32 -> int32 =
                 .boxed(),
                 operator: "+".to_string()
             }),
-            parser.next_expr().unwrap().0
+            parser.next_expr().ast
         );
         const SRC: &'static str = r#"let main _ =
-    print_int32 100 + 100
-    return 0"#;
+    print_int32 100 + 100;
+    return 0;"#;
         let mut parser = Parser::from_source(SRC);
         assert_eq!(
             Statement::Declaration(ValueDeclaration {
@@ -2230,7 +2450,7 @@ let main _ : int32 -> int32 =
                 }],
                 value: ValueType::Function(vec![
                     Statement::FnCall(FnCall {
-                        loc: (1, 20),
+                        loc: (1, 4),
                         value: Expr::ValueRead("print_int32".to_owned(), (1, 4)).boxed(),
                         arg: Some(
                             Expr::BinaryOpCall(BinaryOpCall {
@@ -2290,7 +2510,7 @@ let main _ : int32 -> int32 =
                 .boxed(),
                 operator: "-".to_string()
             }),
-            parser.next_expr().unwrap().0,
+            parser.next_expr().ast,
         );
 
         let mut parser = Parser::from_source("(foo bar) && (baz quz)");
@@ -2298,20 +2518,20 @@ let main _ : int32 -> int32 =
             ast::Expr::BinaryOpCall(BinaryOpCall {
                 loc: (0, 10),
                 lhs: ast::Expr::FnCall(FnCall {
-                    loc: (0, 5),
+                    loc: (0, 1),
                     value: ast::Expr::ValueRead("foo".to_string(), (0, 1)).boxed(),
                     arg: Some(ast::Expr::ValueRead("bar".to_string(), (0, 5)).boxed())
                 })
                 .boxed(),
                 rhs: ast::Expr::FnCall(FnCall {
-                    loc: (0, 18),
+                    loc: (0, 14),
                     value: ast::Expr::ValueRead("baz".to_string(), (0, 14)).boxed(),
                     arg: Some(ast::Expr::ValueRead("quz".to_string(), (0, 18)).boxed())
                 })
                 .boxed(),
                 operator: "&&".to_string()
             }),
-            parser.next_expr().unwrap().0,
+            parser.next_expr().ast,
             "(foo bar) && (baz quz)"
         );
     }
@@ -2487,7 +2707,7 @@ for<T,U> type Tuple = {
                 generics: Vec::new(),
                 ident: "Foo".to_string()
             }),
-            parser.next_expr().unwrap().0
+            parser.next_expr().ast
         );
         assert_eq!(
             ast::Expr::StructConstruction(StructConstruction {
@@ -2506,8 +2726,7 @@ for<T,U> type Tuple = {
             }),
             Parser::from_source("Generic<int32>{ a:0 }")
                 .next_expr()
-                .unwrap()
-                .0
+                .ast
         )
     }
 
@@ -2733,7 +2952,8 @@ for<T,U> type Tuple = {
                     returns: types::INT32.boxed(),
                     loc:(16,23)
                 }),
-                value: ast::ValueType::Function(vec![ast::Statement::IfStatement(IfBranching {
+                value: ast::ValueType::Function(vec![
+                    ast::Statement::IfStatement(IfBranching {
                     cond: ast::Expr::ValueRead("a".to_string(), (17, 7)).boxed(),
                     true_branch: vec![
                         ast::Statement::FnCall(FnCall {

@@ -3123,7 +3123,7 @@ let main _ : () -> () =
                     is_curried: false,
                 }),
                 TypedStatement::FnCall(TypedFnCall {
-                    loc: (5, 9),
+                    loc: (5, 4),
                     value: TypedExpr::ValueRead(
                         "test".to_string(),
                         ResolvedType::Function {
@@ -3419,7 +3419,7 @@ let main x : int32 -> int32 =
                 }],
                 value: TypedValueType::Function(vec![
                     TypedStatement::FnCall(TypedFnCall {
-                        loc: (5, 9),
+                        loc: (5, 4),
                         value: TypedExpr::ValueRead(
                             "test<int32>".to_string(),
                             ResolvedType::Function {
@@ -3761,7 +3761,7 @@ let as_statement a b : int32 -> int32 -> () =
                 value: TypedValueType::Expr(TypedExpr::Match(TypedMatch {
                     loc: (1, 61),
                     on: TypedExpr::FnCall(TypedFnCall {
-                        loc: (1, 71),
+                        loc: (1, 67),
                         value: TypedExpr::ValueRead(
                             "fun".to_string(),
                             ResolvedType::Function {
@@ -3881,7 +3881,7 @@ let as_statement a b : int32 -> int32 -> () =
                     },
                 ],
                 value: TypedValueType::Expr(TypedExpr::FnCall(TypedFnCall {
-                    loc: (6, 67),
+                    loc: (6, 62),
                     value: TypedExpr::ValueRead(
                         "fun".to_string(),
                         ResolvedType::Function {

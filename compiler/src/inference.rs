@@ -1772,7 +1772,7 @@ let complex x =
                         }),
                         value: super::ast::ValueType::Function(vec![
                             super::ast::Statement::FnCall(super::ast::FnCall {
-                                loc: (6, 16),
+                                loc: (6, 4),
                                 value: super::ast::Expr::ValueRead(
                                     "print_int32".to_string(),
                                     (6, 4),
@@ -1841,7 +1841,7 @@ let complex x =
                                     else_branch: (
                                         Vec::new(),
                                         super::ast::Expr::FnCall(super::ast::FnCall {
-                                            loc: (7, 55),
+                                            loc: (7, 41),
                                             value: super::ast::Expr::ValueRead(
                                                 "annotated_arg".to_string(),
                                                 (7, 41),

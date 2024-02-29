@@ -35,11 +35,11 @@ fn main() {
         ResolvedType::Function {
             arg: Box::new(types::STR),
             returns: Box::new(ResolvedType::Void),
-            loc:(0,0)
+            loc: (0, 0),
         },
     );
 
-    let program = compiler::from_file(&args.file,fwd_decl.clone(), args.debug, "jit".to_string());
+    let program = compiler::from_file(&args.file, fwd_decl.clone(), args.debug, "jit".to_string());
 
     match program {
         Err(errors) => {
@@ -49,16 +49,14 @@ fn main() {
         }
         Ok(ast) => {
             if args.run {
-
-                let mut jit =
-                    llvm_codegen::create_jit_runtime(); 
+                let mut jit = llvm_codegen::create_jit_runtime();
                 jit.add_declarations(ast.declarations);
                 // TODO: Jit redirects.
                 unsafe {
                     jit.run_function::<unsafe extern "C" fn()>("main", ());
                 }
             } else if args.output_llvm {
-                llvm_codegen::compile_file(ast, args.file, args.out_file,fwd_decl)
+                llvm_codegen::compile_file(ast, args.file, args.out_file, fwd_decl)
             }
         }
     }
