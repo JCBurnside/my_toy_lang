@@ -1399,7 +1399,6 @@ mod tests {
         let ast =
             crate::Parser::from_source(r"let foo a = if a then 0 else 1").module("foo".to_string());
         assert_eq!(
-            ctx.assign_ids_module(ast),
             super::ast::ModuleDeclaration {
                 loc: (0, 0),
                 name: "foo".to_string(),
@@ -1448,6 +1447,7 @@ mod tests {
                     }
                 )]
             },
+            ctx.assign_ids_module(ast.ast),
             "with if expr",
         );
         ctx.reset();
@@ -1462,7 +1462,6 @@ let foo a = match a where
         )
         .module("foo".to_string());
         assert_eq!(
-            ctx.assign_ids_module(ast),
             super::ast::ModuleDeclaration {
                 loc: (0, 0),
                 name: "foo".to_string(),
@@ -1539,12 +1538,12 @@ let foo a = match a where
                         id: 0,
                     }
                 )]
-            }
+            },
+            ctx.assign_ids_module(ast.ast),
         );
         ctx.reset();
         let ast = crate::Parser::from_source("let foo a = a == 3").module("foo".to_string());
         assert_eq!(
-            ctx.assign_ids_module(ast),
             super::ast::ModuleDeclaration {
                 loc: (0, 0),
                 name: "foo".to_string(),
@@ -1581,6 +1580,7 @@ let foo a = match a where
                     }
                 )]
             },
+            ctx.assign_ids_module(ast.ast),
             "binary op"
         );
     }
@@ -1600,7 +1600,6 @@ for<T> let foo x y : T -> T -> () = ()
         );
 
         assert_eq!(
-            ctx.assign_ids_module(ast),
             super::ast::ModuleDeclaration {
                 loc: (0, 0),
                 name: "foo".to_string(),
@@ -1654,7 +1653,8 @@ for<T> let foo x y : T -> T -> () = ()
                         id: 0
                     }
                 )]
-            }
+            },
+            ctx.assign_ids_module(ast.ast),
         )
     }
 
@@ -1703,12 +1703,11 @@ let complex x =
             .into(),
             HashMap::new(),
         );
-        let mut ast = ctx.assign_ids_module(ast);
+        let mut ast = ctx.assign_ids_module(ast.ast);
         ctx.try_to_infer(&mut ast);
         ctx.apply_equations(&mut ast);
         ast.decls.sort_by_key(|it| it.get_ident());
         assert_eq!(
-            ast,
             super::ast::ModuleDeclaration {
                 loc: (0, 0),
                 name: "foo".to_string(),
@@ -1888,7 +1887,8 @@ let complex x =
                     //     id: todo!()
                     // }
                 ]
-            }
+            },
+            ast,
         )
     }
 
@@ -1922,7 +1922,7 @@ let unit_unit _ : () -> () = ()
             HashMap::new(),
         );
 
-        let mut module = ctx.inference(module);
+        let mut module = ctx.inference(module.ast);
 
         module.decls.sort_by_key(super::ast::Declaration::get_ident);
         let [
@@ -2047,11 +2047,10 @@ let if_expr a b : bool -> int32 -> int32 = if a then b else 0
             HashMap::new(),
             HashMap::new()
         );
-        let module = ctx.inference(module);
+        let module = ctx.inference(module.ast);
 
         let [if_expr] = &module.decls[..] else { unreachable!() };
         assert_eq!(
-            if_expr,
             &super::ast::Declaration::Value(super::ast::ValueDeclaration{
                 loc:(1,4),
                 is_op:false,
@@ -2096,7 +2095,8 @@ let if_expr a b : bool -> int32 -> int32 = if a then b else 0
                     result: types::INT32 
                 })),
                 generics:None
-            })
+            }),
+            if_expr,
         )
     }
 
@@ -2117,11 +2117,10 @@ let returns a : bool -> int32 =
             HashMap::new(),
             HashMap::new()
         );
-        let module = ctx.inference(module);
+        let module = ctx.inference(module.ast);
 
         let [returns] = &module.decls[..] else {unreachable!()};
         assert_eq!(
-            returns,
             &super::ast::Declaration::Value(super::ast::ValueDeclaration{
                 loc:(1,4),
                 is_op:false,
@@ -2159,7 +2158,8 @@ let returns a : bool -> int32 =
                     )
                 ]),
                 id:0
-            })
+            }),
+            returns,
         );
     }
 }

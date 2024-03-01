@@ -1,17 +1,10 @@
 use std::collections::HashMap;
 
 use clap::Parser;
-use inkwell::{
-    context::Context,
-    targets::{InitializationConfig, Target},
-    types::BasicType,
-    OptimizationLevel,
-};
 
 use compiler::types::{self, ResolvedType};
 
 mod cli_args;
-mod jitstd;
 
 fn main() {
     let args = cli_args::Arguments::parse();
@@ -27,8 +20,6 @@ fn main() {
         );
         return;
     }
-
-    Target::initialize_native(&InitializationConfig::default()).unwrap();
     let mut fwd_decl = HashMap::new();
     fwd_decl.insert(
         "print_str".to_owned(),
@@ -39,7 +30,7 @@ fn main() {
         },
     );
 
-    let program = compiler::from_file(&args.file, fwd_decl.clone(), args.debug, "jit".to_string());
+    let (program, warnings) = compiler::from_file(&args.file, fwd_decl.clone(), "jit".to_string());
 
     match program {
         Err(errors) => {
@@ -51,7 +42,6 @@ fn main() {
             if args.run {
                 let mut jit = llvm_codegen::create_jit_runtime();
                 jit.add_declarations(ast.declarations);
-                // TODO: Jit redirects.
                 unsafe {
                     jit.run_function::<unsafe extern "C" fn()>("main", ());
                 }
