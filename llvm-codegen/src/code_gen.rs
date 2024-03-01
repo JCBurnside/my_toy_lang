@@ -1,4 +1,3 @@
-
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::iter::once;
@@ -22,7 +21,7 @@ use inkwell::{AddressSpace, IntPredicate};
 
 use itertools::Itertools;
 
-
+use crate::type_resolver::TypeResolver;
 use compiler::typed_ast::{
     collect_args, ResolvedTypeDeclaration, StructDefinition, TypedBinaryOpCall, TypedDeclaration,
     TypedExpr, TypedFnCall, TypedIfBranching, TypedIfExpr, TypedMatch, TypedMatchArm,
@@ -30,7 +29,6 @@ use compiler::typed_ast::{
 };
 use compiler::types::{self, ResolvedType};
 use multimap::MultiMap;
-use crate::type_resolver::TypeResolver;
 
 pub struct CodeGen<'ctx> {
     ctx: &'ctx Context,
@@ -1813,7 +1811,7 @@ impl<'ctx> CodeGen<'ctx> {
                 let ResolvedType::Function {
                     arg: arg_t,
                     returns,
-                    loc:_
+                    loc: _,
                 } = result_ty.clone()
                 else {
                     unreachable!()
@@ -1838,7 +1836,7 @@ impl<'ctx> CodeGen<'ctx> {
         let ResolvedType::Function {
             arg: arg_t,
             returns: rt,
-            loc:_
+            loc: _,
         } = result_ty
         else {
             unreachable!()
@@ -2005,7 +2003,7 @@ impl<'ctx> CodeGen<'ctx> {
         self.module.clone()
     }
 
-    pub(crate) fn replace_module(&mut self, new_module:Module<'ctx>) -> Module<'ctx> {
+    pub(crate) fn replace_module(&mut self, new_module: Module<'ctx>) -> Module<'ctx> {
         std::mem::replace(&mut self.module, new_module)
     }
 
@@ -2015,7 +2013,6 @@ impl<'ctx> CodeGen<'ctx> {
         is_lib: bool,
         is_debug: bool,
     ) -> Module<'ctx> {
-
         let main_name = ast.iter().find_map(|file| {
             file.declarations.iter().find_map(|decl| {
                 if let TypedDeclaration::Value(decl) = decl {
@@ -2024,7 +2021,7 @@ impl<'ctx> CodeGen<'ctx> {
                             == ResolvedType::Function {
                                 arg: Box::new(types::UNIT),
                                 returns: Box::new(types::UNIT),
-                                loc:(0,0)
+                                loc: (0, 0),
                             })
                     {
                         Some(decl.ident.clone())
@@ -2299,7 +2296,8 @@ impl<'ctx> CodeGen<'ctx> {
             self.module
                 .get_global("()")
                 .unwrap_or_else(|| {
-                    self.module.add_global(self.ctx.struct_type(&[], false), None, "()")
+                    self.module
+                        .add_global(self.ctx.struct_type(&[], false), None, "()")
                 })
                 .as_pointer_value()
                 .as_any_value_enum()

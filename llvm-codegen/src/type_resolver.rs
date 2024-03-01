@@ -1,7 +1,13 @@
 use std::collections::HashMap;
 
 use compiler::types::ResolvedType;
-use inkwell::{context::Context, debug_info::DIType, targets::TargetData, types::{AnyType, AnyTypeEnum, BasicType, BasicTypeEnum, FunctionType}, AddressSpace};
+use inkwell::{
+    context::Context,
+    debug_info::DIType,
+    targets::TargetData,
+    types::{AnyType, AnyTypeEnum, BasicType, BasicTypeEnum, FunctionType},
+    AddressSpace,
+};
 
 pub struct TypeResolver<'ctx> {
     known: HashMap<ResolvedType, AnyTypeEnum<'ctx>>,
@@ -33,14 +39,8 @@ impl<'ctx> TypeResolver<'ctx> {
             out.insert(ResolvedType::Char, char_t.as_any_type_enum());
             out.insert(ResolvedType::Unit, unit_t.as_any_type_enum());
             out.insert(ResolvedType::Str, str_t.as_any_type_enum());
-            out.insert(
-                FLOAT32,
-                f32_t.as_any_type_enum(),
-            );
-            out.insert(
-                FLOAT64,
-                f64_t.as_any_type_enum(),
-            );
+            out.insert(FLOAT32, f32_t.as_any_type_enum());
+            out.insert(FLOAT64, f64_t.as_any_type_enum());
             out.insert(INT8, i8_t.as_any_type_enum());
             out.insert(INT16, i16_t.as_any_type_enum());
             out.insert(INT32, i32_t.as_any_type_enum());
@@ -132,12 +132,15 @@ impl<'ctx> TypeResolver<'ctx> {
                     .as_any_type_enum();
                 self.known.insert(ty, r);
             }
-            ResolvedType::User { name, generics, loc:_ }
-                if generics
-                    .iter()
-                    .map(ResolvedType::is_generic)
-                    .all(|it| it == false)
-                    || generics.is_empty() =>
+            ResolvedType::User {
+                name,
+                generics,
+                loc: _,
+            } if generics
+                .iter()
+                .map(ResolvedType::is_generic)
+                .all(|it| it == false)
+                || generics.is_empty() =>
             {
                 let new_name = if generics.is_empty() {
                     name.clone()
@@ -163,7 +166,7 @@ impl<'ctx> TypeResolver<'ctx> {
                     .insert(BOOL, self.ctx.bool_type().as_any_type_enum());
             }
             // ResolvedType::ForwardUser { name } => todo!(),
-            ResolvedType::Alias { actual, loc:_ } => self.resolve_type(actual.as_ref().clone()),
+            ResolvedType::Alias { actual, loc: _ } => self.resolve_type(actual.as_ref().clone()),
             ResolvedType::Unit => (),
             ResolvedType::Generic { .. } =>
             /* not sure what I need to do here yet */
@@ -203,7 +206,12 @@ impl<'ctx> TypeResolver<'ctx> {
     }
 
     pub fn resolve_type_as_function(&mut self, ty: &ResolvedType) -> FunctionType<'ctx> {
-        let ResolvedType::Function { arg, returns, loc : _ } = ty else {
+        let ResolvedType::Function {
+            arg,
+            returns,
+            loc: _,
+        } = ty
+        else {
             unreachable!("trying to make a non function type into a function")
         };
         let arg = self.resolve_arg_type(&arg);
