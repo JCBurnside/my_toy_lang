@@ -1196,7 +1196,8 @@ where
                         ],
                         ty: Some(types::ERROR),
                         value: ValueType::Expr(Expr::Error),
-                        generictypes: generics
+                        generictypes: generics,
+                        abi:None
                     }),
                     loc,
                     warnings,
@@ -1607,6 +1608,7 @@ where
                             ty: Some(types::ERROR),
                             value: ValueType::Expr(Expr::Error),
                             generictypes:generics,
+                            abi:None
                         },
                         loc:ident_span,
                         warnings:Vec::new(),
@@ -1649,7 +1651,8 @@ where
                         args,
                         ty: Some(types::ERROR),
                         value: ValueType::Expr(ast::Expr::Error),
-                        generictypes:generics
+                        generictypes:generics,
+                        abi:None,
                     },
                     loc:ident_span,
                     warnings,
@@ -1684,7 +1687,8 @@ where
                         args, 
                         ty, 
                         value: ValueType::Expr(Expr::Error), 
-                        generictypes: generics 
+                        generictypes: generics,
+                        abi:None,
                     },
                     loc:ident_span,
                     warnings,
@@ -1706,7 +1710,8 @@ where
                         args, 
                         ty, 
                         value: ValueType::Expr(Expr::Error), 
-                        generictypes: generics 
+                        generictypes: generics,
+                        abi:None,
                     },
                     loc:ident_span,
                     warnings,
@@ -1742,6 +1747,7 @@ where
                             ty,
                             value: ValueType::Expr(Expr::Error),
                             generictypes: generics,
+                            abi:None
                         },
                         loc:ident_span,
                         warnings,
@@ -1780,6 +1786,7 @@ where
                     ty,
                     value,
                     generictypes: generics,
+                    abi:None
                 },
                 loc:ident_span,
                 warnings,
@@ -1797,6 +1804,7 @@ where
                 ty: Some(types::ERROR),
                 value: ValueType::Expr(Expr::Error),
                 generictypes:generics,
+                abi:None,
             },
             loc:(0,0),
             warnings:Vec::new(),
@@ -2437,6 +2445,7 @@ mod tests {
                     value: "5".to_string(),
                 }),
                 generictypes: None,
+                abi:None
             }),
             parser.next_statement().ast
         );
@@ -2467,6 +2476,7 @@ mod tests {
                     (1, 4)
                 )]),
                 generictypes: None,
+                abi:None,
             }),
             parser.declaration().ast
         )
@@ -2506,6 +2516,7 @@ let foo _ : ( int32 -> int32 ) -> int32 =
                     (2, 4)
                 )]),
                 generictypes: None,
+                abi:None,
             }),
             parser.next_statement().ast,
             "function as arg"
@@ -2542,6 +2553,7 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                     (2, 4)
                 )]),
                 generictypes:None,
+                abi:None,
             }),
             parser.next_statement().ast,
             "function as rt"
@@ -2563,6 +2575,7 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                     value: "3".to_owned(),
                 }),
                 generictypes: None,
+                abi:None,
             }),
             parser.declaration().ast,
             "simple declaration"
@@ -2591,6 +2604,7 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                         args: Vec::new(),
                         value: ValueType::Expr(Expr::StringLiteral(r#"merp " yes"#.to_string())),
                         generictypes: None,
+                        abi:None,
                     }),
                     Statement::Return(
                         Expr::NumericLiteral {
@@ -2600,6 +2614,7 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                     )
                 ]),
                 generictypes: None,
+                abi:None,
             }),
             parser.declaration().ast,
             "declaration with block"
@@ -2645,6 +2660,7 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                     )
                 ]),
                 generictypes: None,
+                abi:None,
             }),
             parser.declaration().ast,
             "operator declaration w/ function call",
@@ -2699,6 +2715,7 @@ let main _ : int32 -> int32 =
                     )
                 ]),
                 generictypes: None,
+                abi:None,
             }),
             parser.next_statement().ast,
         )
@@ -2791,6 +2808,7 @@ let main _ : int32 -> int32 =
                     )
                 ]),
                 generictypes: None,
+                abi:None,
             }),
             parser.next_statement().ast
         );
@@ -2887,6 +2905,7 @@ let main _ : int32 -> int32 =
                         )
                     ].into_iter().collect(),
                 }),
+                abi:None,
             }),
             parser.declaration().ast,
         )
@@ -2997,7 +3016,8 @@ for<T,U> type Tuple = {
                     },
                     (1, 4)
                 )]),
-                generictypes: None
+                generictypes: None,
+                abi:None,
             }),
             parser.declaration().ast
         )
@@ -3082,7 +3102,8 @@ for<T,U> type Tuple = {
                     ),
                     loc: (0, 36)
                 })),
-                generictypes: None
+                generictypes: None,
+                abi:None,
             }),
             parser.declaration().ast,
             "inline_expr"
@@ -3129,7 +3150,8 @@ for<T,U> type Tuple = {
                     ),
                     loc: (2, 41)
                 })),
-                generictypes: None
+                generictypes: None,
+                abi:None,
             }),
             parser.declaration().ast,
             "out_of_line_expr"
@@ -3188,6 +3210,7 @@ for<T,U> type Tuple = {
                     loc: (7, 44)
                 })),
                 generictypes: None,
+                abi:None,
             }),
             parser.declaration().ast,
             "expr_with_statement"
@@ -3246,7 +3269,8 @@ for<T,U> type Tuple = {
                     ),
                     loc: (14, 52)
                 })),
-                generictypes: None
+                generictypes: None,
+                abi:None,
             }),
             parser.declaration().ast,
             "expr with else if"
@@ -3310,6 +3334,7 @@ for<T,U> type Tuple = {
                     loc: (17, 4)
                 })]),
                 generictypes: None,
+                abi:None,
             }),
             parser.declaration().ast,
             "statement"
@@ -3368,6 +3393,7 @@ for<T,U> type Tuple = {
                     loc: (25, 4),
                 })]),
                 generictypes: None,
+                abi:None,
             }),
             parser.declaration().ast,
             "statement_with_else_if"
@@ -3427,6 +3453,7 @@ for<T,U> type Tuple = {
                     loc: (32, 57)
                 })),
                 generictypes: None,
+                abi:None,
             }),
             parser.declaration().ast,
             "multi line expr with else if"
@@ -3491,6 +3518,7 @@ for<T,U> type Tuple = {
                     ]
                 })),
                 generictypes: None,
+                abi:None,
             }),
             parser.declaration().ast,
             "match_expr_ints"
@@ -3526,7 +3554,8 @@ for<T,U> type Tuple = {
                                 value: ValueType::Expr(ast::Expr::NumericLiteral {
                                     value: "2".to_string(),
                                 }),
-                                generictypes: None
+                                generictypes: None,
+                                abi:None,
                             })],
                             ret: Some(
                                 ast::Expr::BinaryOpCall(BinaryOpCall {
@@ -3573,6 +3602,7 @@ for<T,U> type Tuple = {
                     ]
                 })),
                 generictypes: None,
+                abi:None,
             }),
             parser.declaration().ast,
             "match_expr_with_block"
@@ -3647,7 +3677,8 @@ for<T,U> type Tuple = {
                         },
                     ]
                 })]),
-                generictypes: None
+                generictypes: None,
+                abi:None,
             }),
             parser.declaration().ast,
             "match_statement",
@@ -3684,7 +3715,8 @@ let arr = [0,0,0,0];
                     ],
                     loc: (1, 11)
                 }),
-                generictypes: None
+                generictypes: None,
+                abi:None,
             }),
             arr,
             "arrays"

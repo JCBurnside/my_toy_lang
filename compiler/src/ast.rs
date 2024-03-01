@@ -187,6 +187,7 @@ pub struct ArgDeclaration {
     pub ty: Option<ResolvedType>, 
 }
 
+
 #[derive(PartialEq, Debug)]
 pub struct ValueDeclaration {
     pub loc: crate::Location, //should be location of the ident.
@@ -196,6 +197,7 @@ pub struct ValueDeclaration {
     pub ty: Option<ResolvedType>,
     pub value: ValueType,
     pub generictypes: Option<GenericsDecl>,
+    pub abi : Option<String>,
 }
 impl ValueDeclaration {
     fn replace(&mut self, nice_name: &str, actual: &str) {

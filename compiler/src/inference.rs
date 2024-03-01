@@ -113,6 +113,7 @@ impl Context {
             ty,
             value,
             generictypes,
+            abi,
         } = val;
 
         let id = self.get_next_expr_id();
@@ -1356,6 +1357,7 @@ mod tests {
                         super::untyped_ast::Expr::ValueRead("a".to_string(), (0, 0)),
                     ),
                     generictypes: None,
+                    abi:None
                 },
             )],
         };
