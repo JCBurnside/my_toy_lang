@@ -187,6 +187,11 @@ pub struct ArgDeclaration {
     pub ty: Option<ResolvedType>, 
 }
 
+#[derive(PartialEq,Debug)]
+pub struct Abi {
+    pub loc : crate::Location,
+    pub identifier : String,
+}
 
 #[derive(PartialEq, Debug)]
 pub struct ValueDeclaration {
@@ -197,7 +202,7 @@ pub struct ValueDeclaration {
     pub ty: Option<ResolvedType>,
     pub value: ValueType,
     pub generictypes: Option<GenericsDecl>,
-    pub abi : Option<String>,
+    pub abi : Option<Abi>,
 }
 impl ValueDeclaration {
     fn replace(&mut self, nice_name: &str, actual: &str) {
@@ -228,21 +233,23 @@ impl ValueDeclaration {
 pub enum ValueType {
     Expr(Expr),
     Function(Vec<Statement>),
+    External,
 }
 impl ValueType {
     fn replace(&mut self, nice_name: &str, actual: &str) {
         match self {
-            ValueType::Expr(expr) => expr.replace(nice_name, actual),
-            ValueType::Function(stmnts) => stmnts
+            Self::Expr(expr) => expr.replace(nice_name, actual),
+            Self::Function(stmnts) => stmnts
                 .iter_mut()
                 .for_each(|it| it.replace(nice_name, actual)),
+            Self::External => (),
         }
     }
 
     fn get_dependencies(&self, known_values: Vec<String>) -> HashSet<String> {
         match self {
-            ValueType::Expr(expr) => expr.get_dependencies(known_values),
-            ValueType::Function(stmnts) => {
+            Self::Expr(expr) => expr.get_dependencies(known_values),
+            Self::Function(stmnts) => {
                 stmnts
                     .iter()
                     .fold(
@@ -257,6 +264,7 @@ impl ValueType {
                     )
                     .1
             }
+            Self::External => HashSet::new(),
         }
     }
 }

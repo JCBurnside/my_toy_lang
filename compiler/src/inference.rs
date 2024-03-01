@@ -146,6 +146,7 @@ impl Context {
                     .map(|stmnt| self.assign_ids_stmnt(stmnt))
                     .collect(),
             ),
+            untyped_ast::ValueType::External => todo!(),
         };
         ast::ValueDeclaration {
             loc,
