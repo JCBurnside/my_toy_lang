@@ -187,7 +187,7 @@ pub struct ArgDeclaration {
     pub ty: Option<ResolvedType>, 
 }
 
-#[derive(PartialEq,Debug)]
+#[derive(PartialEq,Debug, Clone)]
 pub struct Abi {
     pub loc : crate::Location,
     pub identifier : String,

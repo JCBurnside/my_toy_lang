@@ -46,6 +46,7 @@ pub(crate) struct ValueDeclaration {
     pub(crate) ty: ResolvedType,
     pub(crate) value: ValueType,
     pub(crate) generics: Option<GenericsDecl>,
+    pub(crate) abi : Option<crate::ast::Abi>,
     pub(crate) id: usize,
 }
 
@@ -61,6 +62,7 @@ pub struct ArgDeclaration {
 pub(crate) enum ValueType {
     Expr(Expr),
     Function(Vec<Statement>),
+    External,
 }
 
 #[derive(PartialEq, Debug)]

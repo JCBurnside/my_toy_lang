@@ -358,6 +358,7 @@ impl<'ctx> CodeGen<'ctx> {
                 }
             }
             TypedValueType::Err => unreachable!("how did an error kind get here"),
+            TypedValueType::External => unreachable!("The external linkage should not be compiled")
         }
         self.difunction = None;
         self.dilocals.clear();
@@ -1764,9 +1765,28 @@ impl<'ctx> CodeGen<'ctx> {
     pub(crate) fn create_define(&mut self, decl: &TypedDeclaration) {
         match decl {
             TypedDeclaration::Value(decl) => {
-                if decl.ty.is_function() {
+                if let Some(abi) = &decl.abi {
+                    match abi.identifier.as_str() {
+                        "C" => {
+                            let (args,ret) = decl.ty.as_c_function();
+                            let ret = self.type_resolver.resolve_type_as_basic(ret);
+                            let args = args.into_iter().map(|it| self.type_resolver.resolve_type_as_basic(it).into()).collect_vec();
+                            let fun = self.module.add_function(&decl.ident, ret.fn_type(&args, false), Some(inkwell::module::Linkage::External));
+                            
+                            self.known_functions.insert(decl.ident.clone(), fun.as_global_value());
+                        },
+                        "intrinsic" => {
+                            ()// do nothing here as this is handled in the code gen itself.  eg `let (+) : int32 -> int32 -> int32` which should output an add signed instruction
+                        }
+                        _ => {
+                            println!("unknown abi {}", abi.identifier)
+                        }
+                    }
+                } else if decl.ty.is_function() {
                     let fun = self.create_curry_list(decl);
                     self.known_functions.insert(decl.ident.clone(), fun);
+                } else {
+                    //TODO! global values.
                 }
             }
             TypedDeclaration::TypeDefinition(def) => match def {
@@ -1973,7 +1993,10 @@ impl<'ctx> CodeGen<'ctx> {
         }
         #[cfg(debug_assertions)]
         let _ = self.module.print_to_file("./debug.llvm");
-        for decl in ast.declarations {
+        for decl in ast.declarations.into_iter().filter(|it| match it {
+            TypedDeclaration::Value(TypedValueDeclaration { value, .. }) if value == &TypedValueType::External => false,
+            _ => true,
+        }) {
             self.compile_decl(decl);
         }
         let mut prev_len = self.needsdi.len();

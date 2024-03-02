@@ -370,6 +370,7 @@ pub struct TypedValueDeclaration {
     pub value: TypedValueType,
     pub ty: ResolvedType,
     pub generictypes: Option<ResolvedGenericsDecl>,
+    pub abi : Option<crate::ast::Abi>,
     pub is_curried: bool,
 }
 pub fn collect_args(t: &ResolvedType) -> Vec<ResolvedType> {
@@ -395,6 +396,7 @@ impl TypedValueDeclaration {
             TypedValueType::Function(stmnts) => stmnts
                 .into_iter()
                 .for_each(|expr| expr.replace_types(&replaced)),
+            TypedValueType::External |
             TypedValueType::Err => (),
         }
     }
@@ -412,6 +414,7 @@ impl TypedValueDeclaration {
             ty,
             value,
             generics,
+            abi,
             id: _,
         } = data;
         let mut known_values = known_values.clone();
@@ -441,6 +444,7 @@ impl TypedValueDeclaration {
             ty: if is_curried { value.get_ty() } else { ty },
             value,
             generictypes : generics.map(ResolvedGenericsDecl::from),
+            abi,
         })
     }
     fn lower_generics(&mut self, context: &mut LoweringContext) {
@@ -454,6 +458,7 @@ impl TypedValueDeclaration {
                 }
             }
             TypedValueType::Err => todo!(),
+            TypedValueType::External => (),
         }
     }
 }
@@ -463,6 +468,7 @@ pub enum TypedValueType {
     Expr(TypedExpr),
     Function(Vec<TypedStatement>),
     Err,
+    External,
 }
 
 impl TypedValueType {
@@ -518,7 +524,8 @@ impl TypedValueType {
                 } else {
                     Ok(TypedValueType::Function(output))
                 }
-            }
+            },
+            ast::ValueType::External => Ok(TypedValueType::External),
         }
     }
 
@@ -543,7 +550,8 @@ impl TypedValueType {
                         }
                     },
                 ),
-            Self::Err => todo!(),
+            Self::Err => types::ERROR,
+            Self::External => types::ERROR
         }
     }
 }
@@ -620,6 +628,7 @@ impl TypedStatement {
                 TypedValueType::Function(_) => {
                     todo!("how to handle this one :/ function inside function");
                 }
+                TypedValueType::External |
                 TypedValueType::Err => (),
             },
             Self::Discard(expr, _) | Self::Return(expr, _) => expr.lower_generics(context),
@@ -1788,6 +1797,7 @@ fn modify_declaration(
                     stmnt.lower_generics(context);
                 }
             }
+            TypedValueType::External |
             TypedValueType::Err => (),
         }
         to_lower
@@ -2868,6 +2878,7 @@ let main _ : () -> () =
                         id: 1
                     }),
                     generics: None,
+                    abi: None,
                     id:0
                 }),
                 &HashMap::new(),
@@ -2885,6 +2896,7 @@ let main _ : () -> () =
                 }),
                 ty: types::INT32,
                 generictypes: None,
+                abi: None,
                 is_curried: false,
             }),
             "decl statement"
@@ -2970,6 +2982,7 @@ let main _ : () -> () =
                         (0, 0)
                     )]),
                     generics: None,
+                    abi: None,
                     id:0
                 }),
                 &HashMap::new(),
@@ -3000,6 +3013,7 @@ let main _ : () -> () =
                     (0, 0)
                 )]),
                 generictypes: None,
+                abi: None,
                 is_curried: false
             }),
             r#"let test a : int32 -> int32 = 
@@ -3096,6 +3110,7 @@ let main _ : () -> () =
                     ],
                 }),
                 is_curried: false,
+                abi: None,
             }),
             generic,
             "generic"
@@ -3120,6 +3135,7 @@ let main _ : () -> () =
                     value: TypedValueType::Expr(TypedExpr::IntegerLiteral { value: "3".to_string(), size: types::IntWidth::ThirtyTwo }),
                     ty: types::INT32,
                     generictypes: None,
+                    abi: None,
                     is_curried: false,
                 }),
                 TypedStatement::FnCall(TypedFnCall {
@@ -3155,6 +3171,7 @@ let main _ : () -> () =
                     loc:(0,0)
                 },
                 generictypes: None,
+                abi: None,
                 is_curried: false,
             }),
             main,
@@ -3285,6 +3302,7 @@ let first a : Tuple<int32,float64> -> int32 =
                     loc:(7,36)
                 },
                 generictypes: None,
+                abi: None,
                 is_curried: false,
             }),
             "post lowering function"
@@ -3402,6 +3420,7 @@ let main x : int32 -> int32 =
                     ],
                 }),
                 is_curried: false,
+                abi: None,
             }),
             generic,
             "generic should be untouched"
@@ -3451,6 +3470,7 @@ let main x : int32 -> int32 =
                 },
                 generictypes: None,
                 is_curried: false,
+                abi: None,
             }),
             main,
             "main should have the value read changed"
@@ -3476,6 +3496,7 @@ let main x : int32 -> int32 =
                     loc:(0,0)
                 },
                 generictypes: None,
+                abi: None,
                 is_curried: false,
             }),
             generated,
@@ -3608,6 +3629,7 @@ let statement_with_else_if a b : bool -> bool -> int32 =
                     loc:(0,0)
                 },
                 generictypes: None,
+                abi: None,
                 is_curried: false,
             }),
             expr,
@@ -3673,6 +3695,7 @@ let statement_with_else_if a b : bool -> bool -> int32 =
                     }
                 )]),
                 generictypes: None,
+                abi: None,
                 is_curried: false,
             }),
             stmnt,
@@ -3855,6 +3878,7 @@ let as_statement a b : int32 -> int32 -> () =
                     loc:(0,0)
                 },
                 generictypes: None,
+                abi: None,
                 is_curried: false,
             }),
             simple,
@@ -3975,6 +3999,7 @@ let as_statement a b : int32 -> int32 -> () =
                     loc:(0,0)
                 },
                 generictypes: None,
+                abi: None,
                 is_curried: false,
             }),
             nest_in_call,
@@ -4112,6 +4137,7 @@ let as_statement a b : int32 -> int32 -> () =
                     loc:(0,0)
                 },
                 generictypes: None,
+                abi: None,
                 is_curried: false,
             }),
             statement,

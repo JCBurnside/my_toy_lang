@@ -146,7 +146,7 @@ impl Context {
                     .map(|stmnt| self.assign_ids_stmnt(stmnt))
                     .collect(),
             ),
-            untyped_ast::ValueType::External => todo!(),
+            untyped_ast::ValueType::External => ast::ValueType::External,
         };
         ast::ValueDeclaration {
             loc,
@@ -156,6 +156,7 @@ impl Context {
             ty: decl_ty,
             value,
             generics: generictypes,
+            abi,
             id,
         }
     }
@@ -482,7 +483,8 @@ impl Context {
                         .reduce(|ty, arg| ty.fn_ty(&arg));
                     value.ty = fun.unwrap().fn_ty(&ty.unwrap()); //not sure if this the correct way to handle this.
                 }
-            }
+            },
+            ast::ValueType::External => (),
         }
     
     }
@@ -889,6 +891,7 @@ impl Context {
             ty: v_ty,
             value,
             generics,
+            abi:_,
             id: _,
         } = decl;
         v_ty.replace_unkown_with(id, ty.clone());
@@ -908,6 +911,7 @@ impl Context {
                     }
                 }
             }
+            ast::ValueType::External=>(),
         }
     }
 
@@ -938,6 +942,7 @@ impl Context {
                     self.apply_substution_statement(sub, stmnt);
                 }
             },
+            ast::ValueType::External=>()
         }
     }
 
@@ -1392,6 +1397,7 @@ mod tests {
                             2
                         )),
                         generics: None,
+                        abi:None,
                         id: 0
                     }
                 )]
@@ -1446,6 +1452,7 @@ mod tests {
                             }
                         )),
                         generics: None,
+                        abi:None,
                         id: 0
                     }
                 )]
@@ -1538,6 +1545,7 @@ let foo a = match a where
                             }
                         )),
                         generics: None,
+                        abi: None,
                         id: 0,
                     }
                 )]
@@ -1579,6 +1587,7 @@ let foo a = match a where
                             }
                         )),
                         generics: None,
+                        abi: None,
                         id: 0
                     }
                 )]
@@ -1653,6 +1662,7 @@ for<T> let foo x y : T -> T -> () = ()
                                 ((1,4),"T".to_string())
                             ] 
                         }),
+                        abi: None,
                         id: 0
                     }
                 )]
@@ -1756,6 +1766,7 @@ let complex x =
                             id: 2
                         }),
                         generics: None,
+                        abi: None,
                         id: 0
                     }),
                     super::ast::Declaration::Value(super::ast::ValueDeclaration {
@@ -1875,6 +1886,7 @@ let complex x =
                             )
                         ]),
                         generics: None,
+                        abi: None,
                         id: 7
                     }),
                     // super::ast::ValueDeclaration {
@@ -1954,6 +1966,7 @@ let unit_unit _ : () -> () = ()
                 },
                 value: super::ast::ValueType::Expr(super::ast::Expr::ValueRead("x".to_string(), (5,33), 7)),
                 generics: None,
+                abi: None,
                 id: 5
             }),
             int_int,
@@ -1979,6 +1992,7 @@ let unit_unit _ : () -> () = ()
                 },
                 value: super::ast::ValueType::Expr(super::ast::Expr::UnitLiteral),
                 generics: None,
+                abi: None,
                 id: 0
             }),
             int_unit,
@@ -2004,6 +2018,7 @@ let unit_unit _ : () -> () = ()
                 },
                 value: super::ast::ValueType::Expr(super::ast::Expr::NumericLiteral { value: "0".to_string(), id: 4, ty: types::INT16 }),
                 generics: None,
+                abi: None,
                 id: 2
             }),
             unit_int,
@@ -2029,6 +2044,7 @@ let unit_unit _ : () -> () = ()
                 },
                 value: super::ast::ValueType::Expr(super::ast::Expr::UnitLiteral),
                 generics: None,
+                abi: None,
                 id: 8
             }),
             unit_unit,
@@ -2081,7 +2097,6 @@ let if_expr a b : bool -> int32 -> int32 = if a then b else 0
                     }.boxed(),
                     loc:(1, 23)
                 },
-                id:0,
                 value: super::ast::ValueType::Expr(super::ast::Expr::If(super::ast::IfExpr {
                     cond: super::ast::Expr::ValueRead("a".to_string(), (1,46), 4).boxed(),
                     true_branch: (
@@ -2097,7 +2112,9 @@ let if_expr a b : bool -> int32 -> int32 = if a then b else 0
                     id: 3,
                     result: types::INT32 
                 })),
-                generics:None
+                generics:None,
+                abi: None,
+                id:0,
             }),
             if_expr,
         )
@@ -2141,7 +2158,6 @@ let returns a : bool -> int32 =
                     returns: types::INT32.boxed(),
                     loc: (1,21) 
                 },
-                generics:None,
                 value:super::ast::ValueType::Function(vec![
                     super::ast::Statement::IfStatement(super::ast::IfBranching{
                         cond: super::ast::Expr::ValueRead("a".to_string(), (2,7), 2).boxed(),
@@ -2160,6 +2176,8 @@ let returns a : bool -> int32 =
                         (4,4)
                     )
                 ]),
+                generics:None,
+                abi: None,
                 id:0
             }),
             returns,
