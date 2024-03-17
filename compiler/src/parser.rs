@@ -202,7 +202,7 @@ where
                     errors:Vec::new()
                 };
             }
-            Some((Token::GroupOpen, _)) => {
+            Some((Token::GroupOpen, group_loc)) => {
                 let mut group_opens = 0;
                 if let Some((Token::Op(_), _)) = self
                     .stream
@@ -230,9 +230,52 @@ where
                     self.binary_op()
                 } else {
                     self.stream.next();
-                    let out = self.next_expr();
-                    if let Some((Token::GroupClose, _)) = self.stream.peek() {
-                        self.stream.next();
+                    let mut out = self.next_expr();
+                    
+                    match self.stream.peek() {
+                        Some((Token::GroupClose, _)) => {
+                            let _ = self.stream.next();
+                        },
+                        Some((Token::Comma, _)) => {
+                            let _ = self.stream.next();
+                            let mut ast = vec![out.ast];
+                            loop {
+                                let ParserReturns { ast: expr, loc, warnings, errors } = self.next_expr();
+                                out.errors.extend(errors);
+                                out.warnings.extend(warnings);
+                                ast.push(expr);
+                                match self.stream.clone().next() {
+                                    Some((Token::Comma,_)) => {
+                                        self.stream.next();
+                                        continue;
+                                    },
+                                    Some((Token::GroupClose,_)) => {
+                                        self.stream.next();
+                                        break;
+                                    }
+                                    Some((Token::EoF,_))|None => {
+                                        out.errors.push(ParseError { span: (0,0), reason: ParseErrorReason::UnexpectedEndOfFile });
+                                        break;
+                                    }
+                                    // TODO better error reporting.
+                                    Some((_other,loc)) => {
+                                        out.errors.push(ParseError {
+                                            span:loc,
+                                            reason: ParseErrorReason::UnexpectedToken
+                                        });
+                                        ast.push(ast::Expr::Error);
+                                        break;
+                                    }
+                                }
+                            }
+
+                            out.ast = if ast.len() == 1 {
+                                ast.pop().unwrap()
+                            } else {
+                                Expr::TupleLiteral { contents: ast, loc: group_loc }
+                            }
+                        }
+                        _ => (),
                     }
                     return out;
                 }
@@ -271,52 +314,6 @@ where
                     }
                 } else {
                     self.binary_op()
-                }
-            }
-            Some((Token::BracketOpen, loc)) => {
-                let mut contents = Vec::new();
-                let mut errs = Vec::new();
-                let mut warnings = Vec::new();
-                let _ = self.stream.next();
-                while let Some((tkn, _)) = self.stream.clone().next() {
-                    match tkn {
-                        Token::BracketClose => break,
-                        _ => {
-                            let ParserReturns {ast:value, errors : new_errs, loc:_, warnings:new_warnings} = self.next_expr();
-                            errs.extend(new_errs);
-                            warnings.extend(new_warnings);
-                            contents.push(value);
-                            match self.stream.clone().next() {
-                                Some((Token::Comma, _)) => {
-                                    let _ = self.stream.next();
-                                }
-                                Some((Token::BracketClose, _)) => (), // do nothing as to generate an error if anything but these two
-                                _ => {
-                                    if let Some((_,loc)) = self.stream.clone().next() {
-                                        errs.push(ParseError {
-                                            span:loc,
-                                            reason:ParseErrorReason::UnexpectedToken
-                                        });
-                                    }
-                                    else {
-                                        errs.push(ParseError {
-                                            span:(0,0),
-                                            reason:ParseErrorReason::UnexpectedEndOfFile
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                let _ = self.stream.next();
-
-                ParserReturns {
-                    ast:Expr::ArrayLiteral { contents, loc }, 
-                    loc,
-                    warnings,
-                    errors:errs
                 }
             }
             Some((
@@ -796,19 +793,14 @@ where
         let mut warnings = Vec::new();
         let mut errors = Vec::new();
         let Some((_,loc)) = self.stream.clone().next() else { unreachable!("ICE: somehow reached struct construction with no token?")};
-        let (name,generics) = match self.collect_type() {
-            Ok(ResolvedType::User { name, generics, loc:_ }) => (name,generics),
-            Ok(_) => {
-                errors.push(ParseError{
-                    span:loc,
-                    reason:ParseErrorReason::InvalidIdent,
-                });
-                ("<error>".to_string(), vec![types::ERROR])
-            }
-            Err(e) => {
-                errors.push(e);
-                ("<error>".to_string(), vec![types::ERROR])
-            },
+        
+        let ty = self.collect_type();
+        warnings.extend(ty.warnings);
+        errors.extend(ty.errors);
+        let (name,generics) = if let ResolvedType::User { name, generics, ..} = ty.ast {
+            (name,generics)
+        } else {
+            ("<error>".to_string(), vec![types::ERROR])
         };
         let Some((Token::CurlOpen, loc)) = self.stream.next() else {
             /* TODO? handle blocks?
@@ -1071,7 +1063,9 @@ where
         }
     }
 
-    pub(crate) fn collect_type(&mut self) -> Result<ResolvedType, ParseError> {
+    pub(crate) fn collect_type(&mut self) -> ParserReturns<ResolvedType> {
+        let mut warnings = Vec::new();
+        let mut errors = Vec::new();
         let ty = self.stream.next();
         match ty {
             Some((Token::Ident(ty), loc)) => {
@@ -1079,8 +1073,10 @@ where
                 if self.stream.peek().map(|(a, _)| a) == Some(&Token::Op("<".to_string())) {
                     self.stream.next();
                     while {
-                        let ty = self.collect_type()?;
-                        generic_args.push(ty);
+                        let ty = self.collect_type();
+                        warnings.extend(ty.warnings);
+                        errors.extend(ty.errors);
+                        generic_args.push(ty.ast);
                         #[cfg(debug_assertions)]
                         let _peek = self.stream.peek();
                         if self.stream.peek().map(|(a, _)| a) == Some(&Token::Comma) {
@@ -1099,10 +1095,16 @@ where
                                     should_pop = true;
                                 }
                             } else {
-                                return Err(ParseError {
+                                errors.push(ParseError {
                                     span: loc,
                                     reason: ParseErrorReason::UnbalancedBraces,
                                 });
+                                return ParserReturns {
+                                    ast:types::ERROR,
+                                    loc,
+                                    warnings,
+                                    errors,
+                                }
                             }
                         }
                         if should_pop {
@@ -1112,17 +1114,28 @@ where
                 }
                 if let Some((Token::Arrow, fn_loc)) = self.stream.clone().next() {
                     self.stream.next();
-                    let result = self.collect_type()?;
-
+                    let result = self.collect_type();
                     let ty = type_from_string(&ty, generic_args, loc);
-                    Ok(ResolvedType::Function {
-                        arg: ty.boxed(),
-                        returns: result.boxed(),
-                    loc:fn_loc
-                    })
+                    warnings.extend(result.warnings);
+                    errors.extend(result.errors);
+                    ParserReturns {
+                        ast:ResolvedType::Function {
+                            arg: ty.boxed(),
+                            returns: result.ast.boxed(),
+                            loc:fn_loc
+                        },
+                        loc:fn_loc,
+                        warnings,
+                        errors,
+                    }
                 } else {
                     let ty = type_from_string(&ty, generic_args, loc);
-                    Ok(ty)
+                    ParserReturns {
+                        ast:ty,
+                        loc,
+                        warnings,
+                        errors,
+                    }
                 }
             }
             Some((Token::GroupOpen, span)) => {
@@ -1130,37 +1143,104 @@ where
                     self.stream.next();
                     return if let Some((Token::Arrow, arr_loc)) = self.stream.clone().next() {
                         self.stream.next();
-                        Ok(ResolvedType::Function {
-                            arg: types::UNIT.boxed(),
-                            returns: self.collect_type()?.boxed(),
-                        loc:arr_loc
-                        })
+                        let returns = self.collect_type();
+                        warnings.extend(returns.warnings);
+                        errors.extend(returns.errors);
+                        ParserReturns {
+                            ast:ResolvedType::Function {
+                                arg: types::UNIT.boxed(),
+                                returns: returns.ast.boxed(),
+                                loc:arr_loc
+                            },
+                            loc:span,
+                            warnings,
+                            errors
+                        }
                     } else {
-                        Ok(types::UNIT)
+                        ParserReturns {
+                            ast:types::UNIT,
+                            loc:span,
+                            warnings,
+                            errors,
+                        }
                     };
                 }
-                let ty = self.collect_type()?;
-                if let Some((Token::GroupClose, _)) = self.stream.next() {
-                    if let Some((Token::Arrow, arr_loc)) = self.stream.clone().next() {
-                        self.stream.next();
-                        let result = self.collect_type()?;
-                        Ok(ResolvedType::Function {
-                            arg: ty.boxed(),
-                            returns: result.boxed(),
-                        loc:arr_loc
-                        })
+                let ty = self.collect_type();
+                warnings.extend(ty.warnings);
+                errors.extend(ty.errors);
+                let loc = ty.loc;
+                let mut tys = vec![ty.ast];
+                loop {
+                    if let Some((Token::Comma,_)) = self.stream.clone().next() {
+                        let _ = self.stream.next();
+                        let ty = self.collect_type();
+                        warnings.extend(ty.warnings);
+                        errors.extend(ty.errors);
+                        tys.push(ty.ast);
+                        match self.stream.clone().next() {
+                            Some((Token::GroupClose, _)) => {
+                                break;
+                            },
+                            Some((Token::Comma,_)) =>{
+                                self.stream.next();
+                            }
+                            _ => {
+                                errors.push(ParseError {
+                                    span: span,
+                                    reason: ParseErrorReason::TypeError,
+                                });
+                                return ParserReturns {
+                                    ast:types::ERROR,
+                                    loc:(0,0),
+                                    warnings,
+                                    errors,
+                                }
+                            }
+                        }
                     } else {
-                        Ok(ty)
+                        break;
+                        //TODO! error reporting?
+                    }
+                }
+                let ty = if tys.len() == 1 {
+                    tys.pop().unwrap()
+                } else {
+                    ResolvedType::Tuple { underlining: tys, loc: span }
+                };
+                if let Some((Token::GroupClose,_)) = self.stream.clone().next() {
+                    let _ = self.stream.next();
+                } else {
+                    errors.push(ParseError { span, reason: ParseErrorReason::UnbalancedBraces });
+                }
+                if let Some((Token::Arrow, arr_loc)) = self.stream.clone().next() {
+                    self.stream.next();
+                    let result = self.collect_type();
+                    warnings.extend(result.warnings);
+                    errors.extend(result.errors);
+                    ParserReturns {
+                        ast:ResolvedType::Function {
+                            arg: ty.boxed(),
+                            returns: result.ast.boxed(),
+                            loc:arr_loc
+                        },
+                        loc:arr_loc,
+                        warnings,
+                        errors
                     }
                 } else {
-                    Err(ParseError {
-                        span: span,
-                        reason: ParseErrorReason::TypeError,
-                    })
+                    ParserReturns {
+                        ast:ty,
+                        loc,
+                        warnings,
+                        errors
+                    }
                 }
             }
             Some((Token::BracketOpen, loc)) => {
-                let ty = self.collect_type()?;
+                let ty = self.collect_type();
+                warnings.extend(ty.warnings);
+                errors.extend(ty.errors);
+                let ty=ty.ast;
                 match self.stream.clone().next() {
                     Some((Token::Seq, _)) => {
                         let _ = self.stream.next();
@@ -1170,20 +1250,31 @@ where
                                 match self.stream.peek() {
                                     Some((Token::BracketClose, _)) => {
                                         let _ = self.stream.next();
-                                        Ok(ResolvedType::Array {
-                                            underlining: ty.boxed(),
-                                            size: value.parse().unwrap(),
-                                        })
+                                        ParserReturns {
+                                            ast:ResolvedType::Array {
+                                                underlining: ty.boxed(),
+                                                size: value.parse().unwrap(),
+                                            },
+                                            loc,
+                                            warnings,
+                                            errors,
+                                        }
                                     }
                                     Some((t, loc)) => {
                                         println!(
                                             "unexpected token:{t:?} at line:{}, col:{}",
                                             loc.0, loc.1
                                         );
-                                        Err(ParseError {
+                                        errors.push(ParseError {
                                             span: *loc,
                                             reason: ParseErrorReason::UnbalancedBraces,
-                                        })
+                                        });
+                                        ParserReturns {
+                                            ast:types::ERROR,
+                                            loc:*loc,
+                                            warnings,
+                                            errors
+                                        }
                                     }
                                     None => {
                                         unreachable!("how did this happen.  this is an ice please report it.");
@@ -1192,10 +1283,16 @@ where
                             }
                             Some((t, loc)) => {
                                 println!("unexpected token:{t:?} at line:{}, col:{}", loc.0, loc.1);
-                                Err(ParseError {
+                                errors.push(ParseError {
                                     span: loc,
                                     reason: ParseErrorReason::UnbalancedBraces,
-                                })
+                                });
+                                ParserReturns {
+                                    ast:types::ERROR,
+                                    loc,
+                                    warnings,
+                                    errors
+                                }
                             }
                             None => {
                                 unreachable!(
@@ -1206,30 +1303,57 @@ where
                     }
                     Some((Token::BracketClose, _)) => {
                         let _ = self.stream.next();
-                        Ok(ResolvedType::Slice {
-                            underlining: ty.boxed(),
-                        })
+                        ParserReturns {
+                            ast:ResolvedType::Slice {
+                                underlining: ty.boxed(),
+                            },
+                            loc,
+                            warnings,
+                            errors,
+                        }
                     }
                     Some((t, loc)) => {
                         println!("unexpected token:{t:?} at line:{}, col:{}", loc.0, loc.1);
-                        Err(ParseError {
+                        errors.push(ParseError {
                             span: loc,
                             reason: ParseErrorReason::UnbalancedBraces,
-                        })
+                        });
+                        ParserReturns {
+                            ast:types::ERROR,
+                            loc,
+                            warnings,
+                            errors,
+                        }
                     }
                     None => {
                         unreachable!("how did this happen.  this is an ICE please report it.");
                     }
                 }
             }
-            Some((_, span)) => Err(ParseError {
-                span,
-                reason: ParseErrorReason::TypeError,
-            }),
-            None => Err(ParseError {
-                span: (0, 0),
-                reason: ParseErrorReason::TypeError,
-            }),
+            Some((_, span)) => {
+                errors.push(ParseError {
+                    span,
+                    reason: ParseErrorReason::TypeError,
+                });
+                ParserReturns {
+                    ast:types::ERROR,
+                    loc:span,
+                    warnings,
+                    errors,
+                }
+            },
+            None => {
+                errors.push(ParseError {
+                    span: (0, 0),
+                    reason: ParseErrorReason::TypeError,
+                });
+                ParserReturns {
+                    ast:types::ERROR,
+                    loc:(0,0),
+                    warnings,
+                    errors,
+                }
+            },
         }
     }
     #[allow(unused)]
@@ -1400,15 +1524,11 @@ where
                 }
                 match self.stream.peek() {
                     Some((Token::Ident(_), _)) => {
-                        let ty = match self.collect_type() {
-                            Ok(ty) => ty,
-                            Err(e) => {
-                                errors.push(e);
-                                types::ERROR
-                            }
-                        };
+                        let ty = self.collect_type();
+                        warnings.extend(ty.warnings);
+                        errors.extend(ty.errors);
                         ParserReturns {
-                            ast:ast::TypeDefinition::Alias(ident, ty),
+                            ast:ast::TypeDefinition::Alias(ident, ty.ast),
                             loc,
                             warnings,
                             errors
@@ -1499,13 +1619,10 @@ where
                 }
                 continue;
             };
-            let ty = match self.collect_type(){
-                Ok(ty) => ty,
-                Err(e) => {
-                    errors.push(e);
-                    types::ERROR
-                }
-            };
+            let ty = self.collect_type();
+            warnings.extend(ty.warnings);
+            errors.extend(ty.errors);
+            let ty = ty.ast;
             let ty = if let Some(generics) = &generics {
                 generics.decls.iter().map(|(_,it)| it).fold(ty, |result, it| {
                     result.replace_user_with_generic(it)
@@ -1665,13 +1782,10 @@ where
                     };
                     let ty = if let Some((Token::Colon, _)) = self.stream.clone().next() {
                         let _ = self.stream.next();
-                        let ty = match self.collect_type(){
-                            Ok(ty) => ty,
-                            Err(e) => {
-                                errors.push(e);
-                                types::ERROR
-                            }
-                        };
+                        let ty = self.collect_type();
+                        warnings.extend(ty.warnings);
+                        errors.extend(ty.errors);
+                        let ty = ty.ast;
                         if let Some((Token::GroupClose, _)) = self.stream.clone().next() {
                             let _ = self.stream.next();
                         } else {
@@ -1783,13 +1897,11 @@ where
 
             let mut ty = if let Some((Token::Colon, _)) = self.stream.clone().next() {
                 let _ = self.stream.next();
-                Some(match self.collect_type() {
-                    Ok(ty) => ty,
-                    Err(e) => {
-                        errors.push(e);
-                        types::ERROR
-                    }
-                })
+                let ty = self.collect_type();
+                warnings.extend(ty.warnings);
+                errors.extend(ty.errors);
+                let ty = ty.ast;
+                Some(ty)
             } else {
                 None
             };
@@ -2657,44 +2769,44 @@ mod tests {
     #[test]
     fn types() {
         assert_eq!(
-            Parser::from_source("int64").collect_type().unwrap(),
+            Parser::from_source("int64").collect_type().ast,
             types::INT64
         );
         assert_eq!(
-            Parser::from_source("int32").collect_type().unwrap(),
+            Parser::from_source("int32").collect_type().ast,
             types::INT32
         );
         assert_eq!(
-            Parser::from_source("int16").collect_type().unwrap(),
+            Parser::from_source("int16").collect_type().ast,
             types::INT16
         );
         assert_eq!(
-            Parser::from_source("int8").collect_type().unwrap(),
+            Parser::from_source("int8").collect_type().ast,
             types::INT8
         );
         assert_eq!(
-            Parser::from_source("str").collect_type().unwrap(),
+            Parser::from_source("str").collect_type().ast,
             types::STR
         );
         assert_eq!(
-            Parser::from_source("char").collect_type().unwrap(),
+            Parser::from_source("char").collect_type().ast,
             types::CHAR
         );
         assert_eq!(
-            Parser::from_source("float64").collect_type().unwrap(),
+            Parser::from_source("float64").collect_type().ast,
             types::FLOAT64
         );
         assert_eq!(
-            Parser::from_source("float32").collect_type().unwrap(),
+            Parser::from_source("float32").collect_type().ast,
             types::FLOAT32
         );
         assert_eq!(
-            Parser::from_source("()").collect_type().unwrap(),
+            Parser::from_source("()").collect_type().ast,
             types::UNIT
         );
 
         assert_eq!(
-            Parser::from_source("[int32;5]").collect_type().unwrap(),
+            Parser::from_source("[int32;5]").collect_type().ast,
             ResolvedType::Array {
                 underlining: types::INT32.boxed(),
                 size: 5
@@ -2703,7 +2815,7 @@ mod tests {
 
         //fuctions
         assert_eq!(
-            Parser::from_source("int32->int32").collect_type().unwrap(),
+            Parser::from_source("int32->int32").collect_type().ast,
             ResolvedType::Function {
                 arg: types::INT32.boxed(),
                 returns: types::INT32.boxed(),
@@ -2713,7 +2825,7 @@ mod tests {
         assert_eq!(
             Parser::from_source("int32->int32->int32")
                 .collect_type()
-                .unwrap(),
+                .ast,
             ResolvedType::Function {
                 arg: types::INT32.boxed(),
                 returns: ResolvedType::Function {
@@ -2728,7 +2840,7 @@ mod tests {
         assert_eq!(
             Parser::from_source("int32->(int32->int32)")
                 .collect_type()
-                .unwrap(),
+                .ast,
             ResolvedType::Function {
                 arg: types::INT32.boxed(),
                 returns: ResolvedType::Function {
@@ -2743,7 +2855,7 @@ mod tests {
         assert_eq!(
             Parser::from_source("(int32->int32)->int32")
                 .collect_type()
-                .unwrap(),
+                .ast,
             ResolvedType::Function {
                 arg: ResolvedType::Function {
                     arg: types::INT32.boxed(),
@@ -4135,5 +4247,62 @@ extern "C" let ex (a:int32) b = a + b;
             ex,
             "output function."
         )
+    }
+
+    #[test]
+    fn tuples() {
+        const SRC : &'static str = "
+let ty _ : (int32,int32)->int32 = 0
+
+let cons a : int32 -> (int32,int32) = (a,0)
+";
+
+        let module = Parser::from_source(SRC).module("".to_string()).ast;
+        let [ty,cons] = &module.declarations[..] else {unreachable!()};
+        assert_eq!(
+            &ast::Declaration::Value(ValueDeclaration{
+                loc :(1,4),
+                is_op:false,
+                ident : "ty".to_string(),
+                args:vec![
+                    ArgDeclaration{
+                        loc: (1,7), 
+                        ident: "_".to_string(),
+                        ty: None,
+                    }
+                ],
+                ty : Some(ResolvedType::Tuple { underlining: vec![types::INT32,types::INT32], loc: (0,0) }.fn_ty(&types::INT32)),
+                value: ValueType::Expr(Expr::NumericLiteral { value: "0".to_string() }),
+                generictypes:None,
+                abi:None,
+            }),
+            ty
+        );
+
+        assert_eq!(
+            &ast::Declaration::Value(ValueDeclaration { 
+                loc:(3,4),
+                is_op: false,
+                ident: "cons".to_string(),
+                args: vec![
+                    ArgDeclaration { 
+                        loc: (3,9), 
+                        ident: "a".to_string(), 
+                        ty: None 
+                    }
+                ], 
+                ty: Some(types::INT32.fn_ty(&ResolvedType::Tuple { underlining: vec![types::INT32,types::INT32], loc: (0,0) })), 
+                value: ValueType::Expr(Expr::TupleLiteral { 
+                    contents: vec![
+                        Expr::ValueRead("a".to_string(), (3,39)),
+                        Expr::NumericLiteral { value: "0".to_string() }
+                    ], 
+                    loc: (3,38) 
+                }), 
+                generictypes: None, 
+                abi: None
+            }),
+            cons
+        );
     }
 }

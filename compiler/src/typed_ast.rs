@@ -4258,7 +4258,7 @@ let not_so_simple a : int32 -> [int32;4] =
         module.declarations.sort_by_key(TypedDeclaration::get_ident);
         
 
-        let [not_so_simple, should_fail, simple] = &module.declarations[..] else { unreachable!("not three declarations?")};
+        let [_not_so_simple, should_fail, simple] = &module.declarations[..] else { unreachable!("not three declarations?")};
 
         assert_eq!(
             &TypedDeclaration::Value(TypedValueDeclaration {
