@@ -1,6 +1,5 @@
 use std::{cmp::Ordering, collections::HashMap};
 
-use bimap::BiMap;
 use itertools::Itertools;
 
 use crate::{
@@ -17,7 +16,7 @@ pub(crate) struct Context {
     dependency_tree: HashMap<String, Vec<String>>,
     known_types: HashMap<String, ResolvedType>,
     known_struct_fields: HashMap<(String, String), ResolvedType>,
-    known_generic_types: HashMap<String, untyped_ast::TypeDefinition>,
+    _known_generic_types: HashMap<String, untyped_ast::TypeDefinition>,
     known_ops: HashMap<String, Vec<ResolvedType>>,
     known_values: HashMap<String, ResolvedType>,
     known_locals: HashMap<String, ResolvedType>,
@@ -48,7 +47,7 @@ impl Context {
             dependency_tree,
             known_types,
             known_struct_fields,
-            known_generic_types,
+            _known_generic_types: known_generic_types,
             known_ops,
             known_values: HashMap::new(),
             known_locals: HashMap::new(),
@@ -311,7 +310,7 @@ impl Context {
             untyped_ast::Expr::StringLiteral(s) => ast::Expr::StringLiteral(s),
             untyped_ast::Expr::CharLiteral(c) => ast::Expr::CharLiteral(c),
             untyped_ast::Expr::UnitLiteral => ast::Expr::UnitLiteral,
-            untyped_ast::Expr::Compose { lhs, rhs } => todo!(),
+            untyped_ast::Expr::Compose { lhs:_, rhs:_ } => todo!(),
             untyped_ast::Expr::BinaryOpCall(op) => {
                 let untyped_ast::BinaryOpCall {
                     loc,
@@ -352,8 +351,8 @@ impl Context {
                     id,
                 }
             }
-            untyped_ast::Expr::ListLiteral { contents, loc } => todo!(),
-            untyped_ast::Expr::TupleLiteral { contents, loc } => todo!(),
+            untyped_ast::Expr::ListLiteral { contents:_, loc:_ } => todo!(),
+            untyped_ast::Expr::TupleLiteral { contents:_, loc:_ } => todo!(),
             untyped_ast::Expr::StructConstruction(_) => todo!(),
             untyped_ast::Expr::BoolLiteral(value, loc) => {
                 ast::Expr::BoolLiteral(value, loc, self.get_next_expr_id())
@@ -407,7 +406,7 @@ impl Context {
         }
     }
     fn try_to_infer(&mut self, module: &mut ast::ModuleDeclaration) {
-        let ast::ModuleDeclaration { loc, name, decls } = module;
+        let ast::ModuleDeclaration { loc: _, name: _, decls } = module;
         let order = self.dependency_tree.iter().sorted_by(|(lhs_name,lhs_depends), (rhs_name,rhs_depends)| {
             match (lhs_depends.contains(*rhs_name), rhs_depends.contains(*lhs_name)) {
                 (true,true) => {
@@ -497,7 +496,7 @@ impl Context {
     ) -> ResolvedType {
         match expr {
             ast::Expr::Error(_) => ResolvedType::Error,
-            ast::Expr::NumericLiteral { value, id, ty } => {
+            ast::Expr::NumericLiteral { value: _, id: _, ty } => {
                 if let Some(ety) = expected {
                     let is_ety_valid = ety.is_float() || ety.is_int();
                     let is_replacable =
@@ -516,11 +515,11 @@ impl Context {
             ast::Expr::CharLiteral(_) => ResolvedType::Char,
             ast::Expr::UnitLiteral => ResolvedType::Unit,
             ast::Expr::BinaryOpCall(ast::BinaryOpCall {
-                loc,
+                loc:_,
                 lhs,
                 rhs,
                 operator,
-                id,
+                id:_,
                 result,
             }) => {
                 let lhs_ty = self.get_actual_type(lhs, None, fun_ret_ty);
@@ -616,7 +615,7 @@ impl Context {
                     ResolvedType::Error
                 }
             }
-            ast::Expr::ArrayLiteral { contents, loc, id } => {
+            ast::Expr::ArrayLiteral { contents, loc: _, id:_ } => {
                 let ety = if let Some(types::ResolvedType::Array { underlining, .. }) = &expected {
                     Some(underlining.as_ref().clone())
                 } else {
@@ -653,7 +652,7 @@ impl Context {
                 // TODO? not sure if I use expr ids at this point
                 out
             }
-            ast::Expr::ListLiteral { contents, loc, id } => {
+            ast::Expr::ListLiteral { contents, loc:_, id:_ } => {
                 let ety = if let Some(types::ResolvedType::Array { underlining, .. }) = &expected {
                     Some(underlining.as_ref().clone())
                 } else {
@@ -662,7 +661,7 @@ impl Context {
                 let result_tys = contents
                     .iter_mut()
                     .map(|elem| self.get_actual_type(elem, ety.clone(), fun_ret_ty));
-                let underlining = result_tys
+                let _underlining = result_tys
                     .reduce(|accum, actual| {
                         if accum == actual || actual.is_generic() {
                             accum
@@ -694,8 +693,8 @@ impl Context {
                 true_branch,
                 else_ifs,
                 else_branch,
-                loc,
-                id,
+                loc:_,
+                id:_,
                 result,
             }) => {
                 self.get_actual_type(cond, Some(types::BOOL), fun_ret_ty);
@@ -738,14 +737,14 @@ impl Context {
         e_ty : Option<ResolvedType>,
         fun_ret_ty: &mut Option<ResolvedType>,
     ) -> ResolvedType {
-        let ast::Match { loc, on, arms, id } = match_;
-        let on_ty = self.get_actual_type(on, None, fun_ret_ty);
+        let ast::Match { loc:_, on, arms, id:_ } = match_;
+        let _on_ty = self.get_actual_type(on, None, fun_ret_ty);
         let mut ety = e_ty.unwrap_or(types::ERROR);
         for ast::MatchArm {
             block,
             ret,
-            cond,
-            loc,
+            cond:_,
+            loc:_,
         } in arms.iter_mut()
         {
             for stmnt in block {
@@ -799,7 +798,7 @@ impl Context {
                 true_branch,
                 else_ifs,
                 else_branch,
-                loc,
+                loc:_,
             }) => {
                 self.get_actual_type(cond, Some(types::BOOL), fun_ret_ty);
                 for stmnt in true_branch {
@@ -835,7 +834,7 @@ impl Context {
         if let ResolvedType::Function {
             arg: arg_t,
             returns: return_t,
-            loc
+            loc:_
         } = self.get_actual_type(value.as_mut(), None, fun_ret_ty)
         {
             self.get_actual_type(
@@ -847,7 +846,6 @@ impl Context {
                 },
                 fun_ret_ty,
             );
-            println!("{:?}", arg);
             *returns = return_t.as_ref().clone();
             *return_t
         } else {
@@ -857,7 +855,7 @@ impl Context {
 
     fn apply_equations(&self, module: &mut ast::ModuleDeclaration) {
         self.apply_substutions(module);
-        let ast::ModuleDeclaration { loc, name, decls } = module;
+        let ast::ModuleDeclaration { loc:_, name:_, decls } = module;
         let mut equations = self.equations.clone().into_iter().collect_vec();
         equations.sort_unstable_by(|(lhs_id, lhs_ty), (rhs_id, rhs_ty)| {
             match (
@@ -884,14 +882,14 @@ impl Context {
 
     fn apply_equation_decl(&self, decl: &mut ast::ValueDeclaration, id: usize, ty: ResolvedType) {
         let ast::ValueDeclaration {
-            loc,
-            is_op,
-            ident,
+            loc : _,
+            is_op : _,
+            ident: _,
             args,
             ty: v_ty,
             value,
-            generics,
-            abi:_,
+            generics : _,
+            abi: _,
             id: _,
         } = decl;
         v_ty.replace_unkown_with(id, ty.clone());
@@ -973,14 +971,13 @@ impl Context {
 
     fn apply_substution_expr(&self, (id,ty): (&usize, &ResolvedType), expr : &mut ast::Expr) {
         match expr {
-            ast::Expr::NumericLiteral { value, id:eid, ty:nty } if dbg!(&eid) == &dbg!(id) => *nty=ty.clone(), 
+            ast::Expr::NumericLiteral { value:_, id:eid, ty:nty } if eid == id => *nty=ty.clone(), 
             ast::Expr::BinaryOpCall(ast::BinaryOpCall{lhs,rhs, id:opid, result,..}) => {
                 if opid ==id {
                     *result = ty.clone()
                 } else {
                     self.apply_substution_expr((id,ty), lhs.as_mut());
                     self.apply_substution_expr((id,ty), rhs.as_mut());
-                    dbg!(rhs);
                 }
             },
             ast::Expr::FnCall(call) => self.apply_substution_fncall((id,ty), call),
@@ -1061,7 +1058,7 @@ impl Context {
                     true_branch,
                     else_ifs,
                     else_branch,
-                    loc,
+                    loc:_,
                 } = if_;
                 self.apply_equation_expr(cond.as_mut(), id, ty.clone());
                 for stmnt in true_branch {
@@ -1094,7 +1091,7 @@ impl Context {
         ty: ResolvedType,
     ) -> ResolvedType {
         let ast::FnCall {
-            loc,
+            loc:_,
             value,
             arg,
             id: _,
@@ -1123,7 +1120,7 @@ impl Context {
         ty: ResolvedType,
     ) -> ResolvedType {
         let ast::Match {
-            loc,
+            loc:_,
             on,
             arms,
             id: _,
@@ -1133,8 +1130,8 @@ impl Context {
         for ast::MatchArm {
             block,
             ret,
-            cond,
-            loc,
+            cond: _,//TODO! for DU patterns and binding patterns
+            loc : _,
         } in arms
         {
             for stmnt in block {
@@ -1152,8 +1149,8 @@ impl Context {
     fn replace_one_level(&self, expr: &mut ast::Expr, ty: ResolvedType) {
         match expr {
             ast::Expr::NumericLiteral {
-                value,
-                id,
+                value:_,
+                id:_,
                 ty: l_ty,
             } => {
                 assert!(ty.is_int() || ty == types::NUMBER);
@@ -1176,7 +1173,7 @@ impl Context {
     ) -> ResolvedType {
         match expr {
             ast::Expr::NumericLiteral {
-                value,
+                value:_,
                 id: _,
                 ty: l_ty,
             } => {
@@ -1189,7 +1186,7 @@ impl Context {
             }
 
             ast::Expr::BinaryOpCall(ast::BinaryOpCall {
-                loc,
+                loc:_,
                 lhs,
                 rhs,
                 operator,
@@ -1231,7 +1228,7 @@ impl Context {
             ast::Expr::FnCall(fncall) => self.apply_equation_fncall(fncall, id, ty),
             ast::Expr::ArrayLiteral {
                 contents,
-                loc,
+                loc: _,
                 id: _,
             } => {
                 let result_tys = contents
@@ -1258,7 +1255,7 @@ impl Context {
             }
             ast::Expr::ListLiteral {
                 contents,
-                loc,
+                loc: _,
                 id: _,
             } => {
                 let underlining = contents.iter_mut().fold(types::UNIT, |_, expr| {
@@ -1276,7 +1273,7 @@ impl Context {
                 true_branch,
                 else_ifs,
                 else_branch,
-                loc,
+                loc: _,
                 id: _,
                 result,
             }) => {

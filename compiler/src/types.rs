@@ -1,9 +1,6 @@
-use std::{
-    collections::{HashMap, HashSet},
-    mem::size_of,
-    ops::{Range, RangeFrom},
-    sync::atomic::{AtomicUsize, Ordering},
-};
+use std::
+    collections::HashSet
+;
 
 use crate::{typed_ast, util::ExtraUtilFunctions};
 
@@ -123,6 +120,10 @@ pub enum ResolvedType {
         actual: Box<ResolvedType>,
         loc:crate::Location,
     },
+    Tuple {
+        underlining : Vec<ResolvedType>,
+        loc:crate::Location
+    },
     Generic {
         name: String,
         loc:crate::Location,
@@ -181,7 +182,6 @@ impl ResolvedType {
     }
 
     pub(crate) fn check_function(&self, args: &[Self]) -> bool {
-        println!("{args:#?}");
         if args.len() == 0 {
             true
         } else if let Self::Function { arg, returns, loc:_ } = self {
@@ -231,6 +231,9 @@ impl ResolvedType {
                 tys
             }
             ResolvedType::Alias { actual, loc:_ } => actual.get_all_types(),
+            ResolvedType::Tuple { underlining: underling, loc:_ } => {
+                underling.iter().flat_map(Self::get_all_types).collect()
+            }
             ResolvedType::Unit
             | ResolvedType::Number
             | ResolvedType::Void
@@ -242,7 +245,7 @@ impl ResolvedType {
 
     pub fn as_c_function(&self) -> (Vec<Self>, Self) {
         // (args, return type)
-        match self {
+        match dbg!(self) {
             Self::Function { arg, returns, .. } => {
                 let (mut args, rt) = returns.as_c_function();
                 args.push(arg.as_ref().clone());
@@ -379,6 +382,11 @@ impl ResolvedType {
                 *name = new_name;
                 *generics = Vec::new();
             }
+            ResolvedType::Tuple { underlining: underling, loc:_ } => {
+                for ty in underling {
+                    ty.lower_generics(context);
+                }
+            }
             ResolvedType::Unknown(_) | ResolvedType::Number | ResolvedType::Error => (),
         }
     }
@@ -453,7 +461,8 @@ impl ResolvedType {
     pub fn is_int(&self) -> bool {
         matches!(self, Self::Int { .. })
     }
-
+    #[allow(unused)]
+    // TODO! examine why this is unused.
     pub(crate) fn get_dependant_unknowns(&self) -> Vec<usize> {
         match self {
             Self::Unknown(id) => vec![*id],
@@ -466,11 +475,11 @@ impl ResolvedType {
                 out.extend(returns.get_dependant_unknowns());
                 out
             }
-            Self::User { name, generics, loc:_ } => generics
+            Self::User { name:_, generics, loc:_ } => generics
                 .iter()
                 .flat_map(|it| it.get_dependant_unknowns())
                 .collect(),
-            Self::Alias { actual, loc:_ } => Vec::new(), //aliases can't be infered
+            Self::Alias { actual:_, loc:_ } => Vec::new(), //aliases can't be infered
             _ => Vec::new(),
         }
     }
@@ -524,7 +533,6 @@ impl ToString for ResolvedType {
             ResolvedType::Str => "str".to_string(),
             ResolvedType::Unit => "()".to_string(),
             ResolvedType::Void => "".to_string(),
-            ResolvedType::Number => "{number}".to_string(),
             ResolvedType::User { name, generics, loc:_ } => {
                 if generics.len() > 0 {
                     format!(
@@ -542,6 +550,7 @@ impl ToString for ResolvedType {
             } => {
                 format!("[{};{}]", underlying.to_string(), size)
             }
+            ResolvedType::Tuple {underlining: underling, loc:_} => format!("({})", underling.iter().map(ResolvedType::to_string).join(", ")),
             ResolvedType::Unknown(_) | ResolvedType::Error => "<ERROR>".to_string(),
         }
     }

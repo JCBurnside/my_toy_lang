@@ -12,8 +12,8 @@ use inkwell::{
 pub struct TypeResolver<'ctx> {
     known: HashMap<ResolvedType, AnyTypeEnum<'ctx>>,
     ctx: &'ctx Context,
-    ditypes: HashMap<ResolvedType, DIType<'ctx>>,
-    target_data: TargetData,
+    _ditypes: HashMap<ResolvedType, DIType<'ctx>>,
+    _target_data: TargetData,
 }
 
 use compiler::types::*;
@@ -54,14 +54,15 @@ impl<'ctx> TypeResolver<'ctx> {
         Self {
             known,
             ctx,
-            ditypes: HashMap::new(),
-            target_data,
+            _ditypes: HashMap::new(),
+            _target_data: target_data,
         }
     }
-
+    #[allow(unused)]
+    // TO BE USED IN DU'S TO DETERMINE OVERALL SIZE OF A ENUM TO PROPERLY CREATE THE TYPE.
     pub fn get_size_in_bits(&mut self, ty: &ResolvedType) -> u64 {
         let ty = self.resolve_type_as_any(ty.clone());
-        self.target_data.get_store_size(&ty)
+        self._target_data.get_store_size(&ty)
     }
 
     pub fn has_type(&self, ty: &ResolvedType) -> bool {

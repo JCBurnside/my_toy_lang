@@ -49,7 +49,9 @@ impl ModuleDeclaration {
                     continue;
                 }
                 Declaration::Value(v) => {
-                    // todo check if externed.  if so no work needed.
+                    if v.value == ValueType::External {
+                        continue;
+                    }
                     let old = v.ident.clone();
                     v.ident = path.iter().cloned().join("::") + "::" + &v.ident;
                     (old, v.ident.clone())
@@ -219,7 +221,7 @@ impl ValueDeclaration {
         }
         for arg in &self.args {
             if let Some(ty) = &arg.ty {
-                let mut tys = ty.get_all_types();
+                let tys = ty.get_all_types();
                 output.extend(tys);
             }
         }

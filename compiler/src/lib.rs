@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::fmt::Display;
 use std::path::PathBuf;
 
 pub mod ast;
@@ -15,7 +14,7 @@ mod util;
 use thiserror::Error;
 use itertools::Itertools;
 
-use typed_ast::{ResolvedTypeDeclaration, TypedDeclaration, TypedModuleDeclaration};
+use typed_ast::TypedModuleDeclaration;
 
 #[derive(Error,Debug)]
 #[error(transparent)]
@@ -45,7 +44,7 @@ type Location = (usize, usize);
 
 pub fn get_untyped_ast(input:&str,file_name:&str) -> (ast::ModuleDeclaration, Vec<WarningAndError>) {
     let ts = TokenStream::from_source(input);
-    let ParserReturns { ast, loc, warnings, errors } = Parser::from_stream(ts).module(file_name.to_string());
+    let ParserReturns { ast, loc:_, warnings, errors } = Parser::from_stream(ts).module(file_name.to_string());
     let warningsanderrors = warnings
         .into_iter()
         .map(|w| Warning::from(w).into())
@@ -58,7 +57,8 @@ pub fn get_untyped_ast(input:&str,file_name:&str) -> (ast::ModuleDeclaration, Ve
 
 pub fn get_ast(input:&str, file_name:&str) -> typed_ast::TypedModuleDeclaration {
     let ts = TokenStream::from_source(input);
-    let ParserReturns { ast:module, loc, warnings, errors } = Parser::from_stream(ts).module(file_name.to_string());
+    let ParserReturns { ast:module, loc:_, warnings:_, errors:_ } = Parser::from_stream(ts).module(file_name.to_string());
+    // TODO! better report errors.
     // TODO! get prelude.
     let dep_tree= module.get_dependencies().into_iter().map(|(k,v)| (k,v.into_iter().collect())).collect();
     let ops : HashMap<_,_> = [
@@ -109,7 +109,7 @@ pub fn from_file<'ctx>(
     let parser = Parser::from_stream(strm);
 
 
-    let ParserReturns { mut ast, loc, warnings, errors } = parser.module(file_name.to_str().unwrap().to_string());
+    let ParserReturns { mut ast, loc:_, warnings, errors } = parser.module(file_name.to_str().unwrap().to_string());
     let warnings = warnings.into_iter().map(Warning::from).collect_vec();
     let errors = errors.into_iter().map(Error::from).collect_vec();
     ast.canonialize(vec![project_name]);

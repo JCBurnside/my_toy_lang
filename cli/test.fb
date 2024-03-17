@@ -7,11 +7,9 @@ let test_ifs a b : bool -> bool -> int32 =
         print_str "neither\n";
     return 0;
 
-for<T> let eq_check a b : T -> T -> bool = a < b || a > b
-
 let test_ifexpr a b : bool -> bool -> int32 = if a then 
         0 
-    else if b then 
+    else if b then
         1 
     else if true then 
         let x : int32 = 2;
@@ -20,6 +18,8 @@ let test_ifexpr a b : bool -> bool -> int32 = if a then
         3
     else
         4
+
+extern "C" let externed : int32 -> int32;
 
 let show_short_curicuit _ : () -> () =
     if (show_something ()) && (show_something_else ()) then

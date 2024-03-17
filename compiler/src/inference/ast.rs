@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::{
-    ast::{EnumDeclation, StructDefinition},
+    // ast::{EnumDeclation, StructDefinition},
     types::{self, ResolvedType},
     util::ExtraUtilFunctions,
 };
@@ -128,11 +128,13 @@ pub(crate) enum Expr {
         loc: crate::Location,
         id: usize,
     },
+    #[allow(unused)]
     ListLiteral {
         contents: Vec<Expr>,
         loc: crate::Location,
         id: usize,
     },
+    #[allow(unused)]// TODO! why is this unused?
     StructConstruction(StructConstruction),
     BoolLiteral(bool, crate::Location, usize),
     If(IfExpr),
@@ -182,7 +184,7 @@ impl Expr {
                     }
                 }
             }
-            Expr::ListLiteral { contents, loc, id } => {
+            Expr::ListLiteral { .. } => {
                 todo!()
             }
             Expr::StructConstruction(strct) => ResolvedType::User {

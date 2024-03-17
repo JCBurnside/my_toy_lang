@@ -1,8 +1,7 @@
 mod code_gen;
 mod type_resolver;
 use std::{
-    cell::OnceCell, collections::HashMap, hash::Hash, mem::MaybeUninit, path::PathBuf,
-    process::Output, sync::OnceLock,
+    collections::HashMap, path::PathBuf,
 };
 
 use code_gen::*;
@@ -11,7 +10,6 @@ use inkwell::{
     context::Context,
     execution_engine::{ExecutionEngine, JitFunction, UnsafeFunctionPointer},
     module::Module,
-    object_file::ObjectFile,
     targets::{CodeModel, InitializationConfig, Target, TargetMachine},
 };
 use multimap::MultiMap;
@@ -89,6 +87,7 @@ pub fn create_jit_runtime() -> JitEngine {
         )
         .unwrap();
     let ctx = Context::create();
+    // todo! add jit defines.
     JitEngine::new(ctx, |ctx| {
         let module = ctx.create_module("");
         // set for the llvm module

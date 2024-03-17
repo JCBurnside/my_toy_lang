@@ -137,7 +137,7 @@ where
             Some((Token::Ident(_), _)) =>
             // for now last statement in a block is not treated as return though will allow for that soon.
             {
-                let ParserReturns { ast, loc, mut warnings, mut errors }= self.function_call();
+                let ParserReturns { ast, loc, warnings, errors }= self.function_call();
                 let inner = Statement::FnCall(ast);
                 if let Some((Token::Seq, _)) = self.stream.clone().next() {
                     self.stream.next();
@@ -337,7 +337,7 @@ where
                 | Token::StringLiteral(_)
                 | Token::FloatingPoint(_, _)
                 | Token::Integer(_, _),
-                loc,
+                _,
             )) => {
                 self.literal()
             },
@@ -426,7 +426,7 @@ where
         if let Some((Token::Then, _)) = self.stream.peek() {
             let _ = self.stream.next();
         } else {
-            let (token, loc) = self.stream.next().unwrap();
+            let (_token, loc) = self.stream.next().unwrap();
             // TODO! recovery?
             errors.push(ParseError{ span:loc, reason:ParseErrorReason::UnexpectedToken});
         }
@@ -479,7 +479,7 @@ where
                 if let Some((Token::Then, _)) = self.stream.peek() {
                     let _ = self.stream.next();
                 } else {
-                    let (token, loc) = self.stream.next().unwrap();
+                    let (_token, loc) = self.stream.next().unwrap();
                     // TODO! recovery?
                     errors.push(ParseError{ span:loc, reason:ParseErrorReason::UnexpectedToken});
                 }
@@ -542,7 +542,7 @@ where
                 };
             }
 
-            let else_branch = match dbg!(self.stream.clone().next()) {
+            let else_branch = match self.stream.clone().next() {
                 Some((Token::BeginBlock, _)) => {
                     let _ = self.stream.next();
 
@@ -731,7 +731,7 @@ where
                     // TODO! add in operator case special handling
                 }
             }
-            let (ast,loc) = values.into_iter().fold(
+            let (ast,_loc) = values.into_iter().fold(
                 (
                     FnCall {
                         loc:value_loc,
@@ -886,7 +886,7 @@ where
     fn ret(&mut self) -> ParserReturns<Statement> {
         let (token, span) = self.stream.next().unwrap();
         if token == Token::Return {
-            let ParserReturns { ast:expr, loc, warnings, errors } = self.next_expr();
+            let ParserReturns { ast:expr, loc:_, warnings, errors } = self.next_expr();
             ParserReturns {
                 ast:ast::Statement::Return(expr, span),
                 loc:span,
@@ -932,7 +932,7 @@ where
         let Some((Token::If, if_loc)) = self.stream.next() else {
             unreachable!()
         };
-        let ParserReturns { ast:cond, mut warnings, mut errors, loc } = self.next_expr();
+        let ParserReturns { ast:cond, mut warnings, mut errors, loc:_ } = self.next_expr();
         let cond = cond.boxed();
         if let Some((Token::Then, _)) = self.stream.peek() {
             let _ = self.stream.next();
@@ -982,7 +982,7 @@ where
                 let Some((Token::Else, _)) = self.stream.next() else {
                     unreachable!()
                 };
-                let Some((Token::If, loc)) = self.stream.next() else {
+                let Some((Token::If, _loc)) = self.stream.next() else {
                     unreachable!()
                 };
 
@@ -1160,11 +1160,12 @@ where
             })
         }
     }
-
+    #[allow(unused)]
     fn pipe(&mut self) -> Result<Expr, ParseError> {
         todo!("pipes")
     }
-
+    #[allow(unused)]
+    /// will probably remove as it can easily be defined in lang?
     fn compose(&mut self) -> Result<Expr, ParseError> {
         todo!("compose")
     }
@@ -1400,6 +1401,7 @@ where
             self.stream.next();
         }
         let mut errors = Vec::new();
+        #[allow(unused_mut)]
         let mut warnings = Vec::new();
         let mut fields = Vec::<ast::FieldDecl>::new();
         while let Some((Token::Ident(_), _)) = self.stream.clone().next() {
@@ -1500,6 +1502,7 @@ where
     }
 
     fn collect_generics(&mut self) -> ParserReturns<Option<ast::GenericsDecl>> {
+        #[allow(unused_mut)]
         let mut warnings = Vec::new();
         let mut errors = Vec::new();
         let generics = if let Some((Token::For, _)) = self.stream.clone().next() {
@@ -1578,6 +1581,7 @@ where
 
     fn collect_args(&mut self) -> ParserReturns<Vec<ast::ArgDeclaration>> {
         let mut out = Vec::new();
+        #[allow(unused_mut)]
         let mut warnings = Vec::new();
         let mut errors = Vec::new();
         while let Some((t, _)) = self.stream.clone().next() {
@@ -1636,7 +1640,7 @@ where
     }
 
     fn fn_declaration(&mut self, abi:Option<ast::Abi>, generics: Option<ast::GenericsDecl>) -> ParserReturns<ValueDeclaration> {
-        if let Some((Token::Let, start)) = self.stream.next() {
+        if let Some((Token::Let, _start)) = self.stream.next() {
             let (token, ident_span) = self.stream.next().unwrap();
             let (ident, is_op) = match token {
                 Token::Ident(ident) => (ident, false),
@@ -1835,7 +1839,7 @@ where
                     block.ast
                 }),
                 Some((_, _)) => {
-                    let ParserReturns {ast, loc, warnings:expr_warnings, errors:expr_errors} =self.next_expr();
+                    let ParserReturns {ast, loc:_, warnings:expr_warnings, errors:expr_errors} =self.next_expr();
                     warnings.extend(expr_warnings);
                     errors.extend(expr_errors);
                     ValueType::Expr(ast)
@@ -2194,7 +2198,7 @@ where
                 errors,
             }
         } else {
-            let (expr,loc) = final_expr.into_iter().next().unwrap();
+            let (expr,_loc) = final_expr.into_iter().next().unwrap();
 
             ParserReturns {
                 ast:expr,
@@ -2209,7 +2213,7 @@ where
         let Some((Token::Match, match_loc)) = self.stream.next() else {
             unreachable!()
         };
-        let ParserReturns { ast:on, loc, mut warnings, mut errors } = self.next_expr();
+        let ParserReturns { ast:on, loc:_, mut warnings, mut errors } = self.next_expr();
         if let Some((Token::Where, _)) = self.stream.clone().next() {
             let _ = self.stream.next();
         } else {
@@ -2351,7 +2355,7 @@ where
                             (body, None)
                         }
                         _ => {
-                            let ParserReturns { ast:ret, warnings:ret_warnings, errors:ret_errors, loc } = self.next_expr();
+                            let ParserReturns { ast:ret, warnings:ret_warnings, errors:ret_errors, loc:_ } = self.next_expr();
                             warnings.extend(ret_warnings);
                             errors.extend(ret_errors);
                             if let Some((Token::EndBlock, _)) = self.stream.peek() {
@@ -2364,7 +2368,7 @@ where
                     }
                 }
                 _ => {
-                    let ParserReturns { ast:expr, warnings:ret_warnings, errors:ret_errors, loc } = self.next_expr();
+                    let ParserReturns { ast:expr, warnings:ret_warnings, errors:ret_errors, loc:_ } = self.next_expr();
                     warnings.extend(ret_warnings);
                     errors.extend(ret_errors);
                             
@@ -2497,6 +2501,8 @@ fn type_from_string(name: &str, generics: Vec<ResolvedType>, loc:crate::Location
         },
     }
 }
+#[allow(unused)]
+// TODO use for generating [`crate::ast::Expr::PipeExpr`]
 fn is_pipe_op(op: &str) -> bool {
     op.ends_with('>') && op[..op.len() - 2].chars().all(|c| c == '|')
 }

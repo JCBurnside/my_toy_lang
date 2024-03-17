@@ -951,4 +951,21 @@ else
             ]
         );
     }
+
+    #[test]
+    #[rustfmt::skip]
+    fn locations() {
+        use Token::*;
+        const SRC : &'static str = include_str!("../test_sources/basic.fb");
+        let tokens = TokenStream::from_source(SRC).collect_vec();
+        assert_eq!(
+            tokens,
+            [
+                (Let,(0,0)), (Ident("first".to_string()),(0,4)),(Ident("a".to_string()),(0,10)),(Ident("b".to_string()),(0,12)), (Op("=".to_string()),(0,14)), (Integer(false,"0".to_string()),(0,16)), (Seq,(0,17)),
+                
+                (Let,(2,0)), (Ident("second".to_string()),(2,4)),(Ident("a".to_string()),(2,11)),(Ident("b".to_string()),(2,13)), (Op("=".to_string()),(2,15)), (Integer(false,"0".to_string()),(2,17)), (Seq,(2,18)),
+                (EoF,(2,19))
+            ]
+        )
+    }
 }
