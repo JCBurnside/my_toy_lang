@@ -46,4 +46,5 @@ let main _ : () -> () =
     | 2 -> print_str "two",
     print_str "main";
     show_short_curicuit ();
+    let y = externed 0;
     return ();
