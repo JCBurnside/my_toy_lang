@@ -33,8 +33,6 @@ pub enum Token {
     FloatingPoint(bool, String),
     StringLiteral(String),
     CharLiteral(String),
-    ArrayOpen,
-    ArrayClose,
 
     #[allow(unused)] //todo implement.
     Compose,

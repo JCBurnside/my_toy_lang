@@ -217,8 +217,6 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     let inner = c.to_string() + &inner;
                     (Token::FloatingPoint(false, inner), (self.curr_line, start_col))
                 }
-                '[' => (Token::ArrayOpen, (self.curr_line, self.curr_col)),
-                ']' => (Token::ArrayClose, (self.curr_line, self.curr_col)),
                 operators!() => {
                     let inside: String = self
                         .source_stream
@@ -495,7 +493,7 @@ let match_expr_with_block x : int32 -> int32 = match x where
     }
 
     #[test]
-    fn array() {
+    fn array_ty() {
         use Token::*;
         assert_eq!(
             TokenStream::from_source("[int32;3]").map(fst).collect_vec(),
@@ -681,12 +679,12 @@ let match_expr_with_block x : int32 -> int32 = match x where
 
         assert_eq!(
             TokenStream::from_source("[").map(|(a, _)| a).collect_vec(),
-            [Token::ArrayOpen, Token::EoF],
+            [Token::BracketOpen, Token::EoF],
             "array open ["
         );
         assert_eq!(
             TokenStream::from_source("]").map(|(a, _)| a).collect_vec(),
-            [Token::ArrayClose, Token::EoF],
+            [Token::BracketClose, Token::EoF],
             "array close ]"
         );
         assert_eq!(
@@ -728,7 +726,7 @@ let match_expr_with_block x : int32 -> int32 = match x where
         assert_eq!(
             TokenStream::from_source("[1,2,3,4]").map(fst).collect_vec(),
             [
-                ArrayOpen,
+                BracketOpen,
                 Integer(false, "1".to_string()),
                 Comma,
                 Integer(false, "2".to_string()),
@@ -736,7 +734,7 @@ let match_expr_with_block x : int32 -> int32 = match x where
                 Integer(false, "3".to_string()),
                 Comma,
                 Integer(false, "4".to_string()),
-                ArrayClose,
+                BracketClose,
                 EoF
             ]
         );

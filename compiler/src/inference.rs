@@ -1759,7 +1759,7 @@ let complex x =
                                     ty: types::INT32
                                 },
                             ],
-                            loc: (3, 31),
+                            loc: (3, 30),
                             id: 2
                         }),
                         generics: None,
@@ -1842,7 +1842,7 @@ let complex x =
                                                     ty: types::INT32
                                                 },
                                             ],
-                                            loc: (7, 27),
+                                            loc: (7, 26),
                                             id: 16
                                         }
                                         .boxed()
@@ -1886,18 +1886,7 @@ let complex x =
                         abi: None,
                         id: 7
                     }),
-                    // super::ast::ValueDeclaration {
-                    //     loc: (1,4),
-                    //     is_op: false,
-                    //     ident: "simple".to_string(),
-                    //     args: vec![
-
-                    //     ],
-                    //     ty: todo!(),
-                    //     value: todo!(),
-                    //     generics: todo!(),
-                    //     id: todo!()
-                    // }
+                    
                 ]
             },
             ast,

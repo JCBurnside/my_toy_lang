@@ -4236,20 +4236,41 @@ let not_so_simple a : int32 -> [int32;4] =
     ];
 ",
         )
-        .module("foo".to_string());
-        let module = TypedModuleDeclaration::from(module, &PREDEFINED_VALUES);
+        .module("foo".to_string()).ast;
+    let dtree = module.get_dependencies();
+    let dependency_tree = dtree
+        .into_iter()
+        .map(|(key, value)| (key, value.into_iter().collect()))
+        .collect();
+    
+        let mut inference_context = crate::inference::Context::new(
+            dependency_tree,
+            
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+        );
+        let module = inference_context.inference(module);
 
-        let [simple, should_error, not_so_simple] = &module.declarations[..] else { unreachable!("not three declarations?")};
+        let mut module =
+            TypedModuleDeclaration::from(module, &HashMap::new(), &HashMap::new());
+        module.declarations.sort_by_key(TypedDeclaration::get_ident);
+        
+
+        let [not_so_simple, should_fail, simple] = &module.declarations[..] else { unreachable!("not three declarations?")};
 
         assert_eq!(
             &TypedDeclaration::Value(TypedValueDeclaration {
-                loc: (1,5),
+                loc: (1,4),
                 is_op: false,
                 ident: "simple".to_string(),
                 args: vec![
-                    ArgDeclation {
+                    ArgDeclaration {
                         ident: "_".to_string(),
-                        loc: (1, 12)
+                        loc: (1, 11),
+                        id: 1,
+                        ty: types::UNIT
                     }
                 ],
                 value: TypedValueType::Expr(TypedExpr::ArrayLiteral {
@@ -4259,18 +4280,20 @@ let not_so_simple a : int32 -> [int32;4] =
                         TypedExpr::IntegerLiteral { value: "3".to_string(), size: types::IntWidth::ThirtyTwo },
                         TypedExpr::IntegerLiteral { value: "2".to_string(), size: types::IntWidth::ThirtyTwo },
                         TypedExpr::IntegerLiteral { value: "1".to_string(), size: types::IntWidth::ThirtyTwo },
-                    ]
+                    ],
                 }),
                 ty: ResolvedType::Function { 
                     arg: types::UNIT.boxed(), 
-                    returns: ResolvedType::Array { underlining: types::INT32.boxed(), size:5 }.boxed()
+                    returns: ResolvedType::Array { underlining: types::INT32.boxed(), size:5 }.boxed(),
+                    loc:(0,0)
                 },
-                generictypes: Vec::new(),
-                is_curried: false
+                generictypes: None,
+                abi:None,
+                is_curried: false,
             }),
             simple,
             "simple"
         );
-        println!("{should_error:?}");
+        println!("{should_fail:?}");
     }
 }

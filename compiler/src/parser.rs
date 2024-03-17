@@ -188,11 +188,8 @@ where
                 }
             },
             Some((Token::BracketOpen, _)) => {
-                let arr = self.array_literal();
-                // Ok((arr.0, arr.1))
-                todo!("array.")
+                self.array_literal()
             }
-            Some((Token::If, loc)) => Ok((ast::Expr::If(self.ifexpr()?.0), loc)),
             Some((Token::GroupOpen, loc))
                 if matches!(self.stream.clone().nth(1), Some((Token::GroupClose, _))) =>
             {
@@ -276,14 +273,14 @@ where
                     self.binary_op()
                 }
             }
-            Some((Token::ArrayOpen, loc)) => {
+            Some((Token::BracketOpen, loc)) => {
                 let mut contents = Vec::new();
                 let mut errs = Vec::new();
                 let mut warnings = Vec::new();
                 let _ = self.stream.next();
                 while let Some((tkn, _)) = self.stream.clone().next() {
                     match tkn {
-                        Token::ArrayClose => break,
+                        Token::BracketClose => break,
                         _ => {
                             let ParserReturns {ast:value, errors : new_errs, loc:_, warnings:new_warnings} = self.next_expr();
                             errs.extend(new_errs);
@@ -293,7 +290,7 @@ where
                                 Some((Token::Comma, _)) => {
                                     let _ = self.stream.next();
                                 }
-                                Some((Token::ArrayClose, _)) => (), // do nothing as to generate an error if anything but these two
+                                Some((Token::BracketClose, _)) => (), // do nothing as to generate an error if anything but these two
                                 _ => {
                                     if let Some((_,loc)) = self.stream.clone().next() {
                                         errs.push(ParseError {
@@ -2490,9 +2487,11 @@ where
         
     }
 
-    fn array_literal(&mut self) -> Result<(ast::Expr, crate::Location), ParseError> {
+    fn array_literal(&mut self) -> ParserReturns<Expr> {
         let Some((Token::BracketOpen,loc)) = self.stream.next() else {unreachable!()};
         let mut values = Vec::new();
+        let mut warnings = Vec::new();
+        let mut errors = Vec::new();
         let expect_block = if let Some((Token::BeginBlock, _)) = self.stream.peek() {
             let _ = self.stream.next();
             true
@@ -2500,13 +2499,9 @@ where
             false
         };
         loop {
-            let expr = match self.next_expr() {
-                Ok(it) => it.0,
-                Err(e) => {
-                    println!("{e:?}");
-                    ast::Expr::Error
-                }
-            };
+            let ParserReturns {ast:expr, loc:_, warnings:new_warnings, errors:new_errors }=self.next_expr();
+            warnings.extend(new_warnings);
+            errors.extend(new_errors);
             values.push(expr);
             match self.stream.clone().next() {
                 Some((Token::Comma, _)) => {
@@ -2530,73 +2525,19 @@ where
 
         if let Some((Token::BracketClose, _)) = self.stream.peek() {
             let _ = self.stream.next();
-            Ok((
-                ast::Expr::ArrayLiteral {
-                    contents: values,
-                    loc,
-                },
-                loc,
-            ))
+            
         } else {
-            Err(ParseError {
+            errors.push(ParseError {
                 span: loc,
                 reason: ParseErrorReason::UnbalancedBraces,
-            })
+            });
+            values.push(ast::Expr::Error);
         }
-    }
-
-    fn array_literal(&mut self) -> Result<(ast::Expr, crate::Location), ParseError> {
-        let Some((Token::BracketOpen,loc)) = self.stream.next() else {unreachable!()};
-        let mut values = Vec::new();
-        let expect_block = if let Some((Token::BeginBlock, _)) = self.stream.peek() {
-            let _ = self.stream.next();
-            true
-        } else {
-            false
-        };
-        loop {
-            let expr = match self.next_expr() {
-                Ok(it) => it.0,
-                Err(e) => {
-                    println!("{e:?}");
-                    ast::Expr::Error
-                }
-            };
-            values.push(expr);
-            match self.stream.clone().next() {
-                Some((Token::Comma, _)) => {
-                    let _ = self.stream.next();
-                    continue;
-                }
-                Some(_) => break,
-                None => {
-                    unreachable!("somehow not even got EoF");
-                }
-            }
-        }
-
-        if expect_block {
-            if let Some((Token::EndBlock, _)) = self.stream.peek() {
-                let _ = self.stream.next();
-            } else {
-                println!("did you mean to have the closing ] on the same level as the opening?")
-            }
-        }
-
-        if let Some((Token::BracketClose, _)) = self.stream.peek() {
-            let _ = self.stream.next();
-            Ok((
-                ast::Expr::ArrayLiteral {
-                    contents: values,
-                    loc,
-                },
-                loc,
-            ))
-        } else {
-            Err(ParseError {
-                span: loc,
-                reason: ParseErrorReason::UnbalancedBraces,
-            })
+        ParserReturns {
+            ast : ast::Expr::ArrayLiteral { contents: values, loc },
+            loc,
+            warnings,
+            errors,
         }
     }
 }
@@ -2765,7 +2706,8 @@ mod tests {
             Parser::from_source("int32->int32").collect_type().unwrap(),
             ResolvedType::Function {
                 arg: types::INT32.boxed(),
-                returns: types::INT32.boxed()
+                returns: types::INT32.boxed(),
+                loc:(0,0),
             }
         );
         assert_eq!(
@@ -2776,9 +2718,11 @@ mod tests {
                 arg: types::INT32.boxed(),
                 returns: ResolvedType::Function {
                     arg: types::INT32.boxed(),
-                    returns: types::INT32.boxed()
+                    returns: types::INT32.boxed(),
+                    loc:(0,0),
                 }
-                .boxed()
+                .boxed(),
+                loc:(0,0),
             }
         );
         assert_eq!(
@@ -2789,9 +2733,11 @@ mod tests {
                 arg: types::INT32.boxed(),
                 returns: ResolvedType::Function {
                     arg: types::INT32.boxed(),
-                    returns: types::INT32.boxed()
+                    returns: types::INT32.boxed(),
+                    loc:(0,0),
                 }
-                .boxed()
+                .boxed(),
+                loc:(0,0),
             }
         );
         assert_eq!(
@@ -2801,10 +2747,12 @@ mod tests {
             ResolvedType::Function {
                 arg: ResolvedType::Function {
                     arg: types::INT32.boxed(),
-                    returns: types::INT32.boxed()
+                    returns: types::INT32.boxed(),
+                    loc:(0,0),
                 }
                 .boxed(),
                 returns: types::INT32.boxed(),
+                loc:(0,0),
             }
         );
     }
@@ -4118,7 +4066,7 @@ let arr = [0,0,0,0];
                             value: "0".to_string()
                         },
                     ],
-                    loc: (1, 11)
+                    loc: (1, 10)
                 }),
                 generictypes: None,
                 abi:None,
