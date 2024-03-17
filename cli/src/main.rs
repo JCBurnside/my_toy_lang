@@ -30,7 +30,7 @@ fn main() {
         },
     );
 
-    let (program, warnings) = compiler::from_file(&args.file, fwd_decl.clone(), "jit".to_string());
+    let (program, _warnings) = compiler::from_file(&args.file, fwd_decl.clone(), "jit".to_string());
 
     match program {
         Err(errors) => {

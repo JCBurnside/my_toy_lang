@@ -17,7 +17,7 @@ macro_rules! operators {
 
 use itertools::Itertools;
 
-use crate::tokens::Token;
+use crate::{tokens::Token, util::ExtraIterUtils};
 impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
     pub fn new<II: IntoIterator<IntoIter = I>>(source: II) -> Self {
         Self {
@@ -210,9 +210,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                         .clone()
                         .take_while(|c| (c.is_numeric()) || c == &'_' || c == &'.')
                         .collect();
-                    for _ in 0..inner.len() {
-                        self.source_stream.next();
-                    }
+                    ExtraIterUtils::advance_by(&mut self.source_stream, inner.len());
                     self.curr_col += inner.len();
                     let inner = c.to_string() + &inner;
                     (Token::FloatingPoint(false, inner), (self.curr_line, start_col))
@@ -241,7 +239,16 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     self.curr_col += 2;
                     (Token::For, (self.curr_line, start_col))
                 }
-
+                'e' if self
+                    .source_stream
+                    .clone()
+                    .take_while(ident_char)
+                    .collect::<String>() == "xtern" => 
+                {
+                    ExtraIterUtils::advance_by(&mut self.source_stream, 5);
+                    self.curr_col+=5;
+                    (Token::Extern, (self.curr_line, start_col))
+                }
                 't' if self
                     .source_stream
                     .clone()
@@ -249,9 +256,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     .collect::<String>()
                     == "rue" =>
                 {
-                    for _ in 0..3 {
-                        let _ = self.source_stream.next();
-                    }
+                    ExtraIterUtils::advance_by(&mut self.source_stream, 3);
                     self.curr_col += 3;
                     (Token::True, (self.curr_line, start_col))
                 }
@@ -262,9 +267,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     .collect::<String>()
                     == "alse" =>
                 {
-                    for _ in 0..4 {
-                        let _ = self.source_stream.next();
-                    }
+                    ExtraIterUtils::advance_by(&mut self.source_stream, 4);
                     self.curr_col += 4;
                     (Token::False, (self.curr_line, start_col))
                 }
@@ -275,9 +278,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     .collect::<String>()
                     == "atch" =>
                 {
-                    for _ in 0..4 {
-                        let _ = self.source_stream.next();
-                    }
+                    ExtraIterUtils::advance_by(&mut self.source_stream, 4);
                     self.curr_col += 4;
                     (Token::Match, (self.curr_line, start_col))
                 }
@@ -289,9 +290,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     .collect::<String>()
                     == "here" =>
                 {
-                    for _ in 0..4 {
-                        let _ = self.source_stream.next();
-                    }
+                    ExtraIterUtils::advance_by(&mut self.source_stream, 4);
                     self.curr_col += 4;
                     (Token::Where, (self.curr_line, start_col))
                 }
@@ -309,9 +308,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     .collect::<String>()
                     == "hen" =>
                 {
-                    let _ = self.source_stream.next();
-                    let _ = self.source_stream.next();
-                    let _ = self.source_stream.next();
+                    ExtraIterUtils::advance_by(&mut self.source_stream, 3);
                     self.curr_col += 3;
                     (Token::Then, (self.curr_line, start_col))
                 }
@@ -323,9 +320,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     .collect::<String>()
                     == "lse" =>
                 {
-                    let _ = self.source_stream.next();
-                    let _ = self.source_stream.next();
-                    let _ = self.source_stream.next();
+                    ExtraIterUtils::advance_by(&mut self.source_stream, 3);
                     self.curr_col += 3;
                     (Token::Else, (self.curr_line, start_col))
                 }
@@ -337,8 +332,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     .collect::<String>()
                     == "et" =>
                 {
-                    self.source_stream.next();
-                    self.source_stream.next();
+                    ExtraIterUtils::advance_by(&mut self.source_stream, 2);
                     self.curr_col += 2;
                     (Token::Let, (self.curr_line, start_col))
                 }
@@ -350,9 +344,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     == "eturn" =>
                 {
                     // self.source_stream.advance_by(5).unwrap();
-                    for _ in 0..5 {
-                        self.source_stream.next();
-                    }
+                    ExtraIterUtils::advance_by(&mut self.source_stream, 5);
                     self.curr_col += 5;
                     (Token::Return, (self.curr_line, start_col))
                 }
@@ -363,9 +355,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     .collect::<String>()
                     == "ype" =>
                 {
-                    for _ in 0..3 {
-                        self.source_stream.next();
-                    }
+                    ExtraIterUtils::advance_by(&mut self.source_stream, 3);
                     self.curr_col += 3;
                     (Token::Type, (self.curr_line, start_col))
                 }
@@ -376,9 +366,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     .collect::<String>()
                     == "num" =>
                 {
-                    for _ in 0..3 {
-                        self.source_stream.next();
-                    }
+                    ExtraIterUtils::advance_by(&mut self.source_stream, 3);
                     self.curr_col += 3;
                     (Token::Enum, (self.curr_line, start_col))
                 }
@@ -390,9 +378,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                         .take_while(|c| (c.is_alphanumeric()) || c == &'_')
                         .collect();
                     // self.source_stream.advance_by(,inner.len()).unwrap();
-                    for _ in 0..inner.len() {
-                        self.source_stream.next();
-                    }
+                    ExtraIterUtils::advance_by(&mut self.source_stream, inner.len());
                     self.curr_col += inner.len();
                     let inner = c.to_string() + &inner;
                     if inner.chars().all(|c| c.is_numeric()) {
@@ -684,6 +670,11 @@ let match_expr_with_block x : int32 -> int32 = match x where
             [Token::ArrayClose, Token::EoF],
             "array close ]"
         );
+        assert_eq!(
+            TokenStream::from_source("extern").map(fst).collect_vec(),
+            [Token::Extern, Token::EoF],
+            ""
+        )
     }
 
     #[test]
@@ -959,5 +950,22 @@ else
                 EoF
             ]
         );
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn locations() {
+        use Token::*;
+        const SRC : &'static str = include_str!("../test_sources/basic.fb");
+        let tokens = TokenStream::from_source(SRC).collect_vec();
+        assert_eq!(
+            tokens,
+            [
+                (Let,(0,0)), (Ident("first".to_string()),(0,4)),(Ident("a".to_string()),(0,10)),(Ident("b".to_string()),(0,12)), (Op("=".to_string()),(0,14)), (Integer(false,"0".to_string()),(0,16)), (Seq,(0,17)),
+                
+                (Let,(2,0)), (Ident("second".to_string()),(2,4)),(Ident("a".to_string()),(2,11)),(Ident("b".to_string()),(2,13)), (Op("=".to_string()),(2,15)), (Integer(false,"0".to_string()),(2,17)), (Seq,(2,18)),
+                (EoF,(2,19))
+            ]
+        )
     }
 }

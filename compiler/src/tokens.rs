@@ -40,6 +40,7 @@ pub enum Token {
     Op(String),
     //meta tokens
     //TODO! attribute indicatator
+    Extern,
     Seq, // ;
     BeginBlock,
     EndBlock,

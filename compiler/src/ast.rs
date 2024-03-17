@@ -49,7 +49,9 @@ impl ModuleDeclaration {
                     continue;
                 }
                 Declaration::Value(v) => {
-                    // todo check if externed.  if so no work needed.
+                    if v.value == ValueType::External {
+                        continue;
+                    }
                     let old = v.ident.clone();
                     v.ident = path.iter().cloned().join("::") + "::" + &v.ident;
                     (old, v.ident.clone())
@@ -187,6 +189,12 @@ pub struct ArgDeclaration {
     pub ty: Option<ResolvedType>, 
 }
 
+#[derive(PartialEq,Debug, Clone)]
+pub struct Abi {
+    pub loc : crate::Location,
+    pub identifier : String,
+}
+
 #[derive(PartialEq, Debug)]
 pub struct ValueDeclaration {
     pub loc: crate::Location, //should be location of the ident.
@@ -196,6 +204,7 @@ pub struct ValueDeclaration {
     pub ty: Option<ResolvedType>,
     pub value: ValueType,
     pub generictypes: Option<GenericsDecl>,
+    pub abi : Option<Abi>,
 }
 impl ValueDeclaration {
     fn replace(&mut self, nice_name: &str, actual: &str) {
@@ -212,7 +221,7 @@ impl ValueDeclaration {
         }
         for arg in &self.args {
             if let Some(ty) = &arg.ty {
-                let mut tys = ty.get_all_types();
+                let tys = ty.get_all_types();
                 output.extend(tys);
             }
         }
@@ -226,21 +235,23 @@ impl ValueDeclaration {
 pub enum ValueType {
     Expr(Expr),
     Function(Vec<Statement>),
+    External,
 }
 impl ValueType {
     fn replace(&mut self, nice_name: &str, actual: &str) {
         match self {
-            ValueType::Expr(expr) => expr.replace(nice_name, actual),
-            ValueType::Function(stmnts) => stmnts
+            Self::Expr(expr) => expr.replace(nice_name, actual),
+            Self::Function(stmnts) => stmnts
                 .iter_mut()
                 .for_each(|it| it.replace(nice_name, actual)),
+            Self::External => (),
         }
     }
 
     fn get_dependencies(&self, known_values: Vec<String>) -> HashSet<String> {
         match self {
-            ValueType::Expr(expr) => expr.get_dependencies(known_values),
-            ValueType::Function(stmnts) => {
+            Self::Expr(expr) => expr.get_dependencies(known_values),
+            Self::Function(stmnts) => {
                 stmnts
                     .iter()
                     .fold(
@@ -255,6 +266,7 @@ impl ValueType {
                     )
                     .1
             }
+            Self::External => HashSet::new(),
         }
     }
 }
