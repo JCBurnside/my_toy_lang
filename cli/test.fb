@@ -7,11 +7,9 @@ let test_ifs a b : bool -> bool -> int32 =
         print_str "neither\n";
     return 0;
 
-for<T> let eq_check a b : T -> T -> bool = a < b || a > b
-
 let test_ifexpr a b : bool -> bool -> int32 = if a then 
         0 
-    else if b then 
+    else if b then
         1 
     else if true then 
         let x : int32 = 2;
@@ -21,13 +19,7 @@ let test_ifexpr a b : bool -> bool -> int32 = if a then
     else
         4
 
-let show_something _ : () -> bool =
-    print_str "hello there\n";
-    return true;
-
-let show_something_else _ : () -> bool =
-    print_str "general kenobi\n";
-    return false;
+extern "C" let externed : int32 -> int32;
 
 let show_short_curicuit _ : () -> () =
     if (show_something ()) && (show_something_else ()) then
@@ -38,11 +30,21 @@ let show_short_curicuit _ : () -> () =
         print_str "yet another seperator\n";
     return ();
 
+let show_something _ : () -> bool =
+    print_str "hello there\n";
+    return true;
+
+let show_something_else _ : () -> bool =
+    print_str "general kenobi\n";
+    return false;
+
 let main _ : () -> () =
     let a : bool = true;
-    match 0 where
+    let x : int32 = 0;
+    match x where
     | 1 -> print_str "one",
     | 2 -> print_str "two",
     print_str "main";
     show_short_curicuit ();
+    let y = externed 0;
     return ();

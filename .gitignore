@@ -1,3 +1,4 @@
-**/target
-cargo.lock
-**/*.llvm
+target
+[Cc]argo.lock
+*.llvm
+*.ll

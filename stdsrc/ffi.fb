@@ -1,0 +1,6 @@
+
+extern "intrinsic" type c_void;
+
+extern "intrinsic" type c_char;
+
+extern "intrinsic" type c_int;

@@ -1,17 +1,10 @@
 use std::collections::HashMap;
 
 use clap::Parser;
-use inkwell::{
-    context::Context,
-    targets::{InitializationConfig, Target},
-    types::BasicType,
-    OptimizationLevel,
-};
 
 use compiler::types::{self, ResolvedType};
 
 mod cli_args;
-mod jitstd;
 
 fn main() {
     let args = cli_args::Arguments::parse();
@@ -27,49 +20,33 @@ fn main() {
         );
         return;
     }
-
-    Target::initialize_native(&InitializationConfig::default()).unwrap();
-    let ctx = Context::create();
     let mut fwd_decl = HashMap::new();
     fwd_decl.insert(
         "print_str".to_owned(),
         ResolvedType::Function {
             arg: Box::new(types::STR),
             returns: Box::new(ResolvedType::Void),
+            loc: (0, 0),
         },
     );
 
-    let program = compiler::from_file(&args.file, &ctx, fwd_decl, args.debug, "jit".to_string());
+    let (program, _warnings) = compiler::from_file(&args.file, fwd_decl.clone(), "jit".to_string());
+
     match program {
         Err(errors) => {
             for err in errors {
                 println!("{}", err)
             }
         }
-        Ok(module) => {
+        Ok(ast) => {
             if args.run {
-                let jit = module
-                    .create_jit_execution_engine(OptimizationLevel::None)
-                    .unwrap();
-                let Some(str_t) = ctx.get_struct_type("str") else { unreachable!("how do you not have the basic str type????")};
-                let jitstd = ctx.create_module("jitstd");
-                let fun = jitstd::add_printstr(&ctx, &jitstd, str_t.as_basic_type_enum());
-                jit.add_global_mapping(&fun, jitstd::print_str as usize);
-                jit.add_module(&jitstd).unwrap();
-                jitstd.print_to_file("./jitstd.llvm").unwrap();
-                // TODO: Jit redirects.
+                let mut jit = llvm_codegen::create_jit_runtime();
+                jit.add_declarations(ast.declarations);
                 unsafe {
-                    jit.get_function::<unsafe extern "C" fn()>("main")
-                        .unwrap()
-                        .call();
+                    jit.run_function::<unsafe extern "C" fn()>("main", ());
                 }
             } else if args.output_llvm {
-                if let Some(output) = args.out_file {
-                    module.print_to_file(output).unwrap();
-                } else {
-                    let llvm = module.print_to_string();
-                    println!("{}", llvm)
-                }
+                llvm_codegen::compile_file(ast, args.file, args.out_file, fwd_decl)
             }
         }
     }

@@ -1,16 +1,12 @@
+trait IntoSequence =
+    type Item
+    type IntoSeq : Sequence<Item>;
+    let into_seq : self -> IntoSeq;
 
-//TODO may have to wait until I can get traits working
-// or even generate from the compiler as I don't see how I can make this lazy yet.
-// for<T,U,S:Seq<T>> let map func s : (T -> U) -> S -> Map<S,U> =
-// could probably using custom types.
+for<T> trait Sequence =
+    let next : &mut Self -> Option<T>
 
-trait Seq =
-    type Item;
-    let next : &mut Self -> Option<Item>;
-    for<Coll:FromSeq<Item>> let collect = Coll::from_seq;
-
-for<S:Seq, U> 
-public type Map = {
+for<T,S:Sequence<T>, U> public type Map = {
     base : S,
     fun : S::Item->U,
 }
@@ -28,13 +24,14 @@ for<T,S:Seq<Item = T>> public let to_list (mut s:S) =
 
 for<T,S:Seq<Item = T>> public let to_vec (s:S) = s |> seq::collect::<Vec<T>>
 
-for<T,S:Seq<Item = T>, U> implements Seq<U> for Map<S,U> =
+
+for<T,S:Sequence<T>, U> implement Sequence<U> for Map<T,S,U> =
     let next &mut self = 
         self.base.next |> Option::map self.fun 
 
 for<T,S:Seq<Item=T>,U> public let map (func:T->U) (s:S) = Map { base:s, func }
 
-for<TLeft,TRTLeft,TRight,TRTRight,S:Seq<(TLeft,TRight>)>>
+for<TLeft,TRTLeft,TRight,TRTRight,S:Sequence<(TLeft,TRight>)>>
 public let bimap funcleft funcright s : (TLeft->TRTLeft)->(TRight->TRTRight) -> S -> Map<(TLeft,TRight),S,(TRTLeft,TRTRight)> =
     Map {
         base: s,
@@ -62,12 +59,16 @@ public let foldl1 func (mut s) =
     | Some t -> foldl t func s
     | None -> error "there must be at least one element"
 
-public let foldr1 func (mut s) =
+
+public for<T:IntoSeq> let foldr1 func (s:T) = foldr1_impl func (s.into_seq) 
+
+let foldr1_impl func (mut s) =
     match s.next
     | Some t -> foldr t func s
     | None -> error "there must be at least one element"
 
-for<T,Inner:Seq<T>, Outer:Seq<Inner>> 
+
+for<T,Inner:Sequence<T>, Outer:Sequence<Inner>> 
 public type Flatten {
     curr : Option<Inner>,
     seq : Outer,

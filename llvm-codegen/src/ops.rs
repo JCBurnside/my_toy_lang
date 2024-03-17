@@ -1,17 +1,81 @@
 #![allow(unused)]
+use std::collections::HashMap;
+
+use inkwell::values::GlobalValue;
+use inkwell::AddressSpace;
 use inkwell::{context::Context, module::Module, values::FunctionValue};
 
+use itertools::Itertools;
 use multimap::MultiMap;
 
-use crate::types::{self,TypeResolver, ResolvedType};
+use crate::types::{self, ResolvedType, TypeResolver};
+
+macro_rules! create_op_types {
+    ($t:expr) => {
+        [
+            ResolvedType::Function {
+                arg:Box::new($t),
+                returns: Box::new(ResolvedType::Function {
+                    arg:Box::new($t),
+                    returns:Box::new($t)
+                })
+            },
+            ResolvedType::Function {
+                arg:Box::new(ResolvedType::Ref { underlining:Box::new($t) }),
+                returns: Box::new(ResolvedType::Function {
+                    arg:Box::new($t),
+                    returns:Box::new($t)
+                })
+            },
+            ResolvedType::Function {
+                arg:Box::new($t),
+                returns: Box::new(ResolvedType::Function {
+                    arg:Box::new(ResolvedType::Ref { underlining:Box::new($t) }),
+                    returns:Box::new($t)
+                })
+            },
+            ResolvedType::Function {
+                arg:Box::new(ResolvedType::Ref { underlining:Box::new($t) }),
+                returns: Box::new(ResolvedType::Function {
+                    arg:Box::new(ResolvedType::Ref { underlining:Box::new($t) }),
+                    returns:Box::new($t)
+                })
+            },
+        ].into_iter()
+    };
+    ($t:expr, $($rest:expr),+) => {
+        create_op_types!($($rest),+)
+        .chain(create_op_types!($t))
+    };
+}
 
 pub fn get_std_ops<'ctx>(
     ctx: &'ctx Context,
     type_resolver: &mut TypeResolver<'ctx>,
-) -> (Module<'ctx>, MultiMap<String,ResolvedType>) {
+) -> (Module<'ctx>, HashMap<String, Vec<ResolvedType>>) {
     let module = ctx.create_module("std::ops");
-    let mut functions = MultiMap::new();
-    (module, functions)
+    let mut function_types = HashMap::new();
+    function_types.insert("+".to_string(), Vec::with_capacity(4 * 6));
+    function_types.insert("-".to_string(), Vec::with_capacity(4 * 6));
+    function_types.insert("/".to_string(), Vec::with_capacity(4 * 6));
+    function_types.insert("*".to_string(), Vec::with_capacity(4 * 6));
+    function_types.insert("<".to_string(), Vec::with_capacity(4 * 6));
+    function_types.insert("<=".to_string(), Vec::with_capacity(4 * 6));
+    function_types.insert(">".to_string(), Vec::with_capacity(4 * 6));
+    function_types.insert(">=".to_string(), Vec::with_capacity(4 * 6));
+    function_types.insert("==".to_string(), Vec::with_capacity(4 * 6 + 1));
+    function_types.insert("!=".to_string(), Vec::with_capacity(4 * 6 + 1));
+    let all = create_op_types!(
+        types::INT8,
+        types::INT16,
+        types::INT32,
+        types::INT64,
+        types::FLOAT32,
+        types::FLOAT64
+    )
+    .collect_vec();
+
+    (module, function_types)
 }
 
 // fn promote_ops<'ctx>(

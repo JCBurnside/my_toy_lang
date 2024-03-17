@@ -33,12 +33,16 @@ pub enum Token {
     FloatingPoint(bool, String),
     StringLiteral(String),
     CharLiteral(String),
+    ArrayOpen,
+    ArrayClose,
+
     #[allow(unused)] //todo implement.
     Compose,
     // |, >, <, !, @,  $, =, &, +, -, \, /, *, ^, .
     Op(String),
     //meta tokens
     //TODO! attribute indicatator
+    Extern,
     Seq, // ;
     BeginBlock,
     EndBlock,
