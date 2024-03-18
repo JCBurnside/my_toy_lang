@@ -1156,6 +1156,7 @@ pub enum TypedExpr {
     /// not recommended above 3 values
     TupleLiteral {
         contents: Vec<TypedExpr>,
+        loc:crate::Location,
     },
 
     StructConstruction(TypedStructConstruction),
@@ -1177,7 +1178,11 @@ impl TypedExpr {
         already_processed_args: Vec<ResolvedType>,
     ) -> Result<Self, TypingError> {
         match value {
-            Expr::TupleLiteral { contents, loc, id:_ }=> todo!(),
+            Expr::TupleLiteral { contents, loc, id:_ }=> {
+                Ok(Self::TupleLiteral { contents: contents.into_iter().map(|expr| {
+                    Self::try_from(expr, known_externs, known_values, known_types, Vec::new())
+                }).collect::<Result<Vec<_>,_>>()?, loc })
+            },
             Expr::NumericLiteral { value, id: _, ty } => {
                 if ty.is_int() && value.contains('.') {
                     Err(TypingError::ArgTypeMismatch)
@@ -1305,7 +1310,7 @@ impl TypedExpr {
             Self::BoolLiteral(_, loc) | Self::ValueRead(_, _, loc) => *loc,
             Self::ArrayLiteral { contents: _ } => todo!(),
             Self::ListLiteral { contents: _ } => todo!(),
-            Self::TupleLiteral { contents: _ } => todo!(),
+            Self::TupleLiteral { contents: _, loc } => *loc,
             Self::StructConstruction(con) => con.loc,
             Self::IfExpr(ifexpr) => ifexpr.loc,
             Self::Match(match_) => match_.loc,
@@ -1371,7 +1376,7 @@ impl TypedExpr {
             Self::ListLiteral { contents } => contents
                 .iter_mut()
                 .for_each(|it| it.replace_type(name, new_ty)),
-            Self::TupleLiteral { contents } => contents
+            Self::TupleLiteral { contents, loc:_ } => contents
                 .iter_mut()
                 .for_each(|it| it.replace_type(name, new_ty)),
 
@@ -1452,7 +1457,7 @@ impl TypedExpr {
             }
             Self::ArrayLiteral { contents }
             | Self::ListLiteral { contents }
-            | Self::TupleLiteral { contents } => {
+            | Self::TupleLiteral { contents, loc:_ } => {
                 let mut old_args = Vec::new();
                 std::mem::swap(&mut old_args, &mut context.args);
                 for value in contents {

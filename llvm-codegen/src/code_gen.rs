@@ -1359,7 +1359,7 @@ impl<'ctx> CodeGen<'ctx> {
                         loc: _,
                     } = fn_arg_t
                     {
-                        let TypedExpr::TupleLiteral { contents } = *arg else {
+                        let TypedExpr::TupleLiteral { contents, loc:_ } = *arg else {
                             unreachable!("shouldn't be a tuple?")
                         };
                         contents
