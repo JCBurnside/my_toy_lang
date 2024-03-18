@@ -121,6 +121,14 @@ impl<'ctx> TypeResolver<'ctx> {
                         .as_any_type_enum(),
                 );
             }
+            ResolvedType::Tuple { underlining, loc:_ } => {
+                let inners = underlining.iter().map(|ty| self.resolve_type_as_basic(ty.clone())).collect_vec();
+                let strct = self.ctx.struct_type(&inners,false);
+                self.known.insert(
+                    ty,
+                    strct.into()
+                );
+            }
             ResolvedType::Function { .. } => {
                 let r = self
                     .ctx
