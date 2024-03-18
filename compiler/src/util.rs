@@ -14,11 +14,11 @@ pub trait ExtraUtilFunctions: Sized {
 }
 impl<T> ExtraUtilFunctions for T {}
 
-pub trait ExtraIterUtils : Iterator {
-    fn advance_by(&mut self, n:usize) {
+pub trait ExtraIterUtils: Iterator {
+    fn advance_by(&mut self, n: usize) {
         for _ in 0..n {
             let _ = self.next();
         }
     }
 }
-impl<T:Iterator> ExtraIterUtils for T {}
+impl<T: Iterator> ExtraIterUtils for T {}

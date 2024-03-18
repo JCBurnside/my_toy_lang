@@ -1,8 +1,6 @@
 mod code_gen;
 mod type_resolver;
-use std::{
-    collections::HashMap, path::PathBuf,
-};
+use std::{collections::HashMap, path::PathBuf};
 
 use code_gen::*;
 use compiler::{typed_ast::TypedDeclaration, types::ResolvedType};
