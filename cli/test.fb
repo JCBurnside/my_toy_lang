@@ -38,6 +38,10 @@ let show_something_else _ : () -> bool =
     print_str "general kenobi\n";
     return false;
 
+let test (a:(int32,int32)) = 
+    let x : int32 = 0;
+    return x;
+
 let main _ : () -> () =
     let a : bool = true;
     let x : int32 = 0;

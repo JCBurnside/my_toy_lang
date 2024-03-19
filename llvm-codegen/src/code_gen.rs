@@ -568,7 +568,8 @@ impl<'ctx> CodeGen<'ctx> {
                     self.builder.build_unconditional_branch(ret_bb).unwrap();
                 } else {
                     let value = self.compile_expr(expr);
-                    let value: BasicValueEnum<'ctx> = value.try_into().unwrap();
+                    
+                    let value = self.value_or_load(value.try_into().unwrap());
                     if let Some(ret_target) = self.ret_target.as_ref() {
                         self.builder.build_store(*ret_target, value).unwrap();
                     }

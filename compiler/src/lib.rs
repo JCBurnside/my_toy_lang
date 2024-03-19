@@ -146,7 +146,8 @@ pub fn from_file<'ctx>(
     );
     let ast = inference_context.inference(ast);
     let mut ast = TypedModuleDeclaration::from(ast, &fwd_declarations, &HashMap::new()); //TODO: foward declare std lib
-
+    #[cfg(debug_assertions)]
+    println!("{:?}", ast.declarations);
     ast.lower_generics(&HashMap::new());
     (
         if errors.is_empty() {
