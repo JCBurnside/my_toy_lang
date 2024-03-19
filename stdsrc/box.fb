@@ -1,0 +1,23 @@
+for<T> type Box = {
+    inner : *mut T
+}
+
+extern "C" let malloc : isize -> *mut i8
+
+for<T> implement Box<T> =
+    // T -> Self
+    public let new t = 
+        let ptr = (unsafe malloc size_of::<T>) as *mut T;
+        *ptr = t;
+        Box<T> { inner : ptr }
+    // &Self -> *const T
+    public unsafe let fn as_ptr &self = self.inner as *const T
+
+    // &mut Self -> *mut T
+    public unsafe let fn as_mut_ptr (&mut self) = self.inner
+
+for<T> implement AsMut<T> for Box<T> =
+    public let fn as_mut (&mut self) = &mut *self.inner
+
+for<T> implement AsRef<T> for Box<T> =
+    public let fn as_ref &self = &*self.inner

@@ -114,8 +114,8 @@ impl Declaration {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct GenericsDecl {
-    pub for_loc : crate::Location,
-    pub decls : Vec<(crate::Location,String)>
+    pub for_loc: crate::Location,
+    pub decls: Vec<(crate::Location, String)>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -186,13 +186,13 @@ pub struct FieldDecl {
 pub struct ArgDeclaration {
     pub loc: crate::Location,
     pub ident: String,
-    pub ty: Option<ResolvedType>, 
+    pub ty: Option<ResolvedType>,
 }
 
-#[derive(PartialEq,Debug, Clone)]
+#[derive(PartialEq, Debug, Clone)]
 pub struct Abi {
-    pub loc : crate::Location,
-    pub identifier : String,
+    pub loc: crate::Location,
+    pub identifier: String,
 }
 
 #[derive(PartialEq, Debug)]
@@ -204,7 +204,7 @@ pub struct ValueDeclaration {
     pub ty: Option<ResolvedType>,
     pub value: ValueType,
     pub generictypes: Option<GenericsDecl>,
-    pub abi : Option<Abi>,
+    pub abi: Option<Abi>,
 }
 impl ValueDeclaration {
     fn replace(&mut self, nice_name: &str, actual: &str) {
@@ -502,9 +502,6 @@ pub enum Expr {
     /// basically an ident on it's own
     ValueRead(String, crate::Location),
 
-    /// NOT IMPLEMENTED YET
-    /// defined like [ expr, expr, expr, ... ]
-    /// type [T;N]
     ArrayLiteral {
         contents: Vec<Expr>,
         loc: crate::Location,

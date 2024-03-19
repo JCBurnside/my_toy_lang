@@ -92,6 +92,8 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                 ')' => (Token::GroupClose, (self.curr_line, start_col)),
                 '{' => (Token::CurlOpen, (self.curr_line, start_col)),
                 '}' => (Token::CurlClose, (self.curr_line, start_col)),
+                '[' => (Token::BracketOpen, (self.curr_line, start_col)),
+                ']' => (Token::BracketClose, (self.curr_line, start_col)),
                 '\'' => {
                     let mut prev = '\0';
                     let inside = self
@@ -119,7 +121,10 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     }
                 }
                 '/' if self.source_stream.clone().next() == Some('/') => {
-                    let _comment = self.source_stream.peeking_take_while(|c| c!=&'\n').collect::<String>();
+                    let _comment = self
+                        .source_stream
+                        .peeking_take_while(|c| c != &'\n')
+                        .collect::<String>();
                     self.lex()
                 }
                 '/' if self.source_stream.clone().next() == Some('*') => {
@@ -128,19 +133,20 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                         .source_stream
                         .peeking_take_while(|c| {
                             if prev == '*' && c == &'/' {
-                                self.curr_col+=1;
+                                self.curr_col += 1;
                                 false
                             } else {
-                                if c==&'\n' {
-                                    self.curr_line +=1;
+                                if c == &'\n' {
+                                    self.curr_line += 1;
                                     self.curr_col = 0;
                                 } else {
-                                    self.curr_col +=1;
+                                    self.curr_col += 1;
                                 }
                                 prev = *c;
                                 true
                             }
-                        }).collect::<String>();
+                        })
+                        .collect::<String>();
                     let _close_comment = self.source_stream.next();
                     self.lex()
                 }
@@ -201,7 +207,10 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                             (self.curr_line, start_col),
                         )
                     } else {
-                        (Token::Integer(c == '-', inside), (self.curr_line, start_col))
+                        (
+                            Token::Integer(c == '-', inside),
+                            (self.curr_line, start_col),
+                        )
                     }
                 }
                 c if c.is_numeric() && self.source_stream.peek() == Some(&'.') => {
@@ -213,10 +222,11 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     ExtraIterUtils::advance_by(&mut self.source_stream, inner.len());
                     self.curr_col += inner.len();
                     let inner = c.to_string() + &inner;
-                    (Token::FloatingPoint(false, inner), (self.curr_line, start_col))
+                    (
+                        Token::FloatingPoint(false, inner),
+                        (self.curr_line, start_col),
+                    )
                 }
-                '[' => (Token::ArrayOpen, (self.curr_line, self.curr_col)),
-                ']' => (Token::ArrayClose, (self.curr_line, self.curr_col)),
                 operators!() => {
                     let inside: String = self
                         .source_stream
@@ -243,10 +253,11 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     .source_stream
                     .clone()
                     .take_while(ident_char)
-                    .collect::<String>() == "xtern" => 
+                    .collect::<String>()
+                    == "xtern" =>
                 {
                     ExtraIterUtils::advance_by(&mut self.source_stream, 5);
-                    self.curr_col+=5;
+                    self.curr_col += 5;
                     (Token::Extern, (self.curr_line, start_col))
                 }
                 't' if self
@@ -295,7 +306,13 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     (Token::Where, (self.curr_line, start_col))
                 }
 
-                'i' if self.source_stream.clone().take_while(ident_char).collect::<String>() == "f" => {
+                'i' if self
+                    .source_stream
+                    .clone()
+                    .take_while(ident_char)
+                    .collect::<String>()
+                    == "f" =>
+                {
                     let _ = self.source_stream.next();
                     self.curr_col += 1;
                     (Token::If, (self.curr_line, start_col))
@@ -384,7 +401,10 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     if inner.chars().all(|c| c.is_numeric()) {
                         (Token::Integer(false, inner), (self.curr_line, start_col))
                     } else if inner.chars().all(|c| c.is_numeric() || c == '.') {
-                        (Token::FloatingPoint(false, inner), (self.curr_line, start_col))
+                        (
+                            Token::FloatingPoint(false, inner),
+                            (self.curr_line, start_col),
+                        )
                     } else {
                         (Token::Ident(inner), (self.curr_line, start_col))
                     }
@@ -490,6 +510,23 @@ let match_expr_with_block x : int32 -> int32 = match x where
                 EoF
             ]
         )
+    }
+
+    #[test]
+    fn array_ty() {
+        use Token::*;
+        assert_eq!(
+            TokenStream::from_source("[int32;3]").map(fst).collect_vec(),
+            [
+                BracketOpen,
+                Ident("int32".to_string()),
+                Seq,
+                Integer(false, "3".to_string()),
+                BracketClose,
+                EoF
+            ],
+            "array of 3 int32s"
+        );
     }
 
     #[test]
@@ -662,12 +699,12 @@ let match_expr_with_block x : int32 -> int32 = match x where
 
         assert_eq!(
             TokenStream::from_source("[").map(|(a, _)| a).collect_vec(),
-            [Token::ArrayOpen, Token::EoF],
+            [Token::BracketOpen, Token::EoF],
             "array open ["
         );
         assert_eq!(
             TokenStream::from_source("]").map(|(a, _)| a).collect_vec(),
-            [Token::ArrayClose, Token::EoF],
+            [Token::BracketClose, Token::EoF],
             "array close ]"
         );
         assert_eq!(
@@ -709,7 +746,7 @@ let match_expr_with_block x : int32 -> int32 = match x where
         assert_eq!(
             TokenStream::from_source("[1,2,3,4]").map(fst).collect_vec(),
             [
-                ArrayOpen,
+                BracketOpen,
                 Integer(false, "1".to_string()),
                 Comma,
                 Integer(false, "2".to_string()),
@@ -717,7 +754,7 @@ let match_expr_with_block x : int32 -> int32 = match x where
                 Integer(false, "3".to_string()),
                 Comma,
                 Integer(false, "4".to_string()),
-                ArrayClose,
+                BracketClose,
                 EoF
             ]
         );

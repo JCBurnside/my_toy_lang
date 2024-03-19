@@ -6,8 +6,8 @@ use crate::{
     util::ExtraUtilFunctions,
 };
 
-pub(crate) use crate::ast::{Pattern, TypeDefinition};
 pub use crate::ast::GenericsDecl;
+pub(crate) use crate::ast::{Pattern, TypeDefinition};
 #[derive(PartialEq, Debug)]
 pub(crate) struct ModuleDeclaration {
     pub(crate) loc: crate::Location,
@@ -46,7 +46,7 @@ pub(crate) struct ValueDeclaration {
     pub(crate) ty: ResolvedType,
     pub(crate) value: ValueType,
     pub(crate) generics: Option<GenericsDecl>,
-    pub(crate) abi : Option<crate::ast::Abi>,
+    pub(crate) abi: Option<crate::ast::Abi>,
     pub(crate) id: usize,
 }
 
@@ -128,13 +128,18 @@ pub(crate) enum Expr {
         loc: crate::Location,
         id: usize,
     },
+    TupleLiteral {
+        contents: Vec<Expr>,
+        loc:crate::Location,
+        id:usize
+    },
     #[allow(unused)]
     ListLiteral {
         contents: Vec<Expr>,
         loc: crate::Location,
         id: usize,
     },
-    #[allow(unused)]// TODO! why is this unused?
+    #[allow(unused)] // TODO! why is this unused?
     StructConstruction(StructConstruction),
     BoolLiteral(bool, crate::Location, usize),
     If(IfExpr),
@@ -145,21 +150,31 @@ impl Expr {
         match self {
             Self::Error(id)
             | Self::BoolLiteral(_, _, id)
-            | Self::ListLiteral { id, .. } 
+            | Self::ListLiteral { id, .. }
             | Self::NumericLiteral { id, .. }
             | Self::ValueRead(_, _, id)
-            | Self::If(IfExpr{id, ..})
-            | Self::BinaryOpCall(BinaryOpCall{id,..})
-            | Self::FnCall(FnCall{ id, ..})
+            | Self::If(IfExpr { id, .. })
+            | Self::BinaryOpCall(BinaryOpCall { id, .. })
+            | Self::FnCall(FnCall { id, .. })
             | Self::ArrayLiteral { id, .. }
-            | Self::StructConstruction(StructConstruction { id, ..})
-            | Self::Match(Match{ id, .. })
-            => *id,
-            _ => usize::MAX
+            | Self::StructConstruction(StructConstruction { id, .. })
+            | Self::Match(Match { id, .. }) => *id,
+            _ => usize::MAX,
         }
     }
     pub(crate) fn get_retty(&self, ctx: &mut crate::inference::Context) -> ResolvedType {
         match self {
+            Expr::TupleLiteral { contents, loc, id } => {
+                if contents.is_empty() {
+                    // in theory shouldn't need this but gonna be safe.
+                    types::UNIT
+                } else {
+                    ResolvedType::Tuple {
+                        underlining:contents.iter().map(|expr|expr.get_retty(ctx)).collect(),
+                        loc:(0,0)
+                    }
+                }
+            }
             Expr::Error(_) => ResolvedType::Error,
             Expr::NumericLiteral { ty, .. } => ty.clone(),
             Expr::StringLiteral(_) => types::STR,
@@ -190,26 +205,29 @@ impl Expr {
             Expr::StructConstruction(strct) => ResolvedType::User {
                 name: strct.ident.clone(),
                 generics: strct.generics.clone(),
-                loc:(0,0)
+                loc: (0, 0),
             },
             Expr::BoolLiteral(_, _, _) => types::BOOL,
-            Expr::If(if_) => {
-                if_.result.clone()
-            }
-            Expr::Match(match_) => {
-                match_.arms.iter().map(|arm| {
-                    arm.ret.as_ref().map(|ret| ret.get_retty(ctx)).unwrap_or(types::ERROR)
-                }).reduce(|accum,ty| {
+            Expr::If(if_) => if_.result.clone(),
+            Expr::Match(match_) => match_
+                .arms
+                .iter()
+                .map(|arm| {
+                    arm.ret
+                        .as_ref()
+                        .map(|ret| ret.get_retty(ctx))
+                        .unwrap_or(types::ERROR)
+                })
+                .reduce(|accum, ty| {
                     if accum.is_error() || (accum.is_unknown() && !ty.is_unknown()) {
                         ty
                     } else {
                         accum
                     }
-                }).unwrap_or(types::ERROR)
-            },
+                })
+                .unwrap_or(types::ERROR),
         }
     }
-
 }
 
 #[derive(PartialEq, Debug)]

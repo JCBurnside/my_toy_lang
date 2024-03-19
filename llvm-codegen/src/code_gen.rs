@@ -358,7 +358,7 @@ impl<'ctx> CodeGen<'ctx> {
                 }
             }
             TypedValueType::Err => unreachable!("how did an error kind get here"),
-            TypedValueType::External => unreachable!("The external linkage should not be compiled")
+            TypedValueType::External => unreachable!("The external linkage should not be compiled"),
         }
         self.difunction = None;
         self.dilocals.clear();
@@ -393,7 +393,8 @@ impl<'ctx> CodeGen<'ctx> {
                     (true, true) => {
                         // if then
                         self.builder
-                            .build_conditional_branch(cond, true_block, end_block).unwrap();
+                            .build_conditional_branch(cond, true_block, end_block)
+                            .unwrap();
                         self.builder.position_at_end(true_block);
                         for stmnt in true_branch {
                             self.compile_statement(stmnt);
@@ -404,7 +405,8 @@ impl<'ctx> CodeGen<'ctx> {
                         //if then else
                         let else_block = self.ctx.append_basic_block(fun, "");
                         self.builder
-                            .build_conditional_branch(cond, true_block, else_block).unwrap();
+                            .build_conditional_branch(cond, true_block, else_block)
+                            .unwrap();
                         self.builder.position_at_end(true_block);
                         for stmnt in true_branch {
                             self.compile_statement(stmnt);
@@ -424,11 +426,13 @@ impl<'ctx> CodeGen<'ctx> {
                                 .take(else_ifs.len())
                                 .collect_vec();
 
-                        self.builder.build_conditional_branch(
-                            cond,
-                            true_block,
-                            *cond_blocks.first().unwrap(),
-                        ).unwrap();
+                        self.builder
+                            .build_conditional_branch(
+                                cond,
+                                true_block,
+                                *cond_blocks.first().unwrap(),
+                            )
+                            .unwrap();
                         self.builder.position_at_end(true_block);
                         for stmnt in true_branch {
                             self.compile_statement(stmnt);
@@ -468,7 +472,8 @@ impl<'ctx> CodeGen<'ctx> {
                                 _ => unreachable!(),
                             };
                             self.builder
-                                .build_conditional_branch(cond, true_block, false_block).unwrap();
+                                .build_conditional_branch(cond, true_block, false_block)
+                                .unwrap();
                         }
                     }
                     (false, false) => {
@@ -477,11 +482,13 @@ impl<'ctx> CodeGen<'ctx> {
                                 .take(else_ifs.len())
                                 .collect_vec();
 
-                        self.builder.build_conditional_branch(
-                            cond,
-                            true_block,
-                            *cond_blocks.first().unwrap(),
-                        ).unwrap();
+                        self.builder
+                            .build_conditional_branch(
+                                cond,
+                                true_block,
+                                *cond_blocks.first().unwrap(),
+                            )
+                            .unwrap();
                         self.builder.position_at_end(true_block);
                         for stmnt in true_branch {
                             self.compile_statement(stmnt);
@@ -521,7 +528,8 @@ impl<'ctx> CodeGen<'ctx> {
                                 _ => unreachable!(),
                             };
                             self.builder
-                                .build_conditional_branch(cond, true_block, false_block).unwrap();
+                                .build_conditional_branch(cond, true_block, false_block)
+                                .unwrap();
                         }
                         self.builder.position_at_end(else_block);
                         for stmnt in else_branch {
@@ -560,7 +568,8 @@ impl<'ctx> CodeGen<'ctx> {
                     self.builder.build_unconditional_branch(ret_bb).unwrap();
                 } else {
                     let value = self.compile_expr(expr);
-                    let value: BasicValueEnum<'ctx> = value.try_into().unwrap();
+                    
+                    let value = self.value_or_load(value.try_into().unwrap());
                     if let Some(ret_target) = self.ret_target.as_ref() {
                         self.builder.build_store(*ret_target, value).unwrap();
                     }
@@ -605,7 +614,8 @@ impl<'ctx> CodeGen<'ctx> {
                         result
                     };
                     self.builder
-                        .build_store::<BasicValueEnum>(pvalue, result.try_into().unwrap()).unwrap();
+                        .build_store::<BasicValueEnum>(pvalue, result.try_into().unwrap())
+                        .unwrap();
                     self.locals.insert(ident.clone(), pvalue);
                     if let Some(fnscope) = &self.difunction {
                         let Some(dibuilder) = &self.dibuilder else {
@@ -673,7 +683,7 @@ impl<'ctx> CodeGen<'ctx> {
                     true_branch,
                     else_ifs,
                     else_branch,
-                    loc:_,
+                    loc: _,
                 } = expr;
                 let fun = self
                     .builder
@@ -693,7 +703,8 @@ impl<'ctx> CodeGen<'ctx> {
                 let else_block = self.ctx.append_basic_block(fun, "");
                 if else_ifs.is_empty() {
                     self.builder
-                        .build_conditional_branch(root_cond, then_block, else_block).unwrap();
+                        .build_conditional_branch(root_cond, then_block, else_block)
+                        .unwrap();
                     self.builder.position_at_end(then_block);
                     for stmnt in true_branch.0 {
                         self.compile_statement(stmnt);
@@ -728,11 +739,13 @@ impl<'ctx> CodeGen<'ctx> {
                         std::iter::repeat_with(|| self.ctx.append_basic_block(fun, ""))
                             .take(else_ifs.len())
                             .collect_vec();
-                    self.builder.build_conditional_branch(
-                        root_cond,
-                        then_block,
-                        *cond_blocks.first().unwrap(),
-                    ).unwrap();
+                    self.builder
+                        .build_conditional_branch(
+                            root_cond,
+                            then_block,
+                            *cond_blocks.first().unwrap(),
+                        )
+                        .unwrap();
                     self.builder.position_at_end(result_block);
                     let phi = self.builder.build_phi(ty, "").unwrap();
                     self.builder.position_at_end(then_block);
@@ -747,7 +760,9 @@ impl<'ctx> CodeGen<'ctx> {
                     } else {
                         true_value
                     };
-                    self.builder.build_unconditional_branch(result_block).unwrap();
+                    self.builder
+                        .build_unconditional_branch(result_block)
+                        .unwrap();
                     phi.add_incoming(&[(&true_value, then_block)]);
                     let else_ifs = else_ifs
                         .into_iter()
@@ -769,7 +784,9 @@ impl<'ctx> CodeGen<'ctx> {
                                 &result,
                                 self.builder.get_insert_block().unwrap(),
                             )]);
-                            self.builder.build_unconditional_branch(result_block).unwrap();
+                            self.builder
+                                .build_unconditional_branch(result_block)
+                                .unwrap();
                             (cond, block)
                         })
                         .zip(cond_blocks.iter().copied())
@@ -792,7 +809,8 @@ impl<'ctx> CodeGen<'ctx> {
                             _ => unreachable!(),
                         };
                         self.builder
-                            .build_conditional_branch(cond, true_block, false_block).unwrap();
+                            .build_conditional_branch(cond, true_block, false_block)
+                            .unwrap();
                     }
                     let _ = result_block.move_after(else_block);
                     self.builder.position_at_end(else_block);
@@ -800,7 +818,9 @@ impl<'ctx> CodeGen<'ctx> {
                         self.compile_statement(stmnt);
                     }
                     let else_value = convert_to_basic_value(self.compile_expr(*else_branch.1));
-                    self.builder.build_unconditional_branch(result_block).unwrap();
+                    self.builder
+                        .build_unconditional_branch(result_block)
+                        .unwrap();
                     let else_value = if !rt.is_user() && else_value.is_pointer_value() {
                         self.builder
                             .build_load(else_value.into_pointer_value(), "")
@@ -849,20 +869,23 @@ impl<'ctx> CodeGen<'ctx> {
                         let lhs_false = self.ctx.append_basic_block(fun, "");
                         let else_block = self.ctx.append_basic_block(fun, "");
                         let continue_block = self.ctx.append_basic_block(fun, "");
-                        self.builder.build_conditional_branch(
-                            lhs.into_int_value(),
-                            else_block,
-                            lhs_false,
-                        ).unwrap();
+                        self.builder
+                            .build_conditional_branch(lhs.into_int_value(), else_block, lhs_false)
+                            .unwrap();
                         self.builder.position_at_end(lhs_false);
                         self.builder
-                            .build_store(result, self.ctx.bool_type().const_zero()).unwrap();
-                        self.builder.build_unconditional_branch(continue_block).unwrap();
+                            .build_store(result, self.ctx.bool_type().const_zero())
+                            .unwrap();
+                        self.builder
+                            .build_unconditional_branch(continue_block)
+                            .unwrap();
                         self.builder.position_at_end(else_block);
                         let rhs = convert_to_basic_value(self.compile_expr(*rhs));
                         let rhs = self.value_or_load(rhs);
                         self.builder.build_store(result, rhs).unwrap();
-                        self.builder.build_unconditional_branch(continue_block).unwrap();
+                        self.builder
+                            .build_unconditional_branch(continue_block)
+                            .unwrap();
                         self.builder.position_at_end(continue_block);
                         let result = self.builder.build_load(result, "").unwrap();
                         result.as_any_value_enum()
@@ -881,20 +904,23 @@ impl<'ctx> CodeGen<'ctx> {
                         let lhs_true = self.ctx.append_basic_block(fun, "");
                         let else_block = self.ctx.append_basic_block(fun, "");
                         let continue_block = self.ctx.append_basic_block(fun, "");
-                        self.builder.build_conditional_branch(
-                            lhs.into_int_value(),
-                            lhs_true,
-                            else_block,
-                        ).unwrap();
+                        self.builder
+                            .build_conditional_branch(lhs.into_int_value(), lhs_true, else_block)
+                            .unwrap();
                         self.builder.position_at_end(lhs_true);
                         self.builder
-                            .build_store(result, self.ctx.bool_type().const_int(1, false)).unwrap();
-                        self.builder.build_unconditional_branch(continue_block).unwrap();
+                            .build_store(result, self.ctx.bool_type().const_int(1, false))
+                            .unwrap();
+                        self.builder
+                            .build_unconditional_branch(continue_block)
+                            .unwrap();
                         self.builder.position_at_end(else_block);
                         let rhs = convert_to_basic_value(self.compile_expr(*rhs));
                         let rhs = self.value_or_load(rhs);
                         self.builder.build_store(result, rhs).unwrap();
-                        self.builder.build_unconditional_branch(continue_block).unwrap();
+                        self.builder
+                            .build_unconditional_branch(continue_block)
+                            .unwrap();
                         self.builder.position_at_end(continue_block);
                         let result = self.builder.build_load(result, "").unwrap();
                         result.as_any_value_enum()
@@ -1314,30 +1340,49 @@ impl<'ctx> CodeGen<'ctx> {
                 value,
                 arg: Some(arg),
                 rt,
-                arg_t:fn_arg_t,
+                arg_t: fn_arg_t,
                 loc,
                 is_extern,
             }) => {
                 if is_extern {
-                    
-                    let TypedExpr::ValueRead(ident, _, _) = *value else { unreachable!("this shouldn't happen.  should be handled by type checking phase.")};
-                    let value = self.known_functions.get(&ident).expect("undeclared global? should be handled at type checking.").clone();
-                    let args : Vec<BasicValueEnum> = if let ResolvedType::Tuple { underlining:_, loc:_ } = fn_arg_t {
-                        let TypedExpr::TupleLiteral { contents } = *arg else { unreachable!("shouldn't be a tuple?")};
-                        contents.into_iter().map(|expr|
-                            self.compile_expr(expr).try_into().unwrap()
-                        ).collect()
+                    let TypedExpr::ValueRead(ident, _, _) = *value else {
+                        unreachable!(
+                            "this shouldn't happen.  should be handled by type checking phase."
+                        )
+                    };
+                    let value = self
+                        .known_functions
+                        .get(&ident)
+                        .expect("undeclared global? should be handled at type checking.")
+                        .clone();
+                    let args: Vec<BasicValueEnum> = if let ResolvedType::Tuple {
+                        underlining: _,
+                        loc: _,
+                    } = fn_arg_t
+                    {
+                        let TypedExpr::TupleLiteral { contents, loc:_ } = *arg else {
+                            unreachable!("shouldn't be a tuple?")
+                        };
+                        contents
+                            .into_iter()
+                            .map(|expr| self.compile_expr(expr).try_into().unwrap())
+                            .collect()
                     } else {
                         vec![self.compile_expr(*arg).try_into().unwrap()]
                     };
                     let args = args.into_iter().map(|arg| arg.into()).collect_vec();
-                    let value : CallableValue = value.as_pointer_value().try_into().unwrap(); 
-                    return self.builder.build_call(value, &args, "").unwrap().as_any_value_enum();
+                    let value: CallableValue = value.as_pointer_value().try_into().unwrap();
+                    return self
+                        .builder
+                        .build_call(value, &args, "")
+                        .unwrap()
+                        .as_any_value_enum();
                 }
                 let arg_t = self.type_resolver.resolve_arg_type(&fn_arg_t);
                 let arg = self.compile_expr(*arg);
                 let arg: BasicValueEnum = arg.try_into().unwrap();
                 let arg = if arg.is_pointer_value()
+                    && !arg_t.is_pointer_type()
                     && !arg
                         .into_pointer_value()
                         .get_type()
@@ -1363,7 +1408,7 @@ impl<'ctx> CodeGen<'ctx> {
                     );
                     // self.builder.set_current_debug_location(loc);
                 }
-                
+
                 match value {
                     AnyValueEnum::PointerValue(target) => {
                         match target.get_type().get_element_type() {
@@ -1389,11 +1434,13 @@ impl<'ctx> CodeGen<'ctx> {
                                             "",
                                         )
                                         .unwrap();
-                                    self.builder.build_call(
-                                        target_fun,
-                                        &[target.into(), result.into(), arg.into()],
-                                        "",
-                                    ).unwrap();
+                                    self.builder
+                                        .build_call(
+                                            target_fun,
+                                            &[target.into(), result.into(), arg.into()],
+                                            "",
+                                        )
+                                        .unwrap();
                                     result.as_any_value_enum()
                                 } else {
                                     #[cfg(debug_assertions)]
@@ -1576,7 +1623,8 @@ impl<'ctx> CodeGen<'ctx> {
                     .into_struct_type();
                 let p = self.builder.build_alloca(ty, "").unwrap();
                 self.builder
-                    .build_store(p, ty.const_named_struct(&[ptr.into(), ptr_end.into()])).unwrap();
+                    .build_store(p, ty.const_named_struct(&[ptr.into(), ptr_end.into()]))
+                    .unwrap();
                 p.as_any_value_enum()
             }
             TypedExpr::CharLiteral(value) => {
@@ -1664,9 +1712,38 @@ impl<'ctx> CodeGen<'ctx> {
                 }
             }
             TypedExpr::Match(match_) => self.compile_match(match_),
-            TypedExpr::ArrayLiteral { .. } => todo!(),
-            TypedExpr::ListLiteral { .. } => todo!(),
-            TypedExpr::TupleLiteral { .. } => todo!(),
+            TypedExpr::ArrayLiteral { contents, underlining } => {
+                let arr_ty = self.type_resolver.resolve_type_as_basic(underlining).array_type(contents.len() as u32);
+                let arr = self.builder.build_alloca(arr_ty, "").unwrap();
+                for (idx,expr) in contents.into_iter().enumerate() {
+                    let ele = convert_to_basic_value(self.compile_expr(expr));
+                    let loc = unsafe { 
+                        self.builder.build_in_bounds_gep(
+                            arr, 
+                            &[
+                                self.ctx.i32_type().const_zero(), 
+                                self.ctx.i32_type().const_int(idx as u64, false)
+                            ], 
+                            ""
+                        ).unwrap() 
+                    };
+                    self.builder.build_store(loc,ele).unwrap();
+                }
+                arr.as_any_value_enum()
+            },
+            TypedExpr::ListLiteral { contents } => todo!(),
+            TypedExpr::TupleLiteral { contents, .. } => {
+                
+                let tys = contents.iter().map(|it| it.get_ty()).collect();
+                let ty = self.type_resolver.resolve_type_as_basic(ResolvedType::Tuple { underlining: tys, loc: (0,0) });
+                let tuple = self.builder.build_alloca(ty, "").unwrap();
+                let loaded = self.builder.build_load(tuple,"").unwrap();
+                for (idx,expr) in contents.into_iter().enumerate() {
+                    let r = convert_to_basic_value(self.compile_expr(expr));
+                    self.builder.build_insert_value(loaded.into_array_value(), r, idx as u32, "").unwrap();
+                }
+                tuple.as_any_value_enum()
+            },
             TypedExpr::ErrorNode => unreachable!(),
         }
     }
@@ -1769,7 +1846,7 @@ impl<'ctx> CodeGen<'ctx> {
                         }
                     }
                 }
-                _ => todo!()
+                _ => todo!(),
             },
         }
         if let Some(dibuilder) = &mut self.dibuilder {
@@ -1787,28 +1864,42 @@ impl<'ctx> CodeGen<'ctx> {
                     match abi.identifier.as_str() {
                         "C" => {
                             // let (args,ret) = decl.ty.as_c_function();
-                            if let ResolvedType::Function { 
-                                arg, 
-                                returns : ret, 
-                                loc:_ 
-                            } = &decl.ty {
-                                let args = if let ResolvedType::Tuple { underlining, loc:_ } = arg.as_ref() {
+                            if let ResolvedType::Function {
+                                arg,
+                                returns: ret,
+                                loc: _,
+                            } = &decl.ty
+                            {
+                                let args = if let ResolvedType::Tuple {
+                                    underlining,
+                                    loc: _,
+                                } = arg.as_ref()
+                                {
                                     underlining.clone()
                                 } else {
                                     vec![arg.as_ref().clone()]
                                 };
-                                let ret = self.type_resolver.resolve_type_as_basic(ret.as_ref().clone());
-                                let args = args.into_iter().map(|it| self.type_resolver.resolve_type_as_basic(it).into()).collect_vec();
-                                let fun = self.module.add_function(&decl.ident, ret.fn_type(&args, false), Some(inkwell::module::Linkage::External));
-                                
-                                self.known_functions.insert(decl.ident.clone(), fun.as_global_value());
-                            }
-                            else {
+                                let ret = self
+                                    .type_resolver
+                                    .resolve_type_as_basic(ret.as_ref().clone());
+                                let args = args
+                                    .into_iter()
+                                    .map(|it| self.type_resolver.resolve_type_as_basic(it).into())
+                                    .collect_vec();
+                                let fun = self.module.add_function(
+                                    &decl.ident,
+                                    ret.fn_type(&args, false),
+                                    Some(inkwell::module::Linkage::External),
+                                );
+
+                                self.known_functions
+                                    .insert(decl.ident.clone(), fun.as_global_value());
+                            } else {
                                 todo!("externed globals?")
                             }
-                        },
+                        }
                         "intrinsic" => {
-                            ()// do nothing here as this is handled in the code gen itself.  eg `let (+) : int32 -> int32 -> int32` which should output an add signed instruction
+                            () // do nothing here as this is handled in the code gen itself.  eg `let (+) : int32 -> int32 -> int32` which should output an add signed instruction
                         }
                         _ => {
                             println!("unknown abi {}", abi.identifier)
@@ -1828,7 +1919,7 @@ impl<'ctx> CodeGen<'ctx> {
                     }
                     let _strct = self.ctx.opaque_struct_type(&decl.ident);
                 }
-                _ => todo!()
+                _ => todo!(),
             },
         }
     }
@@ -1977,7 +2068,8 @@ impl<'ctx> CodeGen<'ctx> {
                 .build_struct_gep(ret, idx as u32 + 1, "")
                 .unwrap();
             self.builder
-                .build_store(target, curr.get_last_param().unwrap()).unwrap();
+                .build_store(target, curr.get_last_param().unwrap())
+                .unwrap();
             let ret = self
                 .builder
                 .build_bitcast(ret, curry_placeholder, "")
@@ -2026,7 +2118,11 @@ impl<'ctx> CodeGen<'ctx> {
         #[cfg(debug_assertions)]
         let _ = self.module.print_to_file("./debug.llvm");
         for decl in ast.declarations.into_iter().filter(|it| match it {
-            TypedDeclaration::Value(TypedValueDeclaration { value, .. }) if value == &TypedValueType::External => false,
+            TypedDeclaration::Value(TypedValueDeclaration { value, .. })
+                if value == &TypedValueType::External =>
+            {
+                false
+            }
             _ => true,
         }) {
             self.compile_decl(decl);
@@ -2264,18 +2360,20 @@ impl<'ctx> CodeGen<'ctx> {
                     .unwrap()
                     .into_pointer_value();
                 let main: CallableValue = main.try_into().unwrap();
-                self.builder.build_call(
-                    main,
-                    &[
-                        gs.as_basic_value_enum().into(),
-                        self.module
-                            .get_global("()")
-                            .unwrap()
-                            .as_pointer_value()
-                            .into(),
-                    ],
-                    "",
-                ).unwrap();
+                self.builder
+                    .build_call(
+                        main,
+                        &[
+                            gs.as_basic_value_enum().into(),
+                            self.module
+                                .get_global("()")
+                                .unwrap()
+                                .as_pointer_value()
+                                .into(),
+                        ],
+                        "",
+                    )
+                    .unwrap();
                 self.builder.build_return(None).unwrap();
             } else {
                 panic!("could not find suitable main");
@@ -2343,7 +2441,8 @@ impl<'ctx> CodeGen<'ctx> {
                 .map(|(cond, bb, _)| (cond, bb))
                 .collect_vec();
             self.builder
-                .build_switch(on, default_block.map_or(ret_block, |(bb, _)| bb), &arms).unwrap();
+                .build_switch(on, default_block.map_or(ret_block, |(bb, _)| bb), &arms)
+                .unwrap();
             let _ = ret_block.move_after(*arms.last().map(|(_, bb)| bb).unwrap());
             self.builder.position_at_end(ret_block);
             #[cfg(debug_assertions)]
@@ -2382,7 +2481,9 @@ impl<'ctx> CodeGen<'ctx> {
                 .into_iter()
                 .map(|(cond, bb, _)| (cond, bb))
                 .collect_vec();
-            self.builder.build_switch(on, unreachable_bb, &arms).unwrap();
+            self.builder
+                .build_switch(on, unreachable_bb, &arms)
+                .unwrap();
             self.builder.position_at_end(ret_block);
             phi.as_any_value_enum()
         }
@@ -2401,7 +2502,7 @@ impl<'ctx> CodeGen<'ctx> {
         Option<BasicValueEnum<'ctx>>,
     ) {
         let TypedMatchArm {
-            loc:_,
+            loc: _,
             cond,
             block,
             ret,
@@ -2431,7 +2532,6 @@ impl<'ctx> CodeGen<'ctx> {
         (cond, bb, ret)
     }
 }
-
 
 fn convert_to_basic_value<'ctx>(value: AnyValueEnum<'ctx>) -> BasicValueEnum<'ctx> {
     match value {

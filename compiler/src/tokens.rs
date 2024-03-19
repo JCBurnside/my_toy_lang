@@ -2,12 +2,14 @@
 pub enum Token {
     Let,
     Return,
-    Arrow,      // ->
-    GroupOpen,  // (
-    GroupClose, // )
-    CurlOpen,   // {
-    CurlClose,  // }
-    Comma,      //,
+    Arrow,        // ->
+    GroupOpen,    // (
+    GroupClose,   // )
+    CurlOpen,     // {
+    CurlClose,    // }
+    BracketOpen,  // [
+    BracketClose, //]
+    Comma,        //,
     Colon,
     Ident(String),
     For, // used for generic declaration and maybe composition in a later version
@@ -31,8 +33,6 @@ pub enum Token {
     FloatingPoint(bool, String),
     StringLiteral(String),
     CharLiteral(String),
-    ArrayOpen,
-    ArrayClose,
 
     #[allow(unused)] //todo implement.
     Compose,

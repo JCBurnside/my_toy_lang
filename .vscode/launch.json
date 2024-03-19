@@ -16,7 +16,7 @@
                 {"name": "RUST_BACKTRACE", "value": "1"}
             ],
             "console": "externalTerminal",
-            "preLaunchTask": "rust: cargo build"
+            "preLaunchTask": "build"
         },
         {
             "name": "test",
@@ -37,7 +37,7 @@
             "cwd": "${workspaceFolder}",
             "env": {"RUST_BACKTRACE": "1"},
             "console": "externalTerminal",
-            "preLaunchTask": "rust: cargo build"
+            "preLaunchTask": "build"
         }
     ]
 }

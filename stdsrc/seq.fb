@@ -8,21 +8,28 @@ for<T> trait Sequence =
 
 for<T,S:Sequence<T>, U> public type Map = {
     base : S,
-    fun : T->U,
+    fun : S::Item->U,
 }
 
-public let to_list (mut s) = 
+for<T,S> public let sum (seq:S) 
+where S : Seq<Item = T>, T : Add<T, Result=T> = foldl1 (+) seq
+
+for<T,S> public let prod (seq:S)
+where S : Seq<Item = T>, T : Mul<T, Result=T> = foldl1 (*) seq
+
+for<T,S:Seq<Item = T>> public let to_list (mut s:S) = 
     match s.next
-    | Some t -> [t] ++ to_list s
+    | Some t -> [|t|] ++ to_list s
     | None -> [||]
 
+for<T,S:Seq<Item = T>> public let to_vec (s:S) = s |> seq::collect::<Vec<T>>
 
 
 for<T,S:Sequence<T>, U> implement Sequence<U> for Map<T,S,U> =
     let next &mut self = 
         self.base.next |> Option::map self.fun 
 
-public let map func s = Map { base:s, func }
+for<T,S:Seq<Item=T>,U> public let map (func:T->U) (s:S) = Map { base:s, func }
 
 for<TLeft,TRTLeft,TRight,TRTRight,S:Sequence<(TLeft,TRight>)>>
 public let bimap funcleft funcright s : (TLeft->TRTLeft)->(TRight->TRTRight) -> S -> Map<(TLeft,TRight),S,(TRTLeft,TRTRight)> =
@@ -31,18 +38,15 @@ public let bimap funcleft funcright s : (TLeft->TRTLeft)->(TRight->TRTRight) -> 
         fun : ((left,right) -> (funcleft left,funcright right))
     }
 
-
 public let foldl left func (mut s) =
     match s.next 
     | Some t -> foldl (func left t) s
     | None -> left
 /*
-
 [a,b,c]
 |> seq::foldl 1 (+) 
 
 (((1+a)+b)+c)
-
 */
 
 public let foldr right func (mut s) =
@@ -69,13 +73,15 @@ public type Flatten {
     curr : Option<Inner>,
     seq : Outer,
 }
-for<T,Inner:Sequence<T>, Outer:Sequence<Inner>>
+
+for<T,Inner:Seq<T>, Outer:Seq<Inner>>
 public let flatten s = Flatten {
     curr : None,
     seq : s,
 }
-for<T,Inner:Sequence<T>, Outer:Sequence<Inner>>
-implement Sequence<T> for Flatten =
+
+for<T,Inner:Seq<T>, Outer:Seq<Inner>>
+implements Seq<T> for Flatten =
     let next self =
         match self.curr |> Option::map seq::next
         | Some ele -> Some ele
@@ -86,8 +92,4 @@ implement Sequence<T> for Flatten =
                 self.next
 
 for<T> trait FromSeq<T> =
-    for<S:Sequence<T>> let from_seq s : S -> Self;
-
-
-for<T,Coll:FromSeq<T>, S:Sequence<T>>
-let collect = Coll::from_seq
+    for<S:Seq<T>> let from_seq s : S -> Self;
