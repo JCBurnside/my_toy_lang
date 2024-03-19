@@ -282,6 +282,20 @@ impl ResolvedType {
         }
     }
 
+    pub fn pass_by_pointer(&self) -> bool {
+        match self {
+            Self::Array { .. }
+            | Self::Tuple { .. }
+            | Self::Function { .. }
+            | Self::User { .. } => true,
+            _ => false
+        }
+    }
+
+    pub fn is_array(&self) -> bool {
+        matches!(self,Self::Array { .. })
+    }
+
     pub fn is_user(&self) -> bool {
         matches!(self, Self::User { .. })
     }

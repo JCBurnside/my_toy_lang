@@ -4,18 +4,12 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "MyTask",
+            "label": "build",
             "type": "shell",
-            "command": "cargo build"
-        },
-        {
-            "type": "cargo",
-            "command": "build",
+            "command": "cargo build",
             "problemMatcher": [
                 "$rustc"
             ],
-            "group": "build",
-            "label": "rust: cargo build"
-        }
+        },
     ]
 }

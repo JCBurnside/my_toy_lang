@@ -1382,6 +1382,7 @@ impl<'ctx> CodeGen<'ctx> {
                 let arg = self.compile_expr(*arg);
                 let arg: BasicValueEnum = arg.try_into().unwrap();
                 let arg = if arg.is_pointer_value()
+                    && !arg_t.is_pointer_type()
                     && !arg
                         .into_pointer_value()
                         .get_type()
@@ -1711,9 +1712,38 @@ impl<'ctx> CodeGen<'ctx> {
                 }
             }
             TypedExpr::Match(match_) => self.compile_match(match_),
-            TypedExpr::ArrayLiteral { .. } => todo!(),
-            TypedExpr::ListLiteral { .. } => todo!(),
-            TypedExpr::TupleLiteral { .. } => todo!(),
+            TypedExpr::ArrayLiteral { contents, underlining } => {
+                let arr_ty = self.type_resolver.resolve_type_as_basic(underlining).array_type(contents.len() as u32);
+                let arr = self.builder.build_alloca(arr_ty, "").unwrap();
+                for (idx,expr) in contents.into_iter().enumerate() {
+                    let ele = convert_to_basic_value(self.compile_expr(expr));
+                    let loc = unsafe { 
+                        self.builder.build_in_bounds_gep(
+                            arr, 
+                            &[
+                                self.ctx.i32_type().const_zero(), 
+                                self.ctx.i32_type().const_int(idx as u64, false)
+                            ], 
+                            ""
+                        ).unwrap() 
+                    };
+                    self.builder.build_store(loc,ele).unwrap();
+                }
+                arr.as_any_value_enum()
+            },
+            TypedExpr::ListLiteral { contents } => todo!(),
+            TypedExpr::TupleLiteral { contents, .. } => {
+                
+                let tys = contents.iter().map(|it| it.get_ty()).collect();
+                let ty = self.type_resolver.resolve_type_as_basic(ResolvedType::Tuple { underlining: tys, loc: (0,0) });
+                let tuple = self.builder.build_alloca(ty, "").unwrap();
+                let loaded = self.builder.build_load(tuple,"").unwrap();
+                for (idx,expr) in contents.into_iter().enumerate() {
+                    let r = convert_to_basic_value(self.compile_expr(expr));
+                    self.builder.build_insert_value(loaded.into_array_value(), r, idx as u32, "").unwrap();
+                }
+                tuple.as_any_value_enum()
+            },
             TypedExpr::ErrorNode => unreachable!(),
         }
     }

@@ -1143,6 +1143,7 @@ pub enum TypedExpr {
     ValueRead(String, ResolvedType, crate::Location),
     ArrayLiteral {
         contents: Vec<TypedExpr>,
+        underlining: ResolvedType,
     },
     /// NOT IMPLEMENTED YET
     /// defined like [| expr, expr, expr, ... |]
@@ -1265,7 +1266,13 @@ impl TypedExpr {
                 {
                     Err(TypingError::ArgTypeMismatch)
                 } else {
-                    Ok(Self::ArrayLiteral { contents })
+                    let underlining = contents.first()
+                    .map(|it| it.get_ty())
+                    .unwrap_or(types::ERROR);
+                    Ok(Self::ArrayLiteral { 
+                        contents, 
+                        underlining, 
+                    })
                 }
             }
             #[allow(unused)]
@@ -1274,8 +1281,6 @@ impl TypedExpr {
                 loc,
                 id: _,
             } => todo!(),
-            // #[allow(unused)]
-            // Expr::TupleLiteral { contents, loc } => todo!(), // TODO! tuples
             Expr::StructConstruction(strct) => Ok(Self::StructConstruction(
                 TypedStructConstruction::from(strct, known_externs, known_values, known_types)?,
             )),
@@ -1308,7 +1313,7 @@ impl TypedExpr {
             Self::UnaryOpCall(_) => todo!(),
             Self::FnCall(call) => call.loc,
             Self::BoolLiteral(_, loc) | Self::ValueRead(_, _, loc) => *loc,
-            Self::ArrayLiteral { contents: _ } => todo!(),
+            Self::ArrayLiteral { contents: _, underlining:_ } => todo!(),
             Self::ListLiteral { contents: _ } => todo!(),
             Self::TupleLiteral { contents: _, loc } => *loc,
             Self::StructConstruction(con) => con.loc,
@@ -1335,8 +1340,8 @@ impl TypedExpr {
             Self::UnaryOpCall(data) => data.rt.clone(),
             Self::FnCall(data) => data.rt.clone(),
             Self::ValueRead(_, ty, _) => ty.clone(),
-            Self::ArrayLiteral { contents } => ResolvedType::Array {
-                underlining: contents.first().unwrap().get_ty().boxed(),
+            Self::ArrayLiteral { contents, underlining } => ResolvedType::Array {
+                underlining:underlining.clone().boxed(),
                 size: contents.len(),
             },
             Self::ListLiteral { .. } | Self::TupleLiteral { .. } => todo!(),
@@ -1370,9 +1375,23 @@ impl TypedExpr {
             Self::UnaryOpCall(_) => todo!(),
             Self::FnCall(data) => data.replace_type(name, new_ty),
             Self::ValueRead(_, ty, _) => *ty = ty.replace_generic(name, new_ty.clone()),
-            Self::ArrayLiteral { contents } => contents
+            Self::ArrayLiteral { contents, underlining } => {
+                if let Some(ty) = contents
                 .iter_mut()
-                .for_each(|it| it.replace_type(name, new_ty)),
+                .fold(
+                    None,
+                    |accum, it| {
+                        it.replace_type(name, new_ty);
+                        if accum.is_none() {
+                            Some(it.get_ty())
+                        } else {
+                            accum
+                        }
+                    }
+                ) {
+                    *underlining=ty;
+                }
+            },
             Self::ListLiteral { contents } => contents
                 .iter_mut()
                 .for_each(|it| it.replace_type(name, new_ty)),
@@ -1455,7 +1474,7 @@ impl TypedExpr {
                 *ident = new_name;
                 *ty = fun_t;
             }
-            Self::ArrayLiteral { contents }
+            Self::ArrayLiteral { contents, underlining:_ }
             | Self::ListLiteral { contents }
             | Self::TupleLiteral { contents, loc:_ } => {
                 let mut old_args = Vec::new();
@@ -4424,6 +4443,7 @@ let not_so_simple a : int32 -> [int32;4] =
                             size: types::IntWidth::ThirtyTwo
                         },
                     ],
+                    underlining:types::INT32,
                 }),
                 ty: ResolvedType::Function {
                     arg: types::UNIT.boxed(),
@@ -4442,5 +4462,95 @@ let not_so_simple a : int32 -> [int32;4] =
             "simple"
         );
         println!("{should_fail:?}");
+
+        const USAGE : &'static str = "
+let f (a:[int32;5]) = ();
+
+let main _ : () -> () =
+    f [1,2,3,4,5];
+    return ();
+";
+
+        let ast = crate::Parser::from_source(USAGE).module(String::new()).ast;
+        let dtree = ast.get_dependencies();
+        let dtree = dtree.into_iter().map(|(key,value)| (key,value.into_iter().collect())).collect();
+        let mut inference_ctx = crate::inference::Context::new(
+            dtree, 
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new()
+        );
+        let ast = inference_ctx.inference(ast);
+        let mut ast = TypedModuleDeclaration::from(
+            ast,
+            &HashMap::new(),
+            &HashMap::new(),
+        ); 
+        ast.declarations.sort_by_key(|decl| decl.get_ident());
+        let [f,main]=&ast.declarations[..] else { unreachable!() };
+        assert_eq!(
+            &TypedDeclaration::Value(TypedValueDeclaration{
+                loc : (1,4),
+                is_op:false,
+                is_curried:false,
+                ident:"f".to_string(),
+                args:vec![
+                    ArgDeclaration {
+                        loc:(1,7),
+                        ident:"a".to_string(),
+                        ty : ResolvedType::Array { underlining: types::INT32.boxed(), size: 5 },
+                        id:1,
+                    },
+                ],
+                ty:ResolvedType::Array { underlining: types::INT32.boxed(), size: 5 }.fn_ty(&types::UNIT),
+                value:TypedValueType::Expr(TypedExpr::UnitLiteral),
+                generictypes:None,
+                abi:None,
+            }),
+            f,
+            "the function"
+        );
+        assert_eq!(
+            &TypedDeclaration::Value(TypedValueDeclaration{
+                loc : (3,4),
+                is_op:false,
+                ident:"main".to_string(),
+                args:vec![
+                    ArgDeclaration {
+                        loc:(3,9),
+                        ident:"_".to_string(),
+                        ty : types::UNIT,
+                        id:3,
+                    },
+                ],
+                ty:types::UNIT.fn_ty(&types::UNIT),
+                value:TypedValueType::Function(vec![
+                    TypedStatement::FnCall(TypedFnCall {
+                        loc:(4,4),
+                        value:TypedExpr::ValueRead("f".to_string(), ResolvedType::Array { underlining: types::INT32.boxed(), size: 5 }.fn_ty(&types::UNIT),(4,4)).boxed(),
+                        arg:Some(TypedExpr::ArrayLiteral {
+                            contents: vec![
+                                TypedExpr::IntegerLiteral { value: "1".to_string(), size: types::IntWidth::ThirtyTwo },
+                                TypedExpr::IntegerLiteral { value: "2".to_string(), size: types::IntWidth::ThirtyTwo },
+                                TypedExpr::IntegerLiteral { value: "3".to_string(), size: types::IntWidth::ThirtyTwo },
+                                TypedExpr::IntegerLiteral { value: "4".to_string(), size: types::IntWidth::ThirtyTwo },
+                                TypedExpr::IntegerLiteral { value: "5".to_string(), size: types::IntWidth::ThirtyTwo },
+                            ],
+                            underlining:types::INT32,
+                        }.boxed()),
+                        rt:types::UNIT,
+                        arg_t : ResolvedType::Array { underlining: types::INT32.boxed(), size: 5 },
+                        is_extern:false,
+                    }),
+                    TypedStatement::Return(TypedExpr::UnitLiteral, (5,4))
+                ]),
+                generictypes:None,
+                abi:None,
+                is_curried:false
+            }),
+            main,
+            "main"
+        );
     }
 }

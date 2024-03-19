@@ -93,7 +93,11 @@ impl<'ctx> TypeResolver<'ctx> {
         if self.has_type(&ty) {
             return;
         }
-        match &ty {
+        match dbg!(&ty) {
+            ResolvedType::Array { underlining, size } => {
+                let result = self.resolve_type_as_basic(underlining.as_ref().clone()).array_type(*size as u32);
+                self.known.insert(ty,result.as_any_type_enum());
+            },
             ResolvedType::Ref { ref underlining } | ResolvedType::Pointer { ref underlining } => {
                 if let ResolvedType::Function { .. } = underlining.as_ref() {
                     let result = self
@@ -201,7 +205,7 @@ impl<'ctx> TypeResolver<'ctx> {
                 .struct_type(&[i8_ptr.into()], false)
                 .ptr_type(AddressSpace::default())
                 .as_basic_type_enum()
-        } else if ty == &ResolvedType::Str || ty.is_user() {
+        } else if ty == &ResolvedType::Str || ty.pass_by_pointer() {
             self.resolve_type_as_basic(ty.clone())
                 .ptr_type(AddressSpace::default())
                 .as_basic_type_enum()

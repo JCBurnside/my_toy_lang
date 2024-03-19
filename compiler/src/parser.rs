@@ -114,7 +114,7 @@ where
     }
 
     pub fn next_statement(&mut self) -> ParserReturns<Statement> {
-        match self.stream.clone().next() {
+        match dbg!(self.stream.clone().next()) {
             Some((Token::Let, _)) | Some((Token::For, _)) => {
                 let ParserReturns {
                     ast: generics,
@@ -719,6 +719,7 @@ where
                 | Token::StringLiteral(_)
                 | Token::True
                 | Token::False
+                | Token::BracketOpen
                 ,_
             )) = self.stream.peek() {
                 match self.stream.peek().map(|(a,_)| a) {
@@ -736,7 +737,7 @@ where
                             errors.extend(expr_errors);
                         }
                     }
-                    Some(Token::GroupOpen) =>{
+                    Some(Token::GroupOpen | Token::BracketOpen) =>{
                         let value = self.next_expr();
                         errors.extend(value.errors);
                         warnings.extend(value.warnings);

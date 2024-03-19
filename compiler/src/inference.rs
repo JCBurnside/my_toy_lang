@@ -2405,4 +2405,92 @@ let consume a = fst a;
             "produces"
         );
     }
+
+    #[test]
+    fn array() {
+        const SRC : &'static str = "
+let f (a:[int32;5]) = ();
+
+let main _ : () -> () =
+    f [1,2,3,4,5];
+    return ();
+";
+
+        let ast = crate::Parser::from_source(SRC).module(String::new()).ast;
+        let dtree = ast.get_dependencies();
+        let dtree = dtree.into_iter().map(|(key,value)| (key,value.into_iter().collect())).collect();
+        let mut inference_ctx = super::Context::new(
+            dtree, 
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new()
+        );
+        let mut ast = inference_ctx.inference(ast);
+        ast.decls.sort_by_key(|decl| decl.get_ident());
+        let [f,main]=&ast.decls[..] else { unreachable!() };
+        assert_eq!(
+            &super::ast::Declaration::Value(super::ast::ValueDeclaration{
+                loc : (1,4),
+                is_op:false,
+                ident:"f".to_string(),
+                args:vec![
+                    super::ast::ArgDeclaration {
+                        loc:(1,7),
+                        ident:"a".to_string(),
+                        ty : ResolvedType::Array { underlining: types::INT32.boxed(), size: 5 },
+                        id:1,
+                    },
+                ],
+                ty:ResolvedType::Array { underlining: types::INT32.boxed(), size: 5 }.fn_ty(&types::UNIT),
+                value:super::ast::ValueType::Expr(super::ast::Expr::UnitLiteral),
+                generics:None,
+                abi:None,
+                id:0
+            }),
+            f,
+            "the function"
+        );
+        assert_eq!(
+            &super::ast::Declaration::Value(super::ast::ValueDeclaration{
+                loc : (3,4),
+                is_op:false,
+                ident:"main".to_string(),
+                args:vec![
+                    super::ast::ArgDeclaration {
+                        loc:(3,9),
+                        ident:"_".to_string(),
+                        ty : types::UNIT,
+                        id:3,
+                    },
+                ],
+                ty:types::UNIT.fn_ty(&types::UNIT),
+                value:super::ast::ValueType::Function(vec![
+                    super::ast::Statement::FnCall(super::ast::FnCall {
+                        loc:(4,4),
+                        value:super::ast::Expr::ValueRead("f".to_string(), (4,4), 10).boxed(),
+                        arg:super::ast::Expr::ArrayLiteral {
+                            contents: vec![
+                                super::ast::Expr::NumericLiteral { value: "1".to_string(), id: 5, ty: types::INT32 },
+                                super::ast::Expr::NumericLiteral { value: "2".to_string(), id: 6, ty: types::INT32 },
+                                super::ast::Expr::NumericLiteral { value: "3".to_string(), id: 7, ty: types::INT32 },
+                                super::ast::Expr::NumericLiteral { value: "4".to_string(), id: 8, ty: types::INT32 },
+                                super::ast::Expr::NumericLiteral { value: "5".to_string(), id: 9, ty: types::INT32 },
+                            ], 
+                            loc: (4,6), 
+                            id: 4 
+                        }.boxed(),
+                        id:11,
+                        returns:types::UNIT
+                    }),
+                    super::ast::Statement::Return(super::ast::Expr::UnitLiteral, (5,4))
+                ]),
+                generics:None,
+                abi:None,
+                id:2
+            }),
+            main,
+            "main"
+        );
+    }
 }
