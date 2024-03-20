@@ -3766,7 +3766,7 @@ let statement_with_else_if a b : bool -> bool -> int32 =
         let mut module = TypedModuleDeclaration::from(module, &fwd_decls, &HashMap::new());
         module
             .declarations
-            .sort_unstable_by_key(TypedDeclaration::get_ident);
+            .sort_by_key(TypedDeclaration::get_ident);
         let [expr, stmnt] = &module.declarations[..] else {
             unreachable!("more than two?")
         };

@@ -22,7 +22,7 @@ use itertools::Itertools;
 impl<'ctx> TypeResolver<'ctx> {
     pub fn new(ctx: &'ctx Context, target_data: TargetData) -> Self {
         let unit = ctx.const_struct(&[], false);
-        let unit_t = unit.get_type();
+        let unit_t = unit.get_type().ptr_type(AddressSpace::default());
         let char_t = ctx.i8_type();
         let str_t = ctx.opaque_struct_type("str");
         let char_ptr_t = char_t.ptr_type(AddressSpace::default());

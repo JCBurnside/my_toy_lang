@@ -4,6 +4,8 @@ use clap::Parser;
 
 use compiler::types::{self, ResolvedType};
 
+use std::io::Write;
+
 mod cli_args;
 
 fn main() {
@@ -30,7 +32,64 @@ fn main() {
         },
     );
 
-    let (program, _warnings) = compiler::from_file(&args.file, fwd_decl.clone(), "jit".to_string());
+    let (program, _warnings) = compiler::from_file(&args.file, fwd_decl.clone(), [
+        (
+            "+".to_string(),
+            vec![
+                types::FLOAT64.fn_ty(&types::FLOAT64.fn_ty(&types::FLOAT64)), // float64 -> float64 -> float64
+                types::FLOAT32.fn_ty(&types::FLOAT32.fn_ty(&types::FLOAT32)), // float32 -> float32 -> float32
+                types::INT64.fn_ty(&types::INT64.fn_ty(&types::INT64)), // int64 -> int64 -> int64
+                types::INT32.fn_ty(&types::INT32.fn_ty(&types::INT32)), // int32 -> int32 -> int32
+                types::INT16.fn_ty(&types::INT16.fn_ty(&types::INT16)), // int16 -> int16 -> int16
+                types::INT8.fn_ty(&types::INT8.fn_ty(&types::INT8)), // int8 -> int8 -> int8
+            ]
+        ),
+        (
+            "-".to_string(),
+            vec![
+                types::FLOAT64.fn_ty(&types::FLOAT64.fn_ty(&types::FLOAT64)), // float64 -> float64 -> float64
+                types::FLOAT32.fn_ty(&types::FLOAT32.fn_ty(&types::FLOAT32)), // float32 -> float32 -> float32
+                types::INT64.fn_ty(&types::INT64.fn_ty(&types::INT64)), // int64 -> int64 -> int64
+                types::INT32.fn_ty(&types::INT32.fn_ty(&types::INT32)), // int32 -> int32 -> int32
+                types::INT16.fn_ty(&types::INT16.fn_ty(&types::INT16)), // int16 -> int16 -> int16
+                types::INT8.fn_ty(&types::INT8.fn_ty(&types::INT8)), // int8 -> int8 -> int8
+            ]
+        ),
+        (
+            "*".to_string(),
+            vec![
+                types::FLOAT64.fn_ty(&types::FLOAT64.fn_ty(&types::FLOAT64)), // float64 -> float64 -> float64
+                types::FLOAT32.fn_ty(&types::FLOAT32.fn_ty(&types::FLOAT32)), // float32 -> float32 -> float32
+                types::INT64.fn_ty(&types::INT64.fn_ty(&types::INT64)), // int64 -> int64 -> int64
+                types::INT32.fn_ty(&types::INT32.fn_ty(&types::INT32)), // int32 -> int32 -> int32
+                types::INT16.fn_ty(&types::INT16.fn_ty(&types::INT16)), // int16 -> int16 -> int16
+                types::INT8.fn_ty(&types::INT8.fn_ty(&types::INT8)), // int8 -> int8 -> int8
+            ]
+        ),
+        (
+            "/".to_string(),
+            vec![
+                types::FLOAT64.fn_ty(&types::FLOAT64.fn_ty(&types::FLOAT64)), // float64 -> float64 -> float64
+                types::FLOAT32.fn_ty(&types::FLOAT32.fn_ty(&types::FLOAT32)), // float32 -> float32 -> float32
+                types::INT64.fn_ty(&types::INT64.fn_ty(&types::INT64)), // int64 -> int64 -> int64
+                types::INT32.fn_ty(&types::INT32.fn_ty(&types::INT32)), // int32 -> int32 -> int32
+                types::INT16.fn_ty(&types::INT16.fn_ty(&types::INT16)), // int16 -> int16 -> int16
+                types::INT8.fn_ty(&types::INT8.fn_ty(&types::INT8)), // int8 -> int8 -> int8
+            ]
+        ),
+        (
+            "&&".to_string(),
+            vec![
+                types::BOOL.fn_ty(&types::BOOL.fn_ty(&types::BOOL)),
+            ]
+        ),
+        (
+            "||".to_string(),
+            vec![
+                types::BOOL.fn_ty(&types::BOOL.fn_ty(&types::BOOL)),
+            ]
+        ),
+    ].into(),"jit".to_string());
 
     match program {
         Err(errors) => {
@@ -39,6 +98,7 @@ fn main() {
             }
         }
         Ok(ast) => {
+            
             if args.run {
                 let mut jit = llvm_codegen::create_jit_runtime();
                 jit.add_declarations(ast.declarations);

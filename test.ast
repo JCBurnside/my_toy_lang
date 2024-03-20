@@ -1,0 +1,1221 @@
+TypedModuleDeclaration {
+    loc: (
+        0,
+        0,
+    ),
+    name: "test",
+    declarations: [
+        Value(
+            TypedValueDeclaration {
+                loc: (
+                    39,
+                    4,
+                ),
+                is_op: false,
+                ident: "jit::test::show_something_else",
+                args: [
+                    ArgDeclaration {
+                        loc: (
+                            39,
+                            24,
+                        ),
+                        ident: "_",
+                        ty: Unit,
+                        id: 61,
+                    },
+                ],
+                value: Function(
+                    [
+                        FnCall(
+                            TypedFnCall {
+                                loc: (
+                                    40,
+                                    4,
+                                ),
+                                value: ValueRead(
+                                    "print_str",
+                                    Function {
+                                        arg: Str,
+                                        returns: Void,
+                                        loc: (
+                                            0,
+                                            0,
+                                        ),
+                                    },
+                                    (
+                                        40,
+                                        4,
+                                    ),
+                                ),
+                                arg: Some(
+                                    StringLiteral(
+                                        "general kenobi\n",
+                                    ),
+                                ),
+                                rt: Void,
+                                arg_t: Str,
+                                is_extern: false,
+                            },
+                        ),
+                        Return(
+                            BoolLiteral(
+                                false,
+                                (
+                                    41,
+                                    11,
+                                ),
+                            ),
+                            (
+                                41,
+                                4,
+                            ),
+                        ),
+                    ],
+                ),
+                ty: Function {
+                    arg: Unit,
+                    returns: Bool,
+                    loc: (
+                        39,
+                        31,
+                    ),
+                },
+                generictypes: None,
+                abi: None,
+                is_curried: false,
+            },
+        ),
+        Value(
+            TypedValueDeclaration {
+                loc: (
+                    24,
+                    4,
+                ),
+                is_op: false,
+                ident: "jit::test::f",
+                args: [
+                    ArgDeclaration {
+                        loc: (
+                            24,
+                            7,
+                        ),
+                        ident: "a",
+                        ty: Array {
+                            underlining: Int {
+                                signed: true,
+                                width: ThirtyTwo,
+                            },
+                            size: 5,
+                        },
+                        id: 31,
+                    },
+                ],
+                value: Expr(
+                    UnitLiteral,
+                ),
+                ty: Function {
+                    arg: Array {
+                        underlining: Int {
+                            signed: true,
+                            width: ThirtyTwo,
+                        },
+                        size: 5,
+                    },
+                    returns: Unit,
+                    loc: (
+                        0,
+                        0,
+                    ),
+                },
+                generictypes: None,
+                abi: None,
+                is_curried: false,
+            },
+        ),
+        Value(
+            TypedValueDeclaration {
+                loc: (
+                    47,
+                    4,
+                ),
+                is_op: false,
+                ident: "jit::test::main",
+                args: [
+                    ArgDeclaration {
+                        loc: (
+                            47,
+                            9,
+                        ),
+                        ident: "_",
+                        ty: Unit,
+                        id: 71,
+                    },
+                ],
+                value: Function(
+                    [
+                        FnCall(
+                            TypedFnCall {
+                                loc: (
+                                    56,
+                                    4,
+                                ),
+                                value: ValueRead(
+                                    "jit::test::f",
+                                    Function {
+                                        arg: Array {
+                                            underlining: Int {
+                                                signed: true,
+                                                width: ThirtyTwo,
+                                            },
+                                            size: 5,
+                                        },
+                                        returns: Unit,
+                                        loc: (
+                                            0,
+                                            0,
+                                        ),
+                                    },
+                                    (
+                                        56,
+                                        4,
+                                    ),
+                                ),
+                                arg: Some(
+                                    ArrayLiteral {
+                                        contents: [
+                                            IntegerLiteral {
+                                                value: "1",
+                                                size: ThirtyTwo,
+                                            },
+                                            IntegerLiteral {
+                                                value: "2",
+                                                size: ThirtyTwo,
+                                            },
+                                            IntegerLiteral {
+                                                value: "3",
+                                                size: ThirtyTwo,
+                                            },
+                                            IntegerLiteral {
+                                                value: "4",
+                                                size: ThirtyTwo,
+                                            },
+                                            IntegerLiteral {
+                                                value: "5",
+                                                size: ThirtyTwo,
+                                            },
+                                        ],
+                                        underlining: Int {
+                                            signed: true,
+                                            width: ThirtyTwo,
+                                        },
+                                    },
+                                ),
+                                rt: Unit,
+                                arg_t: Array {
+                                    underlining: Int {
+                                        signed: true,
+                                        width: ThirtyTwo,
+                                    },
+                                    size: 5,
+                                },
+                                is_extern: false,
+                            },
+                        ),
+                        Return(
+                            UnitLiteral,
+                            (
+                                57,
+                                4,
+                            ),
+                        ),
+                    ],
+                ),
+                ty: Function {
+                    arg: Unit,
+                    returns: Unit,
+                    loc: (
+                        47,
+                        16,
+                    ),
+                },
+                generictypes: None,
+                abi: None,
+                is_curried: false,
+            },
+        ),
+        Value(
+            TypedValueDeclaration {
+                loc: (
+                    26,
+                    4,
+                ),
+                is_op: false,
+                ident: "jit::test::show_short_curicuit",
+                args: [
+                    ArgDeclaration {
+                        loc: (
+                            26,
+                            24,
+                        ),
+                        ident: "_",
+                        ty: Unit,
+                        id: 33,
+                    },
+                ],
+                value: Function(
+                    [
+                        IfBranching(
+                            TypedIfBranching {
+                                cond: BinaryOpCall(
+                                    TypedBinaryOpCall {
+                                        loc: (
+                                            27,
+                                            27,
+                                        ),
+                                        lhs: FnCall(
+                                            TypedFnCall {
+                                                loc: (
+                                                    27,
+                                                    8,
+                                                ),
+                                                value: ValueRead(
+                                                    "jit::test::show_something",
+                                                    Function {
+                                                        arg: Unit,
+                                                        returns: Bool,
+                                                        loc: (
+                                                            35,
+                                                            26,
+                                                        ),
+                                                    },
+                                                    (
+                                                        27,
+                                                        8,
+                                                    ),
+                                                ),
+                                                arg: Some(
+                                                    UnitLiteral,
+                                                ),
+                                                rt: Bool,
+                                                arg_t: Unit,
+                                                is_extern: false,
+                                            },
+                                        ),
+                                        rhs: FnCall(
+                                            TypedFnCall {
+                                                loc: (
+                                                    27,
+                                                    31,
+                                                ),
+                                                value: ValueRead(
+                                                    "jit::test::show_something_else",
+                                                    Function {
+                                                        arg: Unit,
+                                                        returns: Bool,
+                                                        loc: (
+                                                            39,
+                                                            31,
+                                                        ),
+                                                    },
+                                                    (
+                                                        27,
+                                                        31,
+                                                    ),
+                                                ),
+                                                arg: Some(
+                                                    UnitLiteral,
+                                                ),
+                                                rt: Bool,
+                                                arg_t: Unit,
+                                                is_extern: false,
+                                            },
+                                        ),
+                                        operator: "&&",
+                                        rt: Bool,
+                                    },
+                                ),
+                                true_branch: [
+                                    FnCall(
+                                        TypedFnCall {
+                                            loc: (
+                                                28,
+                                                8,
+                                            ),
+                                            value: ValueRead(
+                                                "print_str",
+                                                Function {
+                                                    arg: Str,
+                                                    returns: Void,
+                                                    loc: (
+                                                        0,
+                                                        0,
+                                                    ),
+                                                },
+                                                (
+                                                    28,
+                                                    8,
+                                                ),
+                                            ),
+                                            arg: Some(
+                                                StringLiteral(
+                                                    "this is a seperator\n",
+                                                ),
+                                            ),
+                                            rt: Void,
+                                            arg_t: Str,
+                                            is_extern: false,
+                                        },
+                                    ),
+                                ],
+                                else_ifs: [],
+                                else_branch: [],
+                                loc: (
+                                    27,
+                                    4,
+                                ),
+                            },
+                        ),
+                        IfBranching(
+                            TypedIfBranching {
+                                cond: BinaryOpCall(
+                                    TypedBinaryOpCall {
+                                        loc: (
+                                            29,
+                                            27,
+                                        ),
+                                        lhs: FnCall(
+                                            TypedFnCall {
+                                                loc: (
+                                                    29,
+                                                    8,
+                                                ),
+                                                value: ValueRead(
+                                                    "jit::test::show_something",
+                                                    Function {
+                                                        arg: Unit,
+                                                        returns: Bool,
+                                                        loc: (
+                                                            35,
+                                                            26,
+                                                        ),
+                                                    },
+                                                    (
+                                                        29,
+                                                        8,
+                                                    ),
+                                                ),
+                                                arg: Some(
+                                                    UnitLiteral,
+                                                ),
+                                                rt: Bool,
+                                                arg_t: Unit,
+                                                is_extern: false,
+                                            },
+                                        ),
+                                        rhs: FnCall(
+                                            TypedFnCall {
+                                                loc: (
+                                                    29,
+                                                    31,
+                                                ),
+                                                value: ValueRead(
+                                                    "jit::test::show_something_else",
+                                                    Function {
+                                                        arg: Unit,
+                                                        returns: Bool,
+                                                        loc: (
+                                                            39,
+                                                            31,
+                                                        ),
+                                                    },
+                                                    (
+                                                        29,
+                                                        31,
+                                                    ),
+                                                ),
+                                                arg: Some(
+                                                    UnitLiteral,
+                                                ),
+                                                rt: Bool,
+                                                arg_t: Unit,
+                                                is_extern: false,
+                                            },
+                                        ),
+                                        operator: "||",
+                                        rt: Bool,
+                                    },
+                                ),
+                                true_branch: [
+                                    FnCall(
+                                        TypedFnCall {
+                                            loc: (
+                                                30,
+                                                8,
+                                            ),
+                                            value: ValueRead(
+                                                "print_str",
+                                                Function {
+                                                    arg: Str,
+                                                    returns: Void,
+                                                    loc: (
+                                                        0,
+                                                        0,
+                                                    ),
+                                                },
+                                                (
+                                                    30,
+                                                    8,
+                                                ),
+                                            ),
+                                            arg: Some(
+                                                StringLiteral(
+                                                    "another seperator\n",
+                                                ),
+                                            ),
+                                            rt: Void,
+                                            arg_t: Str,
+                                            is_extern: false,
+                                        },
+                                    ),
+                                ],
+                                else_ifs: [],
+                                else_branch: [],
+                                loc: (
+                                    29,
+                                    4,
+                                ),
+                            },
+                        ),
+                        IfBranching(
+                            TypedIfBranching {
+                                cond: BinaryOpCall(
+                                    TypedBinaryOpCall {
+                                        loc: (
+                                            31,
+                                            32,
+                                        ),
+                                        lhs: FnCall(
+                                            TypedFnCall {
+                                                loc: (
+                                                    31,
+                                                    8,
+                                                ),
+                                                value: ValueRead(
+                                                    "jit::test::show_something_else",
+                                                    Function {
+                                                        arg: Unit,
+                                                        returns: Bool,
+                                                        loc: (
+                                                            39,
+                                                            31,
+                                                        ),
+                                                    },
+                                                    (
+                                                        31,
+                                                        8,
+                                                    ),
+                                                ),
+                                                arg: Some(
+                                                    UnitLiteral,
+                                                ),
+                                                rt: Bool,
+                                                arg_t: Unit,
+                                                is_extern: false,
+                                            },
+                                        ),
+                                        rhs: FnCall(
+                                            TypedFnCall {
+                                                loc: (
+                                                    31,
+                                                    36,
+                                                ),
+                                                value: ValueRead(
+                                                    "jit::test::show_something",
+                                                    Function {
+                                                        arg: Unit,
+                                                        returns: Bool,
+                                                        loc: (
+                                                            35,
+                                                            26,
+                                                        ),
+                                                    },
+                                                    (
+                                                        31,
+                                                        36,
+                                                    ),
+                                                ),
+                                                arg: Some(
+                                                    UnitLiteral,
+                                                ),
+                                                rt: Bool,
+                                                arg_t: Unit,
+                                                is_extern: false,
+                                            },
+                                        ),
+                                        operator: "||",
+                                        rt: Bool,
+                                    },
+                                ),
+                                true_branch: [
+                                    FnCall(
+                                        TypedFnCall {
+                                            loc: (
+                                                32,
+                                                8,
+                                            ),
+                                            value: ValueRead(
+                                                "print_str",
+                                                Function {
+                                                    arg: Str,
+                                                    returns: Void,
+                                                    loc: (
+                                                        0,
+                                                        0,
+                                                    ),
+                                                },
+                                                (
+                                                    32,
+                                                    8,
+                                                ),
+                                            ),
+                                            arg: Some(
+                                                StringLiteral(
+                                                    "yet another seperator\n",
+                                                ),
+                                            ),
+                                            rt: Void,
+                                            arg_t: Str,
+                                            is_extern: false,
+                                        },
+                                    ),
+                                ],
+                                else_ifs: [],
+                                else_branch: [],
+                                loc: (
+                                    31,
+                                    4,
+                                ),
+                            },
+                        ),
+                        Return(
+                            UnitLiteral,
+                            (
+                                33,
+                                4,
+                            ),
+                        ),
+                    ],
+                ),
+                ty: Function {
+                    arg: Unit,
+                    returns: Unit,
+                    loc: (
+                        26,
+                        31,
+                    ),
+                },
+                generictypes: None,
+                abi: None,
+                is_curried: false,
+            },
+        ),
+        Value(
+            TypedValueDeclaration {
+                loc: (
+                    1,
+                    4,
+                ),
+                is_op: false,
+                ident: "jit::test::test_ifs",
+                args: [
+                    ArgDeclaration {
+                        loc: (
+                            1,
+                            13,
+                        ),
+                        ident: "a",
+                        ty: Bool,
+                        id: 1,
+                    },
+                    ArgDeclaration {
+                        loc: (
+                            1,
+                            15,
+                        ),
+                        ident: "b",
+                        ty: Bool,
+                        id: 2,
+                    },
+                ],
+                value: Function(
+                    [
+                        IfBranching(
+                            TypedIfBranching {
+                                cond: ValueRead(
+                                    "a",
+                                    Bool,
+                                    (
+                                        2,
+                                        7,
+                                    ),
+                                ),
+                                true_branch: [
+                                    FnCall(
+                                        TypedFnCall {
+                                            loc: (
+                                                3,
+                                                8,
+                                            ),
+                                            value: ValueRead(
+                                                "print_str",
+                                                Function {
+                                                    arg: Str,
+                                                    returns: Void,
+                                                    loc: (
+                                                        0,
+                                                        0,
+                                                    ),
+                                                },
+                                                (
+                                                    3,
+                                                    8,
+                                                ),
+                                            ),
+                                            arg: Some(
+                                                StringLiteral(
+                                                    "a\n",
+                                                ),
+                                            ),
+                                            rt: Void,
+                                            arg_t: Str,
+                                            is_extern: false,
+                                        },
+                                    ),
+                                ],
+                                else_ifs: [
+                                    (
+                                        ValueRead(
+                                            "b",
+                                            Bool,
+                                            (
+                                                4,
+                                                12,
+                                            ),
+                                        ),
+                                        [
+                                            FnCall(
+                                                TypedFnCall {
+                                                    loc: (
+                                                        5,
+                                                        8,
+                                                    ),
+                                                    value: ValueRead(
+                                                        "print_str",
+                                                        Function {
+                                                            arg: Str,
+                                                            returns: Void,
+                                                            loc: (
+                                                                0,
+                                                                0,
+                                                            ),
+                                                        },
+                                                        (
+                                                            5,
+                                                            8,
+                                                        ),
+                                                    ),
+                                                    arg: Some(
+                                                        StringLiteral(
+                                                            "b\n",
+                                                        ),
+                                                    ),
+                                                    rt: Void,
+                                                    arg_t: Str,
+                                                    is_extern: false,
+                                                },
+                                            ),
+                                        ],
+                                    ),
+                                ],
+                                else_branch: [
+                                    FnCall(
+                                        TypedFnCall {
+                                            loc: (
+                                                7,
+                                                8,
+                                            ),
+                                            value: ValueRead(
+                                                "print_str",
+                                                Function {
+                                                    arg: Str,
+                                                    returns: Void,
+                                                    loc: (
+                                                        0,
+                                                        0,
+                                                    ),
+                                                },
+                                                (
+                                                    7,
+                                                    8,
+                                                ),
+                                            ),
+                                            arg: Some(
+                                                StringLiteral(
+                                                    "neither\n",
+                                                ),
+                                            ),
+                                            rt: Void,
+                                            arg_t: Str,
+                                            is_extern: false,
+                                        },
+                                    ),
+                                ],
+                                loc: (
+                                    2,
+                                    4,
+                                ),
+                            },
+                        ),
+                        Return(
+                            IntegerLiteral {
+                                value: "0",
+                                size: ThirtyTwo,
+                            },
+                            (
+                                8,
+                                4,
+                            ),
+                        ),
+                    ],
+                ),
+                ty: Function {
+                    arg: Bool,
+                    returns: Function {
+                        arg: Bool,
+                        returns: Int {
+                            signed: true,
+                            width: ThirtyTwo,
+                        },
+                        loc: (
+                            1,
+                            32,
+                        ),
+                    },
+                    loc: (
+                        1,
+                        24,
+                    ),
+                },
+                generictypes: None,
+                abi: None,
+                is_curried: false,
+            },
+        ),
+        Value(
+            TypedValueDeclaration {
+                loc: (
+                    43,
+                    4,
+                ),
+                is_op: false,
+                ident: "jit::test::test",
+                args: [
+                    ArgDeclaration {
+                        loc: (
+                            43,
+                            10,
+                        ),
+                        ident: "a",
+                        ty: Tuple {
+                            underlining: [
+                                Int {
+                                    signed: true,
+                                    width: ThirtyTwo,
+                                },
+                                Int {
+                                    signed: true,
+                                    width: ThirtyTwo,
+                                },
+                            ],
+                            loc: (
+                                43,
+                                12,
+                            ),
+                        },
+                        id: 66,
+                    },
+                ],
+                value: Function(
+                    [
+                        Declaration(
+                            TypedValueDeclaration {
+                                loc: (
+                                    44,
+                                    8,
+                                ),
+                                is_op: false,
+                                ident: "x",
+                                args: [],
+                                value: Expr(
+                                    IntegerLiteral {
+                                        value: "0",
+                                        size: ThirtyTwo,
+                                    },
+                                ),
+                                ty: Int {
+                                    signed: true,
+                                    width: ThirtyTwo,
+                                },
+                                generictypes: None,
+                                abi: None,
+                                is_curried: false,
+                            },
+                        ),
+                        Return(
+                            ValueRead(
+                                "x",
+                                Int {
+                                    signed: true,
+                                    width: ThirtyTwo,
+                                },
+                                (
+                                    45,
+                                    11,
+                                ),
+                            ),
+                            (
+                                45,
+                                4,
+                            ),
+                        ),
+                    ],
+                ),
+                ty: Function {
+                    arg: Tuple {
+                        underlining: [
+                            Int {
+                                signed: true,
+                                width: ThirtyTwo,
+                            },
+                            Int {
+                                signed: true,
+                                width: ThirtyTwo,
+                            },
+                        ],
+                        loc: (
+                            43,
+                            12,
+                        ),
+                    },
+                    returns: Int {
+                        signed: true,
+                        width: ThirtyTwo,
+                    },
+                    loc: (
+                        0,
+                        0,
+                    ),
+                },
+                generictypes: None,
+                abi: None,
+                is_curried: false,
+            },
+        ),
+        Value(
+            TypedValueDeclaration {
+                loc: (
+                    35,
+                    4,
+                ),
+                is_op: false,
+                ident: "jit::test::show_something",
+                args: [
+                    ArgDeclaration {
+                        loc: (
+                            35,
+                            19,
+                        ),
+                        ident: "_",
+                        ty: Unit,
+                        id: 56,
+                    },
+                ],
+                value: Function(
+                    [
+                        FnCall(
+                            TypedFnCall {
+                                loc: (
+                                    36,
+                                    4,
+                                ),
+                                value: ValueRead(
+                                    "print_str",
+                                    Function {
+                                        arg: Str,
+                                        returns: Void,
+                                        loc: (
+                                            0,
+                                            0,
+                                        ),
+                                    },
+                                    (
+                                        36,
+                                        4,
+                                    ),
+                                ),
+                                arg: Some(
+                                    StringLiteral(
+                                        "hello there\n",
+                                    ),
+                                ),
+                                rt: Void,
+                                arg_t: Str,
+                                is_extern: false,
+                            },
+                        ),
+                        Return(
+                            BoolLiteral(
+                                true,
+                                (
+                                    37,
+                                    11,
+                                ),
+                            ),
+                            (
+                                37,
+                                4,
+                            ),
+                        ),
+                    ],
+                ),
+                ty: Function {
+                    arg: Unit,
+                    returns: Bool,
+                    loc: (
+                        35,
+                        26,
+                    ),
+                },
+                generictypes: None,
+                abi: None,
+                is_curried: false,
+            },
+        ),
+        Value(
+            TypedValueDeclaration {
+                loc: (
+                    22,
+                    15,
+                ),
+                is_op: false,
+                ident: "externed",
+                args: [],
+                value: External,
+                ty: Function {
+                    arg: Int {
+                        signed: true,
+                        width: ThirtyTwo,
+                    },
+                    returns: Int {
+                        signed: true,
+                        width: ThirtyTwo,
+                    },
+                    loc: (
+                        22,
+                        32,
+                    ),
+                },
+                generictypes: None,
+                abi: Some(
+                    Abi {
+                        loc: (
+                            22,
+                            0,
+                        ),
+                        identifier: "C",
+                    },
+                ),
+                is_curried: false,
+            },
+        ),
+        Value(
+            TypedValueDeclaration {
+                loc: (
+                    10,
+                    4,
+                ),
+                is_op: false,
+                ident: "jit::test::test_ifexpr",
+                args: [
+                    ArgDeclaration {
+                        loc: (
+                            10,
+                            16,
+                        ),
+                        ident: "a",
+                        ty: Bool,
+                        id: 13,
+                    },
+                    ArgDeclaration {
+                        loc: (
+                            10,
+                            18,
+                        ),
+                        ident: "b",
+                        ty: Bool,
+                        id: 14,
+                    },
+                ],
+                value: Expr(
+                    IfExpr(
+                        TypedIfExpr {
+                            cond: ValueRead(
+                                "a",
+                                Bool,
+                                (
+                                    10,
+                                    49,
+                                ),
+                            ),
+                            true_branch: (
+                                [],
+                                IntegerLiteral {
+                                    value: "0",
+                                    size: ThirtyTwo,
+                                },
+                            ),
+                            else_ifs: [
+                                (
+                                    ValueRead(
+                                        "b",
+                                        Bool,
+                                        (
+                                            12,
+                                            12,
+                                        ),
+                                    ),
+                                    [],
+                                    IntegerLiteral {
+                                        value: "1",
+                                        size: ThirtyTwo,
+                                    },
+                                ),
+                                (
+                                    BoolLiteral(
+                                        true,
+                                        (
+                                            14,
+                                            12,
+                                        ),
+                                    ),
+                                    [
+                                        Declaration(
+                                            TypedValueDeclaration {
+                                                loc: (
+                                                    15,
+                                                    12,
+                                                ),
+                                                is_op: false,
+                                                ident: "x",
+                                                args: [],
+                                                value: Expr(
+                                                    IntegerLiteral {
+                                                        value: "2",
+                                                        size: ThirtyTwo,
+                                                    },
+                                                ),
+                                                ty: Int {
+                                                    signed: true,
+                                                    width: ThirtyTwo,
+                                                },
+                                                generictypes: None,
+                                                abi: None,
+                                                is_curried: false,
+                                            },
+                                        ),
+                                    ],
+                                    ValueRead(
+                                        "x",
+                                        Int {
+                                            signed: true,
+                                            width: ThirtyTwo,
+                                        },
+                                        (
+                                            16,
+                                            8,
+                                        ),
+                                    ),
+                                ),
+                                (
+                                    BinaryOpCall(
+                                        TypedBinaryOpCall {
+                                            loc: (
+                                                17,
+                                                14,
+                                            ),
+                                            lhs: ValueRead(
+                                                "a",
+                                                Bool,
+                                                (
+                                                    17,
+                                                    12,
+                                                ),
+                                            ),
+                                            rhs: ValueRead(
+                                                "b",
+                                                Bool,
+                                                (
+                                                    17,
+                                                    17,
+                                                ),
+                                            ),
+                                            operator: "==",
+                                            rt: Bool,
+                                        },
+                                    ),
+                                    [],
+                                    IntegerLiteral {
+                                        value: "3",
+                                        size: ThirtyTwo,
+                                    },
+                                ),
+                            ],
+                            else_branch: (
+                                [],
+                                IntegerLiteral {
+                                    value: "4",
+                                    size: ThirtyTwo,
+                                },
+                            ),
+                            loc: (
+                                10,
+                                46,
+                            ),
+                        },
+                    ),
+                ),
+                ty: Function {
+                    arg: Bool,
+                    returns: Function {
+                        arg: Bool,
+                        returns: Int {
+                            signed: true,
+                            width: ThirtyTwo,
+                        },
+                        loc: (
+                            10,
+                            35,
+                        ),
+                    },
+                    loc: (
+                        10,
+                        27,
+                    ),
+                },
+                generictypes: None,
+                abi: None,
+                is_curried: false,
+            },
+        ),
+    ],
+}
