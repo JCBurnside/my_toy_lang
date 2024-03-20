@@ -146,14 +146,11 @@ pub fn from_file<'ctx>(
         HashMap::new(),
     );
     let ast = inference_context.inference(ast);
-    let mut test_file = std::fs::File::create("./test.ast").unwrap();
-    write!(test_file,"{ast:#?}");
+    
     let mut ast = TypedModuleDeclaration::from(ast, &fwd_declarations, &fwd_ops); //TODO: foward declare std lib
     // #[cfg(debug_assertions)]
     // println!("{:?}", ast.declarations);
     use std::io::Write;
-    let mut test_file = std::fs::File::create("./test.ast").unwrap();
-    write!(test_file,"{ast:#?}");
     ast.lower_generics(&HashMap::new());
     (
         if errors.is_empty() {
