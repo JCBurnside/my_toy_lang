@@ -283,10 +283,12 @@ impl<'ctx> CodeGen<'ctx> {
         }
         let last_param = v.get_last_param().unwrap();
         let last_param_info = decl.args.last().unwrap();
+        let arg_t = decl.args.last().unwrap().ty.clone();
         let arg = self
             .builder
-            .build_alloca(last_param.get_type(), &last_param_info.ident)
+            .build_alloca(self.type_resolver.resolve_type_as_basic(arg_t.clone()), &last_param_info.ident)
             .unwrap();
+        let last_param = self.value_or_load(arg_t, last_param.as_basic_value_enum());
         self.builder.build_store(arg, last_param).unwrap();
         if let Some(fnscope) = &self.difunction {
             let Some(dibuilder) = &self.dibuilder else {
@@ -1408,6 +1410,7 @@ impl<'ctx> CodeGen<'ctx> {
                 } else {
                     arg
                 };
+                dbg!(arg_t);
                 let value_t = value.get_ty();
                 let value = self.compile_expr(*value);
                 if let Some(dibuilder) = &self.dibuilder {
@@ -2017,10 +2020,10 @@ impl<'ctx> CodeGen<'ctx> {
         };
         let fun_t = if rt.as_ref() == &ResolvedType::Void || rt.as_ref() == &ResolvedType::Unit {
             let rt = self.ctx.void_type();
-            let arg_t = self.type_resolver.resolve_type_as_basic(*arg_t);
+            let arg_t = self.type_resolver.resolve_arg_type(&arg_t);
             rt.fn_type(&[curry_placeholder.into(), arg_t.into()], false)
         } else {
-            let arg_t = self.type_resolver.resolve_type_as_basic(*arg_t);
+            let arg_t = self.type_resolver.resolve_arg_type(&arg_t);
             if rt.is_user() {
                 let rt = self
                     .type_resolver
@@ -2060,14 +2063,8 @@ impl<'ctx> CodeGen<'ctx> {
             let first_t = self.ctx.struct_type(&curried_args[..(idx+ 1)], false);
             let ret_t = self.ctx.struct_type(&curried_args[..=(idx + 1)], false);
             let ret = self.builder.build_malloc(ret_t, "ret").unwrap();
-            let next_fn_ptr = self
-                .builder
-                .build_bitcast(
-                    next.as_global_value().as_pointer_value(),
-                    self.ctx.i8_type().ptr_type(AddressSpace::default()),
-                    "",
-                )
-                .unwrap();
+            let next_fn_ptr =
+                    next.as_global_value().as_pointer_value();
             let next_ptr = self.builder.build_struct_gep(ret_t, ret, 0, "").unwrap();
             self.builder.build_store(next_ptr, next_fn_ptr).unwrap();
             let expected = self.ctx.struct_type(&curried_args[..=idx], false);

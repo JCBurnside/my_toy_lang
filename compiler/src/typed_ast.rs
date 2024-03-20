@@ -1344,7 +1344,10 @@ impl TypedExpr {
                 underlining:underlining.clone().boxed(),
                 size: contents.len(),
             },
-            Self::ListLiteral { .. } | Self::TupleLiteral { .. } => todo!(),
+            Self::ListLiteral { .. } => todo!(),
+            Self::TupleLiteral { contents, loc:_ } => {
+                ResolvedType::Tuple { underlining: contents.iter().map(Self::get_ty).collect(), loc: (0,0) }
+            }
             Self::StructConstruction(strct) => ResolvedType::User {
                 name: strct.ident.clone(),
                 generics: strct.generics.clone(),

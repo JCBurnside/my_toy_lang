@@ -89,6 +89,30 @@ fn main() {
                 types::BOOL.fn_ty(&types::BOOL.fn_ty(&types::BOOL)),
             ]
         ),
+        (
+            "==".to_string(),
+            vec![
+                types::FLOAT64.fn_ty(&types::FLOAT64.fn_ty(&types::BOOL)), // float64 -> float64 -> bool
+                types::FLOAT32.fn_ty(&types::FLOAT32.fn_ty(&types::BOOL)), // float32 -> float32 -> bool
+                types::INT64.fn_ty(&types::INT64.fn_ty(&types::BOOL)), // int64 -> int64 -> bool
+                types::INT32.fn_ty(&types::INT32.fn_ty(&types::BOOL)), // int32 -> int32 -> bool
+                types::INT16.fn_ty(&types::INT16.fn_ty(&types::BOOL)), // int16 -> int16 -> bool
+                types::INT8.fn_ty(&types::INT8.fn_ty(&types::BOOL)), // int8 -> int8 -> bool
+                types::BOOL.fn_ty(&types::BOOL.fn_ty(&types::BOOL)), // bool -> bool -> bool
+            ]
+        ),
+        (
+            "!=".to_string(),
+            vec![
+                types::FLOAT64.fn_ty(&types::FLOAT64.fn_ty(&types::BOOL)), // float64 -> float64 -> bool
+                types::FLOAT32.fn_ty(&types::FLOAT32.fn_ty(&types::BOOL)), // float32 -> float32 -> bool
+                types::INT64.fn_ty(&types::INT64.fn_ty(&types::BOOL)), // int64 -> int64 -> bool
+                types::INT32.fn_ty(&types::INT32.fn_ty(&types::BOOL)), // int32 -> int32 -> bool
+                types::INT16.fn_ty(&types::INT16.fn_ty(&types::BOOL)), // int16 -> int16 -> bool
+                types::INT8.fn_ty(&types::INT8.fn_ty(&types::BOOL)), // int8 -> int8 -> bool
+                types::BOOL.fn_ty(&types::BOOL.fn_ty(&types::BOOL)), // bool -> bool -> bool
+            ]
+        ),
     ].into(),"jit".to_string());
 
     match program {
