@@ -1344,7 +1344,10 @@ impl TypedExpr {
                 underlining:underlining.clone().boxed(),
                 size: contents.len(),
             },
-            Self::ListLiteral { .. } | Self::TupleLiteral { .. } => todo!(),
+            Self::ListLiteral { .. } => todo!(),
+            Self::TupleLiteral { contents, loc:_ } => {
+                ResolvedType::Tuple { underlining: contents.iter().map(Self::get_ty).collect(), loc: (0,0) }
+            }
             Self::StructConstruction(strct) => ResolvedType::User {
                 name: strct.ident.clone(),
                 generics: strct.generics.clone(),
@@ -3766,7 +3769,7 @@ let statement_with_else_if a b : bool -> bool -> int32 =
         let mut module = TypedModuleDeclaration::from(module, &fwd_decls, &HashMap::new());
         module
             .declarations
-            .sort_unstable_by_key(TypedDeclaration::get_ident);
+            .sort_by_key(TypedDeclaration::get_ident);
         let [expr, stmnt] = &module.declarations[..] else {
             unreachable!("more than two?")
         };

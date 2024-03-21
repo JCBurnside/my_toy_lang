@@ -94,6 +94,7 @@ pub fn get_ast(input: &str, file_name: &str) -> typed_ast::TypedModuleDeclaratio
 pub fn from_file<'ctx>(
     file: &PathBuf,
     fwd_declarations: HashMap<String, ResolvedType>,
+    fwd_ops : HashMap<String,Vec<ResolvedType>>,
     project_name: String,
 ) -> (Result<TypedModuleDeclaration, Vec<Error>>, Vec<Warning>) {
     // TODO: I would like to make this work for now I will read the whole file to a string then
@@ -141,13 +142,15 @@ pub fn from_file<'ctx>(
         dependency_tree,
         fwd_declarations.clone(),
         HashMap::new(),
-        HashMap::new(),
+        fwd_ops.clone(),
         HashMap::new(),
     );
     let ast = inference_context.inference(ast);
-    let mut ast = TypedModuleDeclaration::from(ast, &fwd_declarations, &HashMap::new()); //TODO: foward declare std lib
+    
+    let mut ast = TypedModuleDeclaration::from(ast, &fwd_declarations, &fwd_ops); //TODO: foward declare std lib
     // #[cfg(debug_assertions)]
     // println!("{:?}", ast.declarations);
+    use std::io::Write;
     ast.lower_generics(&HashMap::new());
     (
         if errors.is_empty() {

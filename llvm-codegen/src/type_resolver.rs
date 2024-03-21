@@ -22,7 +22,7 @@ use itertools::Itertools;
 impl<'ctx> TypeResolver<'ctx> {
     pub fn new(ctx: &'ctx Context, target_data: TargetData) -> Self {
         let unit = ctx.const_struct(&[], false);
-        let unit_t = unit.get_type();
+        let unit_t = unit.get_type().ptr_type(AddressSpace::default());
         let char_t = ctx.i8_type();
         let str_t = ctx.opaque_struct_type("str");
         let char_ptr_t = char_t.ptr_type(AddressSpace::default());
@@ -93,7 +93,7 @@ impl<'ctx> TypeResolver<'ctx> {
         if self.has_type(&ty) {
             return;
         }
-        match dbg!(&ty) {
+        match &ty {
             ResolvedType::Array { underlining, size } => {
                 let result = self.resolve_type_as_basic(underlining.as_ref().clone()).array_type(*size as u32);
                 self.known.insert(ty,result.as_any_type_enum());
@@ -205,7 +205,7 @@ impl<'ctx> TypeResolver<'ctx> {
                 .struct_type(&[i8_ptr.into()], false)
                 .ptr_type(AddressSpace::default())
                 .as_basic_type_enum()
-        } else if ty == &ResolvedType::Str || ty.pass_by_pointer() {
+        } else if ty == &ResolvedType::Str || ty.pass_by_pointer() || matches!(ty, ResolvedType::Tuple { .. }) {
             self.resolve_type_as_basic(ty.clone())
                 .ptr_type(AddressSpace::default())
                 .as_basic_type_enum()

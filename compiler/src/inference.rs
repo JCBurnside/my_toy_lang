@@ -444,7 +444,7 @@ impl Context {
         .map(|(a,_)|a)
         .cloned()
         .collect_vec();
-        decls.sort_unstable_by_key(|decl| order.iter().position(|name| name == &decl.get_ident()));
+        decls.sort_by_key(|decl| order.iter().position(|name| name == &decl.get_ident()));
         for decl in decls {
             self.known_locals.clear();
             match decl {
@@ -925,7 +925,7 @@ impl Context {
             decls,
         } = module;
         let mut equations = self.equations.clone().into_iter().collect_vec();
-        equations.sort_unstable_by(|(lhs_id, lhs_ty), (rhs_id, rhs_ty)| {
+        equations.sort_by(|(lhs_id, lhs_ty), (rhs_id, rhs_ty)| {
             match (
                 lhs_ty.contains_unknown(*rhs_id),
                 rhs_ty.contains_unknown(*lhs_id),
