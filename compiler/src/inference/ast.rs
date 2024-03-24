@@ -51,12 +51,51 @@ pub(crate) struct ValueDeclaration {
 }
 
 #[derive(PartialEq, Debug, Clone)]
-pub struct ArgDeclaration {
-    pub loc: crate::Location,
-    pub ident: String,
-    pub ty: ResolvedType,
-    pub id: usize,
+pub(crate) enum ArgDeclaration {
+    Simple {
+        loc : crate::Location,
+        ident: String,
+        ty:ResolvedType,
+        id : usize,
+    },
+    DestructureTuple(Vec<ArgDeclaration>,ResolvedType, crate::Location),
+    DestructureStruct {
+        loc:crate::Location,
+        struct_ident : String,
+        fields : Vec<String>,
+        renamed_fields : HashMap<String,String>
+    },
+    Discard {
+        loc:crate::Location,
+        ty:ResolvedType,
+    },
+    Unit { loc:crate::Location, ty:ResolvedType },
 }
+
+impl ArgDeclaration {
+    pub(crate) fn get_ty(&self) -> ResolvedType {
+        match self {
+            Self::Unit { .. }=> types::UNIT,
+            Self::DestructureStruct { struct_ident, .. } => ResolvedType::User { name: struct_ident.clone(), generics: Vec::new(), loc: (0,0) },
+            Self::Simple { ty, .. }
+            | Self::Discard { ty, .. }
+            | Self::DestructureTuple(_, ty,_) => ty.clone()
+        }
+    }
+    
+    pub(crate) fn replace_unkown_with(&mut self, id: usize, new_ty: ResolvedType) {
+        match self {
+            Self::Unit { .. }| Self::DestructureStruct { .. } => (),
+            Self::Simple { ty, .. }
+            | Self::Discard { ty, .. } => ty.replace_unkown_with(id, new_ty),
+            Self::DestructureTuple(contents, ty, _) => {
+                contents.iter_mut().for_each(|it| it.replace_unkown_with(id, new_ty.clone()));
+                ty.replace_unkown_with(id, new_ty);
+            }
+        }
+    }
+}
+
 
 #[derive(PartialEq, Debug)]
 pub(crate) enum ValueType {

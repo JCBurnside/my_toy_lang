@@ -100,6 +100,48 @@ impl Context {
             }
         }
     }
+    pub(crate) fn assign_ids_arg(&mut self, arg:untyped_ast::ArgDeclaration, expected_ty:Option<&ResolvedType>) -> ast::ArgDeclaration{ 
+        match arg {
+            untyped_ast::ArgDeclaration::Simple{ loc, ident, ty } => {
+                let ty = ty.or(expected_ty.cloned()).unwrap_or_else(|| self.get_next_type_id());
+                let id = self.get_next_expr_id();
+                self.known_locals.insert(ident.clone(), ty.clone());
+                ast::ArgDeclaration::Simple { loc, ident, ty, id }
+            },
+            untyped_ast::ArgDeclaration::DestructureStruct { loc, struct_ident, fields, renamed_fields } => {
+                todo!("not sure how to handle this as of yet.");
+                ast::ArgDeclaration::DestructureStruct { loc, struct_ident, fields, renamed_fields } // nothing to rea
+            }
+            untyped_ast::ArgDeclaration::DestructureTuple(contents, ty, loc) => {
+                let ty = ty.or(expected_ty.cloned()).unwrap_or_else(|| self.get_next_type_id());
+                let contents = if let ResolvedType::Tuple { underlining, .. } = &ty {
+                    if contents.len() != underlining.len() {
+                        // TODO! generate destructuring error.
+                    }
+                    underlining.iter().zip(contents).map(|(ty, arg)| {
+                        self.assign_ids_arg(arg, Some(ty))
+                    }).collect()
+                } else {
+                    contents.into_iter().map(|arg| {
+                        self.assign_ids_arg(arg, None)
+                    }).collect()
+                };
+                ast::ArgDeclaration::DestructureTuple(contents, ty, loc)
+            },
+            untyped_ast::ArgDeclaration::Discard { loc, ty } => {
+                //TODO! generate error of unable to deduce type.
+                ast::ArgDeclaration::Discard { loc, ty:ty.or(expected_ty.cloned()).unwrap_or(types::ERROR) }
+            },
+            untyped_ast::ArgDeclaration::Unit { loc, ty } => {
+                if let Some(ty) = &ty {
+                    if ty != &types::UNIT {
+                        //TODO! generate type error.
+                    }
+                }
+                ast::ArgDeclaration::Unit { loc, ty:ty.unwrap_or(types::UNIT) }
+            }
+        }
+    }
     pub(crate) fn assign_ids_value_decl(
         &mut self,
         val: untyped_ast::ValueDeclaration,
@@ -122,17 +164,12 @@ impl Context {
             .into_iter()
             .enumerate()
             .map(|(idx, arg)| {
-                let untyped_ast::ArgDeclaration { loc, ident, ty } = arg;
-                let ty = ty.unwrap_or_else(|| {
-                    if decl_ty.is_unknown() {
-                        self.get_next_type_id()
-                    } else {
-                        decl_ty.get_nth_arg(idx)
-                    }
-                });
-                let id = self.get_next_expr_id();
-                self.known_locals.insert(ident.clone(), ty.clone());
-                ast::ArgDeclaration { loc, ident, ty, id }
+                let expected = if !decl_ty.is_function() {
+                    None
+                } else {
+                    Some(decl_ty.get_nth_arg(idx))
+                };
+                self.assign_ids_arg(arg, expected.as_ref())
             })
             .collect_vec();
         let value = match value {
@@ -458,9 +495,44 @@ impl Context {
         }
     }
 
+    fn infer_arg(&mut self, arg:&ast::ArgDeclaration) {
+        match arg {
+            ast::ArgDeclaration::Simple { ident, ty, ..} => {
+                self.known_locals.insert(ident.clone(), ty.clone());
+            },
+            ast::ArgDeclaration::DestructureTuple(contents, _, _) => {
+                for arg in contents {
+                    self.infer_arg(arg);
+                }
+            },
+            ast::ArgDeclaration::DestructureStruct { loc, struct_ident, fields, renamed_fields } => {
+                for field in fields {
+                    let ty = if let Some(ty) = self.known_struct_fields.get(&(struct_ident.clone(), field.clone())) {
+                        ty.clone()
+                    } else {
+                        types::ERROR
+                    };
+                    self.known_locals.insert(field.clone(), ty);
+                }
+                for (old_name,new_name) in renamed_fields {
+                    if new_name != "_" {
+                        let ty = if let Some(ty) = self.known_struct_fields.get(&(struct_ident.clone(), old_name.clone())) {
+                            ty.clone()
+                        } else {
+                            types::ERROR
+                        };
+                        self.known_locals.insert(new_name.clone(), ty);
+                    }
+                }
+            },
+            ast::ArgDeclaration::Discard { loc, ty } => (),
+            ast::ArgDeclaration::Unit {..}=> (),
+        }
+    }
+
     fn infer_decl(&mut self, value: &mut ast::ValueDeclaration) {
         for arg in &value.args {
-            self.known_locals.insert(arg.ident.clone(), arg.ty.clone());
+            self.infer_arg(arg);
         }
         match &mut value.value {
             ast::ValueType::Expr(e) => {
@@ -476,7 +548,7 @@ impl Context {
                     value.ty = value
                         .args
                         .iter()
-                        .map(|arg| arg.ty.clone())
+                        .map(|arg| arg.get_ty())
                         .rev()
                         .fold(actual, |ty, arg| arg.fn_ty(&ty));
 
@@ -496,7 +568,7 @@ impl Context {
                     let fun = value
                         .args
                         .iter()
-                        .map(|arg| arg.ty.clone())
+                        .map(|arg| arg.get_ty())
                         .reduce(|ty, arg| ty.fn_ty(&arg));
                     value.ty = fun.unwrap().fn_ty(&ty.unwrap()); //not sure if this the correct way to handle this.
                 }
@@ -917,7 +989,7 @@ impl Context {
         }
     }
 
-    fn apply_equations(&self, module: &mut ast::ModuleDeclaration) {
+    fn apply_equations(&mut self, module: &mut ast::ModuleDeclaration) {
         self.apply_substutions(module);
         let ast::ModuleDeclaration {
             loc: _,
@@ -962,7 +1034,7 @@ impl Context {
         } = decl;
         v_ty.replace_unkown_with(id, ty.clone());
         for arg in args.iter_mut() {
-            arg.ty.replace_unkown_with(id, ty.clone());
+            arg.replace_unkown_with(id, ty.clone());
         }
         match value {
             ast::ValueType::Expr(expr) => {
@@ -981,28 +1053,54 @@ impl Context {
         }
     }
 
-    fn apply_substutions(&self, ast: &mut ast::ModuleDeclaration) {
-        for sub in &self.expr_ty {
+    fn apply_substutions(&mut self, ast: &mut ast::ModuleDeclaration) {
+        for (id,sub) in self.expr_ty.clone() {
             for decl in &mut ast.decls {
                 match decl {
-                    ast::Declaration::Value(v) => self.apply_substution_decl(sub, v),
+                    ast::Declaration::Value(v) => self.apply_substution_decl((&id,&sub), v),
                     _ => (),
                 }
             }
         }
     }
 
+    fn apply_substution_arg(
+        &mut self,
+        sub:(&usize,&ResolvedType),
+        arg:&mut ast::ArgDeclaration
+    ) -> bool {
+        match arg {
+            ast::ArgDeclaration::Simple { loc:_, ident, ty, id } if id == sub.0 => {
+                *ty = sub.1.clone();
+                true
+            },
+            ast::ArgDeclaration::DestructureTuple(contents, ty, _) => {
+                let changed = contents.iter_mut().fold(false, |accum, arg| {
+                    self.apply_substution_arg(sub, arg) || accum
+                });
+                if changed {
+                    if let ResolvedType::Unknown(ty_id) = ty {
+                        self.equations.insert(
+                            *ty_id, 
+                            ResolvedType::Tuple { underlining: contents.iter().map(ast::ArgDeclaration::get_ty).collect(), loc: (0,0) }
+                        );
+                    }
+                }
+                changed
+            },
+            _=> false,
+        }
+    }
+
     fn apply_substution_decl(
-        &self,
+        &mut self,
         sub: (&usize, &ResolvedType),
         decl: &mut ast::ValueDeclaration,
     ) {
         let ast::ValueDeclaration { value, args, .. } = decl;
 
         for arg in args {
-            if arg.id == *sub.0 {
-                arg.ty = sub.1.clone()
-            }
+            self.apply_substution_arg(sub, arg);
         }
 
         match value {
@@ -1016,7 +1114,7 @@ impl Context {
         }
     }
 
-    fn apply_substution_statement(&self, sub: (&usize, &ResolvedType), stmnt: &mut ast::Statement) {
+    fn apply_substution_statement(&mut self, sub: (&usize, &ResolvedType), stmnt: &mut ast::Statement) {
         match stmnt {
             ast::Statement::Declaration(v) => self.apply_substution_decl(sub, v),
             ast::Statement::FnCall(call) => self.apply_substution_fncall(sub, call),
@@ -1047,7 +1145,7 @@ impl Context {
         }
     }
 
-    fn apply_substution_expr(&self, (id, ty): (&usize, &ResolvedType), expr: &mut ast::Expr) {
+    fn apply_substution_expr(&mut self, (id, ty): (&usize, &ResolvedType), expr: &mut ast::Expr) {
         match expr {
             ast::Expr::NumericLiteral {
                 value: _,
@@ -1106,7 +1204,7 @@ impl Context {
         }
     }
 
-    fn apply_substution_match(&self, sub: (&usize, &ResolvedType), match_: &mut ast::Match) {
+    fn apply_substution_match(&mut self, sub: (&usize, &ResolvedType), match_: &mut ast::Match) {
         let ast::Match { on, id, arms, .. } = match_;
         if id != sub.0 {
             self.apply_substution_expr(sub, on.as_mut());
@@ -1121,7 +1219,7 @@ impl Context {
         }
     }
 
-    fn apply_substution_fncall(&self, sub: (&usize, &ResolvedType), call: &mut ast::FnCall) {
+    fn apply_substution_fncall(&mut self, sub: (&usize, &ResolvedType), call: &mut ast::FnCall) {
         let ast::FnCall {
             value,
             arg,
@@ -1466,7 +1564,7 @@ mod tests {
                     loc: (0, 0),
                     is_op: false,
                     ident: "foo".to_string(),
-                    args: vec![super::untyped_ast::ArgDeclaration {
+                    args: vec![super::untyped_ast::ArgDeclaration::Simple {
                         loc: (0, 0),
                         ident: "a".to_string(),
                         ty: Some(types::INT32),
@@ -1497,7 +1595,7 @@ mod tests {
                         loc: (0, 0),
                         is_op: false,
                         ident: "foo".to_string(),
-                        args: vec![super::ast::ArgDeclaration {
+                        args: vec![super::ast::ArgDeclaration::Simple {
                             loc: (0, 0),
                             ident: "a".to_string(),
                             ty: types::INT32,
@@ -1529,7 +1627,7 @@ mod tests {
                         loc: (0, 4),
                         is_op: false,
                         ident: "foo".to_string(),
-                        args: vec![super::ast::ArgDeclaration {
+                        args: vec![super::ast::ArgDeclaration::Simple {
                             loc: (0, 8),
                             ident: "a".to_string(),
                             ty: ResolvedType::Unknown(1),
@@ -1593,7 +1691,7 @@ let foo a = match a where
                         loc: (1, 4),
                         is_op: false,
                         ident: "foo".to_string(),
-                        args: vec![super::ast::ArgDeclaration {
+                        args: vec![super::ast::ArgDeclaration::Simple {
                             loc: (1, 8),
                             ident: "a".to_string(),
                             ty: types::ResolvedType::Unknown(1),
@@ -1676,7 +1774,7 @@ let foo a = match a where
                         loc: (0, 4),
                         is_op: false,
                         ident: "foo".to_string(),
-                        args: vec![super::ast::ArgDeclaration {
+                        args: vec![super::ast::ArgDeclaration::Simple {
                             loc: (0, 8),
                             ident: "a".to_string(),
                             ty: ResolvedType::Unknown(1),
@@ -1734,7 +1832,7 @@ for<T> let foo x y : T -> T -> () = ()
                         is_op: false,
                         ident: "foo".to_string(),
                         args: vec![
-                            super::ast::ArgDeclaration {
+                            super::ast::ArgDeclaration::Simple {
                                 loc: (1, 15),
                                 ident: "x".to_string(),
                                 ty: ResolvedType::Generic {
@@ -1743,7 +1841,7 @@ for<T> let foo x y : T -> T -> () = ()
                                 },
                                 id: 1
                             },
-                            super::ast::ArgDeclaration {
+                            super::ast::ArgDeclaration::Simple {
                                 loc: (1, 17),
                                 ident: "y".to_string(),
                                 ty: ResolvedType::Generic {
@@ -1843,7 +1941,7 @@ let complex x =
                         loc: (3, 4),
                         is_op: false,
                         ident: "annotated_arg".to_string(),
-                        args: vec![super::ast::ArgDeclaration {
+                        args: vec![super::ast::ArgDeclaration::Simple {
                             loc: (3, 19),
                             ident: "x".to_string(),
                             ty: types::INT32,
@@ -1888,7 +1986,7 @@ let complex x =
                         loc: (5, 4),
                         is_op: false,
                         ident: "complex".to_string(),
-                        args: vec![super::ast::ArgDeclaration {
+                        args: vec![super::ast::ArgDeclaration::Simple {
                             loc: (5, 12),
                             ident: "x".to_string(),
                             ty: types::INT32,
@@ -2051,11 +2149,11 @@ let unit_unit _ : () -> () = ()
                 loc: (5, 4),
                 is_op: false,
                 ident: "int_int".to_string(),
-                args: vec![super::ast::ArgDeclaration {
+                args: vec![super::ast::ArgDeclaration::Simple {
                     loc: (5, 12),
                     ident: "x".to_string(),
                     ty: types::INT32,
-                    id: 6
+                    id: 4
                 }],
                 ty: ResolvedType::Function {
                     arg: types::INT32.boxed(),
@@ -2065,11 +2163,11 @@ let unit_unit _ : () -> () = ()
                 value: super::ast::ValueType::Expr(super::ast::Expr::ValueRead(
                     "x".to_string(),
                     (5, 33),
-                    7
+                    5
                 )),
                 generics: None,
                 abi: None,
-                id: 5
+                id: 3
             }),
             int_int,
             "int_int"
@@ -2079,11 +2177,9 @@ let unit_unit _ : () -> () = ()
                 loc: (1, 4),
                 is_op: false,
                 ident: "int_unit".to_string(),
-                args: vec![super::ast::ArgDeclaration {
+                args: vec![super::ast::ArgDeclaration::Discard {
                     loc: (1, 13),
-                    ident: "_".to_string(),
                     ty: types::INT32,
-                    id: 1
                 }],
                 ty: ResolvedType::Function {
                     arg: types::INT32.boxed(),
@@ -2103,11 +2199,9 @@ let unit_unit _ : () -> () = ()
                 loc: (3, 4),
                 is_op: false,
                 ident: "unit_int".to_string(),
-                args: vec![super::ast::ArgDeclaration {
+                args: vec![super::ast::ArgDeclaration::Discard {
                     loc: (3, 13),
-                    ident: "_".to_string(),
                     ty: types::UNIT,
-                    id: 3
                 }],
                 ty: ResolvedType::Function {
                     arg: types::UNIT.boxed(),
@@ -2116,12 +2210,12 @@ let unit_unit _ : () -> () = ()
                 },
                 value: super::ast::ValueType::Expr(super::ast::Expr::NumericLiteral {
                     value: "0".to_string(),
-                    id: 4,
+                    id: 2,
                     ty: types::INT16
                 }),
                 generics: None,
                 abi: None,
-                id: 2
+                id: 1
             }),
             unit_int,
             "unit_int"
@@ -2131,11 +2225,9 @@ let unit_unit _ : () -> () = ()
                 loc: (7, 4),
                 is_op: false,
                 ident: "unit_unit".to_string(),
-                args: vec![super::ast::ArgDeclaration {
+                args: vec![super::ast::ArgDeclaration::Discard {
                     loc: (7, 14),
-                    ident: "_".to_string(),
                     ty: types::UNIT,
-                    id: 9
                 }],
                 ty: ResolvedType::Function {
                     arg: types::UNIT.boxed(),
@@ -2145,7 +2237,7 @@ let unit_unit _ : () -> () = ()
                 value: super::ast::ValueType::Expr(super::ast::Expr::UnitLiteral),
                 generics: None,
                 abi: None,
-                id: 8
+                id:  6
             }),
             unit_unit,
             "unit_unit"
@@ -2177,13 +2269,13 @@ let if_expr a b : bool -> int32 -> int32 = if a then b else 0
                 is_op: false,
                 ident: "if_expr".to_string(),
                 args: vec![
-                    super::ast::ArgDeclaration {
+                    super::ast::ArgDeclaration::Simple {
                         loc: (1, 12),
                         ident: "a".to_string(),
                         ty: types::BOOL,
                         id: 1,
                     },
-                    super::ast::ArgDeclaration {
+                    super::ast::ArgDeclaration::Simple {
                         loc: (1, 14),
                         ident: "b".to_string(),
                         ty: types::INT32,
@@ -2255,7 +2347,7 @@ let returns a : bool -> int32 =
                 loc: (1, 4),
                 is_op: false,
                 ident: "returns".to_string(),
-                args: vec![super::ast::ArgDeclaration {
+                args: vec![super::ast::ArgDeclaration::Simple {
                     loc: (1, 12),
                     ident: "a".to_string(),
                     ty: types::BOOL,
@@ -2339,7 +2431,7 @@ let consume a = fst a;
                 is_op: false,
                 ident: "consume".to_string(),
                 args: vec![
-                    super::ast::ArgDeclaration { 
+                    super::ast::ArgDeclaration::Simple { 
                         loc: (3,12), 
                         ident: "a".to_string(), 
                         ty: ResolvedType::Tuple { 
@@ -2380,7 +2472,7 @@ let consume a = fst a;
                 is_op:false,
                 ident:"produce".to_string(),
                 args : vec![
-                    super::ast::ArgDeclaration{
+                    super::ast::ArgDeclaration::Simple{
                         loc:(1,13),
                         ident : "a".to_string(),
                         ty:types::INT32,
@@ -2407,7 +2499,7 @@ let consume a = fst a;
     }
 
     #[test]
-    fn array() {
+    fn  array() {
         const SRC : &'static str = "
 let f (a:[int32;5]) = ();
 
@@ -2435,7 +2527,7 @@ let main _ : () -> () =
                 is_op:false,
                 ident:"f".to_string(),
                 args:vec![
-                    super::ast::ArgDeclaration {
+                    super::ast::ArgDeclaration::Simple {
                         loc:(1,7),
                         ident:"a".to_string(),
                         ty : ResolvedType::Array { underlining: types::INT32.boxed(), size: 5 },
@@ -2457,30 +2549,28 @@ let main _ : () -> () =
                 is_op:false,
                 ident:"main".to_string(),
                 args:vec![
-                    super::ast::ArgDeclaration {
+                    super::ast::ArgDeclaration::Discard {
                         loc:(3,9),
-                        ident:"_".to_string(),
                         ty : types::UNIT,
-                        id:3,
                     },
                 ],
                 ty:types::UNIT.fn_ty(&types::UNIT),
                 value:super::ast::ValueType::Function(vec![
                     super::ast::Statement::FnCall(super::ast::FnCall {
                         loc:(4,4),
-                        value:super::ast::Expr::ValueRead("f".to_string(), (4,4), 10).boxed(),
+                        value:super::ast::Expr::ValueRead("f".to_string(), (4,4), 9).boxed(),
                         arg:super::ast::Expr::ArrayLiteral {
                             contents: vec![
-                                super::ast::Expr::NumericLiteral { value: "1".to_string(), id: 5, ty: types::INT32 },
-                                super::ast::Expr::NumericLiteral { value: "2".to_string(), id: 6, ty: types::INT32 },
-                                super::ast::Expr::NumericLiteral { value: "3".to_string(), id: 7, ty: types::INT32 },
-                                super::ast::Expr::NumericLiteral { value: "4".to_string(), id: 8, ty: types::INT32 },
-                                super::ast::Expr::NumericLiteral { value: "5".to_string(), id: 9, ty: types::INT32 },
+                                super::ast::Expr::NumericLiteral { value: "1".to_string(), id: 4, ty: types::INT32 },
+                                super::ast::Expr::NumericLiteral { value: "2".to_string(), id: 5, ty: types::INT32 },
+                                super::ast::Expr::NumericLiteral { value: "3".to_string(), id: 6, ty: types::INT32 },
+                                super::ast::Expr::NumericLiteral { value: "4".to_string(), id: 7, ty: types::INT32 },
+                                super::ast::Expr::NumericLiteral { value: "5".to_string(), id: 8, ty: types::INT32 },
                             ], 
                             loc: (4,6), 
-                            id: 4 
+                            id: 3 
                         }.boxed(),
-                        id:11,
+                        id:10,
                         returns:types::UNIT
                     }),
                     super::ast::Statement::Return(super::ast::Expr::UnitLiteral, (5,4))

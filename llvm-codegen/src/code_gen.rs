@@ -23,9 +23,7 @@ use itertools::Itertools;
 
 use crate::type_resolver::TypeResolver;
 use compiler::typed_ast::{
-    collect_args, ResolvedTypeDeclaration, StructDefinition, TypedBinaryOpCall, TypedDeclaration,
-    TypedExpr, TypedFnCall, TypedIfBranching, TypedIfExpr, TypedMatch, TypedMatchArm,
-    TypedMemberRead, TypedPattern, TypedStatement, TypedValueDeclaration, TypedValueType,
+    collect_args, ResolvedTypeDeclaration, StructDefinition, TypedArgDeclaration, TypedBinaryOpCall, TypedDeclaration, TypedExpr, TypedFnCall, TypedIfBranching, TypedIfExpr, TypedMatch, TypedMatchArm, TypedMemberRead, TypedPattern, TypedStatement, TypedValueDeclaration, TypedValueType
 };
 use compiler::types::{self, ResolvedType};
 use multimap::MultiMap;
@@ -105,6 +103,43 @@ impl<'ctx> CodeGen<'ctx> {
             ditypes: HashMap::new(),
             needsdi: Vec::new(),
             curry_ty,
+        }
+    }
+
+    fn compile_arg(&mut self, arg:&TypedArgDeclaration, value:BasicValueEnum<'ctx>) {
+        match arg {
+            TypedArgDeclaration::Discard { .. } => {
+                //todo! check if drop/whatever I will call it is needed
+            },
+            TypedArgDeclaration::Simple { loc, ident, ty } => {
+                let actual_ty = self.type_resolver.resolve_arg_type(ty);
+                let arg = self
+                    .builder
+                    .build_alloca(actual_ty, ident.as_str())
+                    .unwrap();
+                let value = self.value_or_load(ty.clone(), value);
+                self.builder.build_store(arg, value).unwrap();
+                self.locals.insert(ident.clone(),arg);
+            },
+            TypedArgDeclaration::DestructureTuple(contents, ty, loc) => {
+                let ptr = value.into_pointer_value();
+                let ty = self.type_resolver.resolve_type_as_basic(ty.clone()).into_struct_type();
+                for (idx,arg) in contents.iter().enumerate() {
+                    let gep = self.builder.build_struct_gep(ty, ptr, idx as u32, "").unwrap();
+                    self.compile_arg(arg, gep.as_basic_value_enum());
+                }
+            },
+            TypedArgDeclaration::DestructureStruct { loc, 
+                struct_ident, 
+                fields, 
+                renamed_fields 
+            }=> {
+                todo!()
+            },
+            TypedArgDeclaration::Discard { loc, ty }
+            |TypedArgDeclaration::Unit { loc, ty } => {
+                //TODO debug info for these args.
+            }
         }
     }
 
@@ -233,24 +268,16 @@ impl<'ctx> CodeGen<'ctx> {
             );
             self.ctx.struct_type(&curried_args, false)
         };
-        for (idx, arg_name) in decl.args.iter().enumerate().take(decl.args.len() - 1) {
-            let arg = self
-                .builder
-                .build_alloca(curried_args[idx], arg_name.ident.as_str())
-                .unwrap();
-            let gep = 
-                self.builder
-                    .build_struct_gep(
-                        actual_ty,
-                        first_arg.into_pointer_value(),
-                        dbg!(idx as u32 +1),
-                        "",
-                    )
-                    .unwrap()
-            ;
-            let value = self.builder.build_load(curried_args[idx], gep, "").unwrap();
-            self.builder.build_store(arg, value).unwrap();
-            self.locals.insert(arg_name.ident.clone(), arg.into());
+        for (idx, arg) in decl.args.iter().enumerate().take(decl.args.len() - 1) {
+            let gep = self.builder
+            .build_struct_gep(
+                actual_ty,
+                first_arg.into_pointer_value(),
+                idx as u32 +1,
+                "",
+            )
+            .unwrap();
+            self.compile_arg(arg, gep.as_basic_value_enum());
             if let Some(fnscope) = &self.difunction {
                 let Some(dibuilder) = &self.dibuilder else {
                     unreachable!()
@@ -262,7 +289,7 @@ impl<'ctx> CodeGen<'ctx> {
                 let ty = self.ditypes[&ty.to_string()];
                 let local = dibuilder.create_parameter_variable(
                     fnscope.as_debug_info_scope(),
-                    &arg_name.ident,
+                    &arg.get_ident(),
                     idx as u32 + 1,
                     file.clone(),
                     decl.loc.0.try_into().unwrap(),
@@ -272,24 +299,18 @@ impl<'ctx> CodeGen<'ctx> {
                 );
                 let diloc = dibuilder.create_debug_location(
                     self.ctx,
-                    arg_name.loc.0.try_into().unwrap(),
-                    arg_name.loc.1.try_into().unwrap(),
+                    arg.get_loc().0.try_into().unwrap(),
+                    arg.get_loc().1.try_into().unwrap(),
                     fnscope.as_debug_info_scope(),
                     None,
                 );
-                dibuilder.insert_declare_at_end(arg, Some(local), None, diloc, args_block);
-                self.dilocals.insert(arg_name.ident.clone(), local);
+                // dibuilder.insert_declare_at_end(arg, Some(local), None, diloc, args_block);
+                self.dilocals.insert(arg.get_ident(), local);
             }
         }
         let last_param = v.get_last_param().unwrap();
         let last_param_info = decl.args.last().unwrap();
-        let arg_t = decl.args.last().unwrap().ty.clone();
-        let arg = self
-            .builder
-            .build_alloca(self.type_resolver.resolve_type_as_basic(arg_t.clone()), &last_param_info.ident)
-            .unwrap();
-        let last_param = self.value_or_load(arg_t, last_param.as_basic_value_enum());
-        self.builder.build_store(arg, last_param).unwrap();
+        self.compile_arg(last_param_info, last_param);
         if let Some(fnscope) = &self.difunction {
             let Some(dibuilder) = &self.dibuilder else {
                 unreachable!()
@@ -307,7 +328,7 @@ impl<'ctx> CodeGen<'ctx> {
             let ty = self.ditypes[&ty_name];
             let local = dibuilder.create_parameter_variable(
                 fnscope.as_debug_info_scope(),
-                &last_param_info.ident,
+                &last_param_info.get_ident(),
                 decl.args.len() as u32 + 1,
                 file.clone(),
                 decl.loc.0.try_into().unwrap(),
@@ -317,13 +338,13 @@ impl<'ctx> CodeGen<'ctx> {
             );
             let diloc = dibuilder.create_debug_location(
                 self.ctx,
-                last_param_info.loc.0.try_into().unwrap(),
-                last_param_info.loc.1.try_into().unwrap(),
+                last_param_info.get_loc().0.try_into().unwrap(),
+                last_param_info.get_loc().1.try_into().unwrap(),
                 fnscope.as_debug_info_scope(),
                 None,
             );
-            dibuilder.insert_declare_at_end(arg, Some(local), None, diloc, args_block);
-            self.dilocals.insert(last_param_info.ident.clone(), local);
+            // dibuilder.insert_declare_at_end(arg, Some(local), None, diloc, args_block);
+            self.dilocals.insert(last_param_info.get_ident(), local);
         }
 
         let ret_block = self.ctx.append_basic_block(v, "ret"); //this is what will be used to return
@@ -340,8 +361,6 @@ impl<'ctx> CodeGen<'ctx> {
         let bb = self.ctx.append_basic_block(v, "start");
         self.builder.build_unconditional_branch(bb).unwrap();
         self.builder.position_at_end(bb);
-        self.locals
-            .insert(last_param_info.ident.clone(), arg.into());
         match decl.value {
             TypedValueType::Expr(expr) => {
                 let rt = expr.get_ty();

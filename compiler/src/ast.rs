@@ -182,11 +182,83 @@ pub struct FieldDecl {
     pub loc: crate::Location,
 }
 
+// #[derive(PartialEq, Debug, Clone)]
+// pub struct ArgDeclaration {
+//     pub loc: crate::Location,
+//     pub ident: String,
+//     pub ty: Option<ResolvedType>,
+// }
+
 #[derive(PartialEq, Debug, Clone)]
-pub struct ArgDeclaration {
-    pub loc: crate::Location,
-    pub ident: String,
-    pub ty: Option<ResolvedType>,
+pub enum ArgDeclaration {
+    Simple {
+        loc : crate::Location,
+        ident: String,
+        ty:Option<ResolvedType>,
+    },
+    DestructureTuple(Vec<ArgDeclaration>, Option<ResolvedType>, crate::Location),
+    DestructureStruct {
+        loc:crate::Location,
+        struct_ident : String,
+        fields : Vec<String>,
+        renamed_fields : HashMap<String,String>
+    },
+    Discard {
+        loc:crate::Location,
+        ty:Option<ResolvedType>,
+    },
+    Unit {
+        loc:crate::Location,
+        ty:Option<ResolvedType>,
+    },
+}
+
+impl ArgDeclaration {
+    pub(crate) fn apply_generic(&mut self, generic:&str) {
+        match self {
+            Self::Discard { ty, .. }
+            | Self::Unit { ty, .. }
+            | Self::Simple { ty, .. } => if let Some(ty) = ty {
+                *ty = ty.clone().replace_user_with_generic(generic);
+            },
+            Self::DestructureTuple(contents, ty, _) => {
+                if let Some(ty) = ty {
+                    *ty = ty.clone().replace_user_with_generic(generic);
+                }
+                contents.iter_mut().for_each(|it| it.apply_generic(generic))
+            }
+            _ => ()
+        }
+    }
+    fn get_idents(&self) -> Vec<String> {
+        match self {
+            Self::Simple { ident, .. } => vec![ident.clone()],
+            Self::DestructureStruct { fields, renamed_fields, .. } => {
+                renamed_fields.values().cloned().chain(fields.iter().cloned()).collect()
+            },
+            Self::DestructureTuple(decls, _,_) => decls.iter().flat_map(Self::get_idents).collect(),
+            Self::Discard { .. } | Self::Unit { .. } => Vec::new(),
+        }
+    }
+    fn get_types(&self) -> HashSet<String> {
+        match self {
+            Self::DestructureTuple(idents, ty, _) => {
+                let mut out : HashSet<String> = idents.iter().flat_map(Self::get_types).collect();
+                if let Some(ty) = ty {
+                    out.extend(ty.get_all_types());
+                }
+                out
+            }
+            Self::DestructureStruct { struct_ident, .. } => [struct_ident.clone()].into(),
+            Self::Discard { ty, .. }
+            | Self::Unit { ty, .. }
+            | Self::Simple { ty, .. } => if let Some(ty) = ty  {
+                ty.get_all_types()
+            } else {
+                HashSet::new()
+            },
+        }
+    }
 }
 
 #[derive(PartialEq, Debug, Clone)]
@@ -220,12 +292,19 @@ impl ValueDeclaration {
             output.extend(ty.get_all_types());
         }
         for arg in &self.args {
-            if let Some(ty) = &arg.ty {
-                let tys = ty.get_all_types();
-                output.extend(tys);
+            match arg {
+                ArgDeclaration::Simple { ty, .. }
+                | ArgDeclaration::DestructureTuple(_, ty, _)
+                 if ty.is_some() => {
+                    let Some(ty) = ty else { unreachable!() };
+                    let tys = ty.get_all_types();
+                    output.extend(tys);
+                }
+
+                _=>(),
             }
         }
-        let args = self.args.iter().map(|arg| arg.ident.clone()).collect_vec();
+        let args = self.args.iter().flat_map(ArgDeclaration::get_idents).collect_vec();
         let dependencies = self.value.get_dependencies(args);
         output.extend(dependencies);
         output
@@ -727,6 +806,16 @@ pub enum Pattern {
     ConstStr(String),
     ConstChar(String),
     ConstBool(bool), //... this is one is odd but gonna support it anyway and eventaully warn with suggestion to convert to if
-    Read(String),    // todo! conditional branch
-                     // todo! variant patterns.
+    Read(String),
+    Destructure(PatternDestructure)    
+    // todo! conditional branch
+    // todo! variant patterns.
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum PatternDestructure {
+    Struct {
+        fields : HashMap<String,Pattern>
+    },
+    Tuple(Vec<Pattern>)
 }

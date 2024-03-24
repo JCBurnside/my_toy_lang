@@ -1509,7 +1509,7 @@ where
                         loc,
                         is_op: false,
                         ident: "<error>".to_string(),
-                        args: vec![ArgDeclaration {
+                        args: vec![ArgDeclaration::Simple {
                             loc,
                             ident: "<error>".to_string(),
                             ty: Some(types::ERROR),
@@ -1865,54 +1865,235 @@ where
         }
     }
 
-    fn collect_args(&mut self) -> ParserReturns<Vec<ast::ArgDeclaration>> {
-        let mut out = Vec::new();
+    fn parse_arg(&mut self) -> ParserReturns<ArgDeclaration> {
         #[allow(unused_mut)]
         let mut warnings = Vec::new();
         let mut errors = Vec::new();
-        while let Some((t, _)) = self.stream.clone().next() {
-            match t {
-                Token::GroupOpen => {
-                    let _ = self.stream.next();
-                    let Some((Token::Ident(name), loc)) = self.stream.next() else {
-                        unimplemented!("unit arg destructring not allowed yet.")
-                    };
-                    let ty = if let Some((Token::Colon, _)) = self.stream.clone().next() {
-                        let _ = self.stream.next();
-                        let ty = self.collect_type();
-                        warnings.extend(ty.warnings);
-                        errors.extend(ty.errors);
-                        let ty = ty.ast;
-                        if let Some((Token::GroupClose, _)) = self.stream.clone().next() {
-                            let _ = self.stream.next();
+        match self.stream.clone().next() {
+            Some((Token::GroupOpen,_)) => {//(
+                let Some((Token::GroupOpen,open_loc)) = self.stream.next() else { unreachable!() };
+                match self.stream.clone().next() {
+                    Some((Token::GroupClose,_)) => { //()
+                        let _ = self.stream.next(); // )
+                        let ty = if let Some((Token::Colon,_)) = self.stream.clone().next() {
+                            let _ = self.stream.next();// :
+                            let ty = self.collect_type(); 
+                            warnings.extend(ty.warnings);
+                            errors.extend(ty.errors);
+                            // will error at type checking/inference phase if not a unit type.
+                            Some(ty.ast)
                         } else {
-                            errors.push(ParseError {
-                                span: loc,
-                                reason: ParseErrorReason::UnbalancedBraces,
-                            });
+                            None
+                        };
+                        ParserReturns { 
+                            ast: ArgDeclaration::Unit { loc:open_loc, ty },
+                            loc:open_loc,
+                            warnings,
+                            errors,
                         }
-                        Some(ty)
-                    } else {
-                        None
-                    };
-                    out.push(ast::ArgDeclaration {
-                        loc,
-                        ident: name,
-                        ty,
-                    });
+                    },
+                    Some((Token::Ident(_),_)) => {// (<ident>
+                        let Some((Token::Ident(name),loc))=self.stream.next() else { unreachable!() };
+                        match self.stream.clone().next() {
+                            Some((Token::Colon,_)) => {//(<ident>:
+                                let _ = self.stream.next();// :
+                                let ty = self.collect_type(); 
+                                warnings.extend(ty.warnings);
+                                errors.extend(ty.errors);
+                                let ty = ty.ast;
+                                match self.stream.clone().next() {
+                                    Some((Token::GroupClose,_))=> {
+                                        let _ = self.stream.next();
+                                    },
+                                    Some((_,loc)) => {
+                                        errors.push(ParseError { span: loc, reason: ParseErrorReason::UnbalancedBraces });
+                                    },
+                                    None=> {
+                                        errors.push(ParseError { span: (0,0), reason: ParseErrorReason::UnbalancedBraces });
+                                    },
+                                }
+                                ParserReturns {
+                                    ast:if name=="_" {
+                                        ArgDeclaration::Discard { loc, ty : Some(ty) }
+                                    } else {
+                                        ArgDeclaration::Simple {
+                                            loc,
+                                            ident:name,
+                                            ty:Some(ty),
+                                        }
+                                    },
+                                    loc,
+                                    warnings,
+                                    errors,
+                                }
+                            },
+                            Some((Token::Comma,_)) => {//(<ident>,
+                                let mut contents = vec![
+                                    if name == "_" {
+                                        ArgDeclaration::Discard { loc, ty:None }
+                                    } else {
+                                        ArgDeclaration::Simple {
+                                            loc,
+                                            ident:name,
+                                            ty : None,
+                                        }
+                                    }
+                                ];
+                                let _ = self.stream.next(); //,
+                                while let Some((Token::Ident(_)|Token::GroupOpen,_)) = self.stream.clone().next() {
+                                    let arg = self.parse_arg();
+                                    warnings.extend(arg.warnings);
+                                    errors.extend(arg.errors);
+                                    contents.push(arg.ast);
+                                }
+                                let ty = if let Some((Token::Colon,_)) =self.stream.clone().next() {
+                                    let _ = self.stream.next();
+                                    let ty = self.collect_type();
+                                    warnings.extend(ty.warnings);
+                                    errors.extend(ty.errors);
+                                    Some(ty.ast)
+                                } else {
+                                    None
+                                };
+                                if let Some((Token::GroupClose,_)) = self.stream.clone().next() {
+                                    let _ = self.stream.next();
+                                } else {
+                                    errors.push(ParseError{
+                                        span:loc,
+                                        reason:ParseErrorReason::UnbalancedBraces,
+                                    });
+                                }
+                                ParserReturns {
+                                    ast:ArgDeclaration::DestructureTuple(contents,ty,open_loc),
+                                    loc:open_loc,
+                                    warnings,
+                                    errors,
+                                }
+                            }
+                            Some((Token::GroupClose,_)) => {//(<ident>)
+                                let _ = self.stream.next();
+                                ParserReturns {
+                                    ast:if name == "_" {
+                                        ArgDeclaration::Discard { loc, ty:None }
+                                    } else {
+                                        ArgDeclaration::Simple {
+                                            loc,
+                                            ident:name,
+                                            ty : None,
+                                        }
+                                    },
+                                    loc:open_loc,
+                                    warnings,
+                                    errors,
+                                }
+                            }
+                            Some((_,loc)) => {
+                                errors.push(ParseError { span: loc, reason: ParseErrorReason::UnbalancedBraces });
+                                ParserReturns {
+                                    ast:ArgDeclaration::Simple{
+                                        loc,
+                                        ident:"<error>".to_string(),
+                                        ty:Some(types::ERROR),
+                                    },
+                                    loc,
+                                    warnings,
+                                    errors,
+                                }
+                            },
+                            None => {
+                                errors.push(ParseError { span: (0,0), reason: ParseErrorReason::UnbalancedBraces });
+                                ParserReturns {
+                                    ast:ArgDeclaration::Simple{
+                                        loc:(0,0),
+                                        ident:"<error>".to_string(),
+                                        ty:Some(types::ERROR),
+                                    },
+                                    loc:(0,0),
+                                    warnings,
+                                    errors,
+                                }
+                            },
+                        }
+                    }
+                    _ => todo!(),
                 }
-                Token::Ident(_) => {
-                    let Some((Token::Ident(ident), loc)) = self.stream.next() else {
-                        unreachable!()
-                    };
-                    out.push(ast::ArgDeclaration {
-                        loc,
-                        ident,
-                        ty: None,
-                    })
-                }
-                _ => break,
             }
+            Some((Token::Ident(_),_)) => {
+                let Some((Token::Ident(ident),loc)) = self.stream.next() else { unreachable!() };
+                ParserReturns {
+                    loc,
+                    ast: if ident=="_" {
+                        ArgDeclaration::Discard { loc, ty: None }
+                    } else {
+                        ArgDeclaration::Simple {
+                            loc,
+                            ident,
+                            ty:None,
+                        }
+                    },
+                    warnings,
+                    errors,
+                }
+            },
+            Some((Token::EoF,loc)) => {
+                errors.push(ParseError { span : loc, reason: ParseErrorReason::UnexpectedEndOfFile });
+                ParserReturns {
+                    ast:ArgDeclaration::Simple{
+                        loc,
+                        ident:"<error>".to_string(),
+                        ty:Some(types::ERROR),
+                    },
+                    loc,
+                    warnings,
+                    errors,
+                }
+            }
+            Some((_token, loc)) => {
+                errors.push(ParseError { span:loc, reason: ParseErrorReason::UnexpectedToken });
+                ParserReturns {
+                    loc,
+                    ast: ArgDeclaration::Simple {
+                        loc,
+                        ident : "<error>".to_string(),
+                        ty:Some(types::ERROR),
+                    },
+                    warnings,
+                    errors,
+                }
+            }
+            None => {
+                errors.push(ParseError { span :(0,0), reason: ParseErrorReason::UnexpectedEndOfFile });
+                ParserReturns {
+                    ast:ArgDeclaration::Simple{
+                        loc:(0,0),
+                        ident:"<error>".to_string(),
+                        ty:Some(types::ERROR),
+                    },
+                    loc:(0,0),
+                    warnings,
+                    errors,
+                }
+            }
+        }
+    }
+
+    fn collect_args(&mut self) -> ParserReturns<Vec<ArgDeclaration>> {
+        let mut out = Vec::new();
+        let mut warnings = Vec::new();
+        let mut errors = Vec::new();
+        while let Some((t,_)) = self.stream.clone().next() {
+            if let Token::Op(eq) = &t {
+                if eq == "=" {
+                    break;
+                }
+            }
+            if t==Token::Colon {
+                break;
+            }
+            let arg = self.parse_arg();
+            warnings.extend(arg.warnings);
+            errors.extend(arg.errors);
+            out.push(arg.ast)
         }
         ParserReturns {
             ast: out,
@@ -1938,7 +2119,7 @@ where
                             loc: ident_span,
                             is_op: false,
                             ident: "<error>".to_string(),
-                            args: vec![ArgDeclaration {
+                            args: vec![ArgDeclaration::Simple {
                                 loc: (0, 0),
                                 ident: "<error>".to_string(),
                                 ty: Some(types::ERROR),
@@ -2164,13 +2345,11 @@ where
             };
             if let Some(generics) = &generics {
                 for arg in &mut args {
-                    if let Some(ty) = &mut arg.ty {
-                        *ty = generics
+                        generics
                             .decls
                             .iter()
                             .map(|(_, it)| it)
-                            .fold(ty.clone(), |ty, name| ty.replace_user_with_generic(name));
-                    }
+                            .for_each(|name| arg.apply_generic(name));
                 }
 
                 if let Some(ty) = &mut ty {
@@ -2203,7 +2382,7 @@ where
                 loc: (0, 0),
                 is_op: false,
                 ident: "<error>".to_string(),
-                args: vec![ArgDeclaration {
+                args: vec![ArgDeclaration::Simple {
                     loc: (0, 0),
                     ident: "<error>".to_string(),
                     ty: Some(types::ERROR),
@@ -2904,7 +3083,7 @@ impl std::fmt::Debug for ShuntingYardOptions {
 mod tests {
 
     use crate::{
-        ast::{ArgDeclaration, IfBranching, IfExpr, MatchArm, StructDefinition},
+        ast::{ArgDeclaration, Declaration, IfBranching, IfExpr, MatchArm, StructDefinition},
         types::ResolvedType,
     };
 
@@ -3059,11 +3238,7 @@ mod tests {
                     returns: types::INT32.boxed(),
                     loc: (0, 18)
                 }),
-                args: vec![ArgDeclaration {
-                    loc: (0, 8),
-                    ident: "_".to_string(),
-                    ty: None,
-                }],
+                args: vec![ArgDeclaration::Discard{ty:None,loc:(0,8)}],
                 value: ValueType::Function(vec![Statement::Return(
                     Expr::NumericLiteral {
                         value: "5".to_string(),
@@ -3099,11 +3274,7 @@ let foo _ : ( int32 -> int32 ) -> int32 =
                     returns: types::INT32.boxed(),
                     loc: (1, 31)
                 }),
-                args: vec![ast::ArgDeclaration {
-                    ident: "_".to_string(),
-                    loc: (1, 8),
-                    ty: None,
-                }],
+                args: vec![ast::ArgDeclaration::Discard{ty:None, loc:(1,8)}],
                 value: ValueType::Function(vec![Statement::Return(
                     Expr::NumericLiteral {
                         value: "0".to_string(),
@@ -3136,11 +3307,7 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                     .boxed(),
                     loc: (1, 18)
                 }),
-                args: vec![ast::ArgDeclaration {
-                    ident: "_".to_string(),
-                    loc: (1, 8),
-                    ty: None,
-                }],
+                args: vec![ast::ArgDeclaration::Discard{ty:None,loc:(1,8)}],
                 value: ValueType::Function(vec![Statement::Return(
                     Expr::NumericLiteral {
                         value: "0".to_owned(),
@@ -3185,7 +3352,7 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                     returns: types::INT32.boxed(),
                     loc: (2, 20)
                 }),
-                args: vec![ast::ArgDeclaration {
+                args: vec![ast::ArgDeclaration::Simple {
                     ident: "quz".to_string(),
                     loc: (2, 8),
                     ty: None,
@@ -3230,12 +3397,12 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                     loc: (6, 23)
                 }),
                 args: vec![
-                    ast::ArgDeclaration {
+                    ast::ArgDeclaration::Simple {
                         ident: "lhs".to_string(),
                         loc: (6, 7),
                         ty: None,
                     },
-                    ast::ArgDeclaration {
+                    ast::ArgDeclaration::Simple {
                         ident: "rhs".to_string(),
                         loc: (6, 11),
                         ty: None,
@@ -3281,11 +3448,7 @@ let main _ : int32 -> int32 =
                     returns: types::INT32.boxed(),
                     loc: (1, 19)
                 }),
-                args: vec![ast::ArgDeclaration {
-                    ident: "_".to_string(),
-                    loc: (1, 9),
-                    ty: None,
-                }],
+                args: vec![ast::ArgDeclaration::Discard{ty:None,loc:(1,9)}],
                 value: ValueType::Function(vec![
                     Statement::FnCall(FnCall {
                         loc: (2, 4),
@@ -3370,11 +3533,7 @@ let main _ : int32 -> int32 =
                 is_op: false,
                 ident: "main".to_owned(),
                 ty: None,
-                args: vec![ast::ArgDeclaration {
-                    ident: "_".to_string(),
-                    loc: (0, 9),
-                    ty: None,
-                }],
+                args: vec![ast::ArgDeclaration::Discard{ty:None,loc:(0,9)}],
                 value: ValueType::Function(vec![
                     Statement::FnCall(FnCall {
                         loc: (1, 4),
@@ -3472,7 +3631,7 @@ let main _ : int32 -> int32 =
                 loc: (0, 11),
                 is_op: false,
                 ident: "test".to_string(),
-                args: vec![ast::ArgDeclaration {
+                args: vec![ast::ArgDeclaration::Simple {
                     loc: (0, 16),
                     ident: "a".to_string(),
                     ty: None,
@@ -3569,12 +3728,12 @@ for<T,U> type Tuple = {
                 is_op: false,
                 ident: "foo".to_string(),
                 args: vec![
-                    ArgDeclaration {
+                    ArgDeclaration::Simple {
                         loc: (0, 8),
                         ident: "a".to_string(),
                         ty: None,
                     },
-                    ArgDeclaration {
+                    ArgDeclaration::Simple {
                         loc: (0, 10),
                         ident: "b".to_string(),
                         ty: None,
@@ -3661,7 +3820,7 @@ for<T,U> type Tuple = {
                 loc: (0, 4),
                 is_op: false,
                 ident: "inline_expr".to_string(),
-                args: vec![ast::ArgDeclaration {
+                args: vec![ast::ArgDeclaration::Simple {
                     ident: "a".to_string(),
                     loc: (0, 16),
                     ty: None,
@@ -3702,7 +3861,7 @@ for<T,U> type Tuple = {
                 loc: (2, 4),
                 is_op: false,
                 ident: "out_of_line_expr".to_string(),
-                args: vec![ast::ArgDeclaration {
+                args: vec![ast::ArgDeclaration::Simple {
                     ident: "a".to_string(),
                     loc: (2, 21),
                     ty: None,
@@ -3750,7 +3909,7 @@ for<T,U> type Tuple = {
                 loc: (7, 4),
                 is_op: false,
                 ident: "expr_with_statement".to_string(),
-                args: vec![ast::ArgDeclaration {
+                args: vec![ast::ArgDeclaration::Simple {
                     loc: (7, 24),
                     ident: "a".to_string(),
                     ty: None,
@@ -3810,12 +3969,12 @@ for<T,U> type Tuple = {
                 is_op: false,
                 ident: "expr_with_else_if".to_string(),
                 args: vec![
-                    ast::ArgDeclaration {
+                    ast::ArgDeclaration::Simple {
                         loc: (14, 22),
                         ident: "a".to_string(),
                         ty: None,
                     },
-                    ast::ArgDeclaration {
+                    ast::ArgDeclaration::Simple {
                         loc: (14, 24),
                         ident: "b".to_string(),
                         ty: None,
@@ -3869,7 +4028,7 @@ for<T,U> type Tuple = {
                 loc: (16, 4),
                 is_op: false,
                 ident: "statement".to_string(),
-                args: vec![ast::ArgDeclaration {
+                args: vec![ast::ArgDeclaration::Simple {
                     loc: (16, 14),
                     ident: "a".to_string(),
                     ty: None,
@@ -3933,12 +4092,12 @@ for<T,U> type Tuple = {
                 is_op: false,
                 ident: "statement_with_else_if".to_string(),
                 args: vec![
-                    ast::ArgDeclaration {
+                    ast::ArgDeclaration::Simple {
                         loc: (24, 27),
                         ident: "a".to_string(),
                         ty: None,
                     },
-                    ast::ArgDeclaration {
+                    ast::ArgDeclaration::Simple {
                         loc: (24, 29),
                         ident: "b".to_string(),
                         ty: None,
@@ -3992,12 +4151,12 @@ for<T,U> type Tuple = {
                 is_op: false,
                 ident: "expr_multi_with_elseif".to_string(),
                 args: vec![
-                    ast::ArgDeclaration {
+                    ast::ArgDeclaration::Simple {
                         loc: (32, 27),
                         ident: "a".to_string(),
                         ty: None,
                     },
-                    ast::ArgDeclaration {
+                    ast::ArgDeclaration::Simple {
                         loc: (32, 29),
                         ident: "b".to_string(),
                         ty: None,
@@ -4055,7 +4214,7 @@ for<T,U> type Tuple = {
                 loc: (0, 4),
                 is_op: false,
                 ident: "match_expr_ints".to_string(),
-                args: vec![ast::ArgDeclaration {
+                args: vec![ast::ArgDeclaration::Simple {
                     loc: (0, 20),
                     ident: "x".to_string(),
                     ty: None,
@@ -4116,7 +4275,7 @@ for<T,U> type Tuple = {
                 loc: (5, 4),
                 is_op: false,
                 ident: "match_expr_with_block".to_string(),
-                args: vec![ArgDeclaration {
+                args: vec![ArgDeclaration::Simple {
                     loc: (5, 26),
                     ident: "x".to_string(),
                     ty: None,
@@ -4199,7 +4358,7 @@ for<T,U> type Tuple = {
                 loc: (12, 4),
                 is_op: false,
                 ident: "match_statement".to_string(),
-                args: vec![ArgDeclaration {
+                args: vec![ArgDeclaration::Simple {
                     loc: (12, 20),
                     ident: "x".to_string(),
                     ty: None,
@@ -4342,12 +4501,12 @@ extern "C" let ex (a:int32) b = a + b;
                 is_op: false,
                 ident: "ex".to_string(),
                 args: vec![
-                    ast::ArgDeclaration {
+                    ast::ArgDeclaration::Simple {
                         loc: (2, 19),
                         ident: "a".to_string(),
                         ty: Some(types::INT32),
                     },
-                    ast::ArgDeclaration {
+                    ast::ArgDeclaration::Simple {
                         loc: (2, 28),
                         ident: "b".to_string(),
                         ty: None,
@@ -4388,11 +4547,7 @@ let cons a : int32 -> (int32,int32) = (a,0)
                 loc: (1, 4),
                 is_op: false,
                 ident: "ty".to_string(),
-                args: vec![ArgDeclaration {
-                    loc: (1, 7),
-                    ident: "_".to_string(),
-                    ty: None,
-                }],
+                args: vec![ArgDeclaration::Discard {ty:None,loc:(1,7)}],
                 ty: Some(
                     ResolvedType::Tuple {
                         underlining: vec![types::INT32, types::INT32],
@@ -4414,7 +4569,7 @@ let cons a : int32 -> (int32,int32) = (a,0)
                 loc: (3, 4),
                 is_op: false,
                 ident: "cons".to_string(),
-                args: vec![ArgDeclaration {
+                args: vec![ArgDeclaration::Simple {
                     loc: (3, 9),
                     ident: "a".to_string(),
                     ty: None
@@ -4436,6 +4591,106 @@ let cons a : int32 -> (int32,int32) = (a,0)
                 abi: None
             }),
             cons
+        );
+    }
+
+    #[test]
+    fn arg_types() {
+        const SRC : &'static str = 
+"
+let simple a = ();
+let decon_arg (a,b) = ();
+let discard _ = ();
+let unit () = ();
+";
+
+        let ast = Parser::from_source(SRC).module("".to_string()).ast;
+        let [simple,decon,discard, unit] = &ast.declarations[..] else {unreachable!()};
+        assert_eq!(
+            &Declaration::Value(ValueDeclaration{
+                loc:(1,4),
+                is_op:false,
+                ident:"simple".to_string(),
+                args:vec![
+                    ArgDeclaration::Simple {
+                        loc: (1,11),
+                        ident: "a".to_string(),
+                        ty: None, 
+                    },
+                ],
+                ty:None,
+                value:ValueType::Expr(Expr::UnitLiteral),
+                generictypes:None,
+                abi:None,
+            }),
+            simple,
+            "let simple a = ();"
+        );
+        assert_eq!(
+            &Declaration::Value(ValueDeclaration{
+                loc:(2,4),
+                is_op:false,
+                ident:"decon_arg".to_string(),
+                args:vec![
+                    ArgDeclaration::DestructureTuple(vec![
+                        ArgDeclaration::Simple {
+                            loc: (2,15),
+                            ident: "a".to_string(),
+                            ty: None, 
+                        },
+                        ArgDeclaration::Simple {
+                            loc: (2,17),
+                            ident: "b".to_string(),
+                            ty: None, 
+                        },
+
+                    ], None, (2,14)),
+                ],
+                ty:None,
+                value:ValueType::Expr(Expr::UnitLiteral),
+                generictypes:None,
+                abi:None,
+            }),
+            decon,
+            "let decon_arg (a,b) = ()"
+        );
+        assert_eq!(
+            &Declaration::Value(ValueDeclaration{
+                loc:(3,4),
+                is_op:false,
+                ident:"discard".to_string(),
+                args:vec![
+                    ArgDeclaration::Discard{
+                        loc: (3,12),
+                        ty: None, 
+                    },
+                ],
+                ty:None,
+                value:ValueType::Expr(Expr::UnitLiteral),
+                generictypes:None,
+                abi:None,
+            }),
+            discard,
+            "let discard _ = ();"
+        );
+        assert_eq!(
+            &Declaration::Value(ValueDeclaration{
+                loc:(4,4),
+                is_op:false,
+                ident:"unit".to_string(),
+                args:vec![
+                    ArgDeclaration::Unit {
+                        loc:(4,9),
+                        ty: None, 
+                    },
+                ],
+                ty:None,
+                value:ValueType::Expr(Expr::UnitLiteral),
+                generictypes:None,
+                abi:None,
+            }),
+            unit,
+            "let unit () = ();"
         );
     }
 }
