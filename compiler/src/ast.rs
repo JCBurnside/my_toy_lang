@@ -182,13 +182,6 @@ pub struct FieldDecl {
     pub loc: crate::Location,
 }
 
-// #[derive(PartialEq, Debug, Clone)]
-// pub struct ArgDeclaration {
-//     pub loc: crate::Location,
-//     pub ident: String,
-//     pub ty: Option<ResolvedType>,
-// }
-
 #[derive(PartialEq, Debug, Clone)]
 pub enum ArgDeclaration {
     Simple {
@@ -806,8 +799,18 @@ pub enum Pattern {
     ConstStr(String),
     ConstChar(String),
     ConstBool(bool), //... this is one is odd but gonna support it anyway and eventaully warn with suggestion to convert to if
-    Read(String),
-    Destructure(PatternDestructure)    
+    Read(String,crate::Location),
+    Destructure(PatternDestructure),
+    Error,
+    Or(Box<Self>, Box<Self>),/*
+        | 0 | 1 | 2 -> Combo(
+                            ConstNumber(0),
+                            Combo(
+                                ConstNumber(1),
+                                ConstNumber(2)
+                            )
+                        )
+    */
     // todo! conditional branch
     // todo! variant patterns.
 }
@@ -817,5 +820,6 @@ pub enum PatternDestructure {
     Struct {
         fields : HashMap<String,Pattern>
     },
-    Tuple(Vec<Pattern>)
+    Tuple(Vec<Pattern>),
+    Unit,
 }

@@ -7,7 +7,7 @@ use crate::{
 };
 
 pub use crate::ast::GenericsDecl;
-pub(crate) use crate::ast::{Pattern, TypeDefinition};
+pub(crate) use crate::ast::TypeDefinition;
 #[derive(PartialEq, Debug)]
 pub(crate) struct ModuleDeclaration {
     pub(crate) loc: crate::Location,
@@ -135,8 +135,36 @@ pub(crate) struct Match {
 pub(crate) struct MatchArm {
     pub(crate) block: Vec<Statement>,
     pub(crate) ret: Option<Box<Expr>>,
-    pub(crate) cond: (Pattern, usize),
+    pub(crate) cond: Pattern,
     pub(crate) loc: crate::Location,
+}
+
+#[derive(PartialEq, Debug)]
+pub(crate) enum Pattern {
+    Default,
+    ConstNumber(String,ResolvedType),
+    ConstStr(String),
+    ConstChar(String),
+    ConstBool(bool),//again why?
+    Read{
+        ident:String,
+        loc:crate::Location,
+        ty:ResolvedType,
+        id:usize,
+    },
+    Destructure(DestructurePattern),
+    Err,
+    Or(Box<Self>,Box<Self>)
+}
+
+
+#[derive(PartialEq, Debug)]
+pub(crate) enum DestructurePattern {
+    Struct {
+        fields:HashMap<String,Pattern>,
+    },
+    Tuple(Vec<Pattern>,ResolvedType,usize), // (patterns, ty, id)
+    Unit,
 }
 
 #[derive(PartialEq, Debug)]

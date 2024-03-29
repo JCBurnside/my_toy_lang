@@ -1,7 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
-    iter::Peekable,
-    str::Chars,
+    collections::{HashMap, HashSet}, fmt::Error, iter::Peekable, str::Chars
 };
 
 use ast::TypeDefinition;
@@ -9,8 +7,7 @@ use itertools::Itertools;
 
 use crate::{
     ast::{
-        self, ArgDeclaration, BinaryOpCall, Expr, FieldDecl, FnCall, Match, Pattern, Statement,
-        StructConstruction, StructDefinition, ValueDeclaration, ValueType,
+        self, ArgDeclaration, BinaryOpCall, Expr, FieldDecl, FnCall, Match, Pattern, PatternDestructure, Statement, StructConstruction, StructDefinition, ValueDeclaration, ValueType
     },
     lexer::TokenStream,
     tokens::Token,
@@ -2727,87 +2724,11 @@ where
                 break;
             }
             let _ = self.stream.next();
-            let (cond, loc) = match self.stream.peek() {
-                Some((Token::Ident(ident), _)) if ident != "_" => {
-                    let Some((Token::Ident(name), loc)) = self.stream.next() else {
-                        unreachable!()
-                    };
-                    //todo! detect patterns
-                    (Pattern::Read(name), loc)
-                }
-                Some((Token::Ident(_), _)) => {
-                    let Some((_, loc)) = self.stream.next() else {
-                        unreachable!()
-                    };
-                    (Pattern::Default, loc)
-                }
-                Some((Token::Integer(_, _), _)) => {
-                    let Some((Token::Integer(signed, value), loc)) = self.stream.next() else {
-                        unreachable!()
-                    };
-
-                    (
-                        Pattern::ConstNumber(format!("{}{}", if signed { "-" } else { "" }, value)),
-                        loc,
-                    )
-                }
-                Some((Token::FloatingPoint(_, _), _)) => {
-                    let Some((Token::FloatingPoint(signed, value), loc)) = self.stream.next()
-                    else {
-                        unreachable!()
-                    };
-
-                    (
-                        Pattern::ConstNumber(format!("{}{}", if signed { "-" } else { "" }, value)),
-                        loc,
-                    )
-                }
-                Some((Token::CharLiteral(_), _)) => {
-                    let Some((Token::CharLiteral(c), loc)) = self.stream.next() else {
-                        unreachable!()
-                    };
-                    (Pattern::ConstChar(c), loc)
-                }
-                Some((Token::StringLiteral(_), _)) => {
-                    let Some((Token::StringLiteral(c), loc)) = self.stream.next() else {
-                        unreachable!()
-                    };
-                    (Pattern::ConstStr(c), loc)
-                }
-                Some((Token::True, _)) => {
-                    let Some((_, loc)) = self.stream.next() else {
-                        unreachable!()
-                    };
-                    (Pattern::ConstBool(true), loc)
-                }
-                Some((Token::False, _)) => {
-                    let Some((_, loc)) = self.stream.next() else {
-                        unreachable!()
-                    };
-                    (Pattern::ConstBool(false), loc)
-                }
-                Some((t, loc)) => {
-                    println!("Unexpected token at line : {}, col : {}, epxected identifier or literal but got {:?}", loc.0,loc.1, t);
-                    let advanced_by = self
-                        .stream
-                        .clone()
-                        .skip_while(|(t, _)| match t {
-                            Token::Comma | Token::EndBlock => false,
-                            _ => true,
-                            //this will probably need to be more advance to recover from more situations but should do for now.
-                        })
-                        .collect_vec()
-                        .len();
-                    for _ in 0..advanced_by {
-                        let _ = self.stream.next();
-                    }
-                    continue;
-                }
-                None => {
-                    unreachable!();
-                }
-            };
-
+            let pattern = self.collect_pattern();
+            warnings.extend(pattern.warnings);
+            errors.extend(pattern.errors);
+            let loc = pattern.loc;
+            let cond = dbg!(pattern.ast); 
             if let Some((Token::Arrow, _)) = self.stream.peek() {
                 self.stream.next();
             } else {
@@ -2880,7 +2801,7 @@ where
                             peeked, loc.0, loc.1
                         )
                     }
-                    (Vec::new(), Some(expr.boxed()))
+                    (Vec::new(), Some(dbg!(expr).boxed()))
                 }
             };
             arms.push(ast::MatchArm {
@@ -2909,6 +2830,189 @@ where
             warnings,
             errors,
         }
+    }
+
+    fn collect_pattern(&mut self) -> ParserReturns<Pattern> {
+        let mut warnings = Vec::new();
+        let mut errors = Vec::new();
+        // op should poped beffore this.
+        let (pattern,loc) = match self.stream.clone().next() {
+            Some((Token::Ident(_),_)) => {
+                let Some((Token::Ident(name),loc)) = self.stream.next() else { unreachable!() };
+                if name == "_" {
+                    (Pattern::Default,loc)
+                } else {
+                    // TODO! pattern detection of enum varaints.
+                    (Pattern::Read(name, loc),loc)
+                }
+            },
+            Some((Token::Integer(_, _),_)) => {
+                let Some((Token::Integer(signed,value),loc)) = self.stream.next() else { unreachable!() };
+                (
+                    Pattern::ConstNumber(format!("{}{}", if signed { "-" } else { "" }, value)),
+                    loc,
+                )
+            },
+            Some((Token::FloatingPoint(_, _), _)) => {
+                let Some((Token::FloatingPoint(signed, value), loc)) = self.stream.next()
+                else {
+                    unreachable!()
+                };
+
+                (
+                    Pattern::ConstNumber(format!("{}{}", if signed { "-" } else { "" }, value)),
+                    loc,
+                )
+            },
+            Some((Token::CharLiteral(_), _)) => {
+                let Some((Token::CharLiteral(c), loc)) = self.stream.next() else {
+                    unreachable!()
+                };
+                (Pattern::ConstChar(c), loc)
+            },
+            Some((Token::StringLiteral(_), _)) => {
+                let Some((Token::StringLiteral(c), loc)) = self.stream.next() else {
+                    unreachable!()
+                };
+                (Pattern::ConstStr(c), loc)
+            },
+            Some((Token::True, _)) => {
+                let Some((_, loc)) = self.stream.next() else {
+                    unreachable!()
+                };
+                (Pattern::ConstBool(true), loc)
+            },
+            Some((Token::False, _)) => {
+                let Some((_, loc)) = self.stream.next() else {
+                    unreachable!()
+                };
+                (Pattern::ConstBool(false), loc)
+            },
+
+            Some((Token::GroupOpen,_)) => {
+                let Some((Token::GroupOpen,loc)) = self.stream.next() else { unreachable!() };
+                if let Some((Token::GroupClose,_)) = self.stream.clone().next() {
+                    let _ = self.stream.next();
+                    (Pattern::Destructure(PatternDestructure::Unit),loc)
+                } else {
+                    let first = self.collect_pattern();
+                    warnings.extend(first.warnings);
+                    errors.extend(first.errors);
+                    let first_loc = first.loc;
+                    let mut patterns = vec![first.ast];
+                    loop {
+                        match self.stream.clone().next() {
+                            Some((Token::Comma,_)) => {
+                                let _ = self.stream.next();
+                                let next = self.collect_pattern();
+                                warnings.extend(next.warnings);
+                                errors.extend(next.errors);
+                                patterns.push(next.ast);
+                            },
+                            Some((Token::GroupClose,_)) => {
+                                break;
+                            },
+                            Some((Token::EoF,_))|None => 
+                            {
+                                let _ = self.stream.next();
+                                errors.push(ParseError {
+                                    span:loc,
+                                    reason:ParseErrorReason::UnexpectedEndOfFile
+                                });
+                                break;
+                            }
+                            Some((t,loc)) => {
+                                let _ = self.stream.next();
+                                errors.push(ParseError {
+                                    span:loc,
+                                    reason:ParseErrorReason::UnexpectedToken
+                                });
+                                break;
+                            }
+                        }
+                    }
+                    match self.stream.clone().next() {
+                        Some((Token::GroupClose,_)) => {
+                            let _ = self.stream.next();
+                        },
+                        Some((Token::EoF,_))|None => 
+                        {
+                            
+                            let _ = self.stream.next();
+                            errors.push(ParseError {
+                                span:loc,
+                                reason:ParseErrorReason::UnexpectedEndOfFile
+                            });
+                        }
+                        Some((t,loc)) => {
+                            let n = 
+                                    self.stream.clone()
+                                    .peeking_take_while(|(t,_)| match t {
+                                        Token::Comma | Token::EndBlock =>false,
+                                        Token::Op(op) => op != "|",
+                                        _ => true,
+                                    })
+                                    .collect_vec()
+                                    .len()
+                                    ;
+                            for _ in 0..n {
+                                let _ = self.stream.next();
+                            }
+                            errors.push(ParseError { span: loc, reason: ParseErrorReason::UnexpectedToken });
+                        }
+                    }
+                    if patterns.len() == 1 {
+                        (patterns.pop().unwrap(),first_loc)
+                    } else {
+                        (Pattern::Destructure(PatternDestructure::Tuple(patterns)),loc)
+                    }
+                }
+            }
+            Some((Token::EoF,_))|None => 
+            {
+                let _ = self.stream.next();
+                errors.push(ParseError {
+                    span:(0,0),
+                    reason:ParseErrorReason::UnexpectedEndOfFile
+                });
+                (Pattern::Error,(0,0))
+            }
+            Some((t,loc)) => {
+                errors.push(ParseError { span:loc, reason: ParseErrorReason::UnexpectedToken });
+                let n = 
+                    self.stream.clone()
+                    .peeking_take_while(|(t,_)| match t {
+                        Token::Comma | Token::EndBlock =>false,
+                        Token::Op(op) => op != "|",
+                        _ => true,
+                    })
+                    .collect_vec()
+                    .len()
+                    ;
+                for _ in 0..n {
+                    let _ = self.stream.next();
+                }
+                (Pattern::Error,loc)
+            }
+        };
+        let pattern = if let Some((Token::Op(_),_)) = self.stream.peek() {
+            let Some((Token::Op(op),loc)) = self.stream.next() else { unreachable!() };
+            if op == "|" {
+                let next=self.collect_pattern();
+                warnings.extend(next.warnings);
+                errors.extend(next.errors);
+                Pattern::Or(pattern.boxed(), next.ast.boxed())
+            } else {
+                errors.push(ParseError {
+                    span:loc,
+                    reason:ParseErrorReason::UnexpectedToken
+                });
+                pattern
+            }
+        } else {
+            pattern
+        };
+        ParserReturns { ast: pattern, loc, warnings, errors }
     }
 
     fn array_literal(&mut self) -> ParserReturns<Expr> {
@@ -3182,27 +3286,12 @@ mod tests {
     #[test]
     #[ignore = "This is for singled out tests"]
     fn for_debugging_only() {
-        let mut parser = Parser::from_source("(foo bar) && (baz quz)");
-        assert_eq!(
-            ast::Expr::BinaryOpCall(BinaryOpCall {
-                loc: (0, 11),
-                lhs: ast::Expr::FnCall(FnCall {
-                    loc: (0, 6),
-                    value: ast::Expr::ValueRead("foo".to_string(), (0, 2)).boxed(),
-                    arg: Some(ast::Expr::ValueRead("bar".to_string(), (0, 6)).boxed())
-                })
-                .boxed(),
-                rhs: ast::Expr::FnCall(FnCall {
-                    loc: (0, 19),
-                    value: ast::Expr::ValueRead("baz".to_string(), (0, 15)).boxed(),
-                    arg: Some(ast::Expr::ValueRead("quz".to_string(), (0, 19)).boxed())
-                })
-                .boxed(),
-                operator: "&&".to_string()
-            }),
-            parser.next_expr().ast,
-            "(foo bar) && (baz quz)"
-        );
+        let mut parser = Parser::from_source("
+let a value:(int32,int32)->int32 =
+    match value where
+    | (0,b) | (b,0) -> b,
+    | _ -> 0,");
+        dbg!(parser.declaration().ast);
     }
     #[test]
     fn individual_simple_expressions() {
@@ -4343,7 +4432,7 @@ for<T,U> type Tuple = {
                                 })
                                 .boxed()
                             ),
-                            cond: Pattern::Read("a".to_string()),
+                            cond: Pattern::Read("a".to_string(),(10,6)),
                         },
                     ]
                 })),
@@ -4591,6 +4680,64 @@ let cons a : int32 -> (int32,int32) = (a,0)
                 abi: None
             }),
             cons
+        );
+    }
+
+    #[test]
+    fn match_patterns() {
+        let pattern = Parser::from_source("a").collect_pattern().ast;
+        assert_eq!(
+            Pattern::Read("a".to_string(), (0,0)),
+            pattern,
+            "a"
+        );
+        let pattern = Parser::from_source("_").collect_pattern().ast;
+        assert_eq!(
+            Pattern::Default,
+            pattern,
+            "_"
+        );
+        let pattern = Parser::from_source("(a,b)").collect_pattern().ast;
+        assert_eq!(
+            Pattern::Destructure(PatternDestructure::Tuple(vec![
+                Pattern::Read("a".to_string(),(0,1)),
+                Pattern::Read("b".to_string(),(0,3)),
+            ])),
+            pattern,
+            "destruct tuple"
+        );
+        let pattern = Parser::from_source("0 | 1").collect_pattern().ast;
+        assert_eq!(
+            Pattern::Or(
+                Pattern::ConstNumber("0".to_string()).boxed(),
+                Pattern::ConstNumber("1".to_string()).boxed(),
+            ),
+            pattern,
+            "or (0 or 1)"
+        );
+        let pattern = Parser::from_source("0 | 1 | 2").collect_pattern().ast;
+        assert_eq!(
+            Pattern::Or(
+                Pattern::ConstNumber("0".to_string()).boxed(),
+                Pattern::Or(
+                    Pattern::ConstNumber("1".to_string()).boxed(),
+                    Pattern::ConstNumber("2".to_string()).boxed(),
+                ).boxed()
+            ),
+            pattern,
+            "or (0 or 1 or 2)"
+        );
+        let pattern = Parser::from_source("(0 | 1,b)").collect_pattern().ast;
+        assert_eq!(
+            Pattern::Destructure(PatternDestructure::Tuple(vec![
+                Pattern::Or(
+                    Pattern::ConstNumber("0".to_string()).boxed(),
+                    Pattern::ConstNumber("1".to_string()).boxed(),
+                ),
+                Pattern::Read("b".to_string(),(0,7)),
+            ])),
+            pattern,
+            "destruct tuple"
         );
     }
 

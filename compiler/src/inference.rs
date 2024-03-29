@@ -260,6 +260,7 @@ impl Context {
         let id = self.get_next_expr_id();
         let untyped_ast::Match { loc, on, arms } = match_;
         let on = self.assign_ids_expr(*on, None);
+        let on_t = on.get_retty(self);
         let arms = arms
             .into_iter()
             .map(|arm| {
@@ -273,11 +274,12 @@ impl Context {
                     .into_iter()
                     .map(|stmnt| self.assign_ids_stmnt(stmnt))
                     .collect();
+                let cond = self.assign_ids_pattern(cond, &on_t);
                 let ret = ret.map(|ret| self.assign_ids_expr(*ret, None).boxed());
                 ast::MatchArm {
                     block,
                     ret,
-                    cond: (cond, self.get_next_expr_id()),
+                    cond,
                     loc,
                 }
             })
@@ -289,7 +291,58 @@ impl Context {
             id,
         }
     }
+    fn assign_ids_pattern(
+        &mut self,
+        pattern:untyped_ast::Pattern,
+        on_t : &ResolvedType
+    ) -> ast::Pattern {
+        match pattern {
+            untyped_ast::Pattern::Default => ast::Pattern::Default,
+            untyped_ast::Pattern::ConstNumber(num) => {
+                
+                ast::Pattern::ConstNumber(num, on_t.clone())
+            },
+            untyped_ast::Pattern::ConstStr(s) => ast::Pattern::ConstStr(s),
+            untyped_ast::Pattern::ConstChar(s) => ast::Pattern::ConstChar(s),
+            untyped_ast::Pattern::ConstBool(b) => ast::Pattern::ConstBool(b),
+            untyped_ast::Pattern::Read(name, loc) => {
+                ast::Pattern::Read {
+                    ident:name,
+                    loc,
+                    ty:on_t.clone(),
+                    id:self.get_next_expr_id()
+                }
+            },
+            untyped_ast::Pattern::Destructure(destruction) => {
+                let inner = match destruction {
+                    untyped_ast::PatternDestructure::Struct { fields } => todo!(),
+                    untyped_ast::PatternDestructure::Tuple(values) => { 
+                        let id = self.get_next_expr_id();
+                        if let ResolvedType::Tuple { underlining, .. } = on_t {
 
+                            let values = values.into_iter().zip(underlining).map(|(value,on_t)| self.assign_ids_pattern(value, on_t)).collect();
+                            ast::DestructurePattern::Tuple(values, on_t.clone(), id)
+                        } else {
+                            let values = values.into_iter().map(|value|{ 
+                                let on_t = self.get_next_type_id(); 
+                                self.assign_ids_pattern(value, &on_t)
+                            }).collect();
+                            ast::DestructurePattern::Tuple(values, on_t.clone(), id)
+                        }
+                    },
+                    untyped_ast::PatternDestructure::Unit => ast::DestructurePattern::Unit,
+                };
+                ast::Pattern::Destructure(inner)
+            },
+            untyped_ast::Pattern::Error => ast::Pattern::Err,
+            untyped_ast::Pattern::Or(lhs, rhs) => {
+                ast::Pattern::Or(
+                    self.assign_ids_pattern(*lhs, on_t).boxed(),
+                    self.assign_ids_pattern(*rhs, on_t).boxed()
+                )
+            },
+        }
+    }
     fn assign_ids_call(
         &mut self,
         call: untyped_ast::FnCall,
@@ -570,7 +623,7 @@ impl Context {
                         .iter()
                         .map(|arg| arg.get_ty())
                         .reduce(|ty, arg| ty.fn_ty(&arg));
-                    value.ty = fun.unwrap().fn_ty(&ty.unwrap()); //not sure if this the correct way to handle this.
+                    value.ty = fun.unwrap().fn_ty(&ty.unwrap_or(types::ERROR)); //not sure if this the correct way to handle this.
                 }
             }
             ast::ValueType::External => (),
@@ -857,7 +910,7 @@ impl Context {
                 *result = ety.clone();
                 ety
             }
-            ast::Expr::Match(match_) => self.handle_match(match_, expected, fun_ret_ty),
+            ast::Expr::Match(match_) => self.handle_match(dbg!(match_), expected, fun_ret_ty),
         }
     }
 
@@ -873,20 +926,21 @@ impl Context {
             arms,
             id: _,
         } = match_;
-        let _on_ty = self.get_actual_type(on, None, fun_ret_ty);
+        let on_ty = self.get_actual_type(on, None, fun_ret_ty);
         let mut ety = e_ty.unwrap_or(types::ERROR);
         for ast::MatchArm {
             block,
             ret,
-            cond: _,
+            cond,
             loc: _,
         } in arms.iter_mut()
         {
+            self.add_equation_of_pattern(cond, &on_ty);
             for stmnt in block {
                 self.infer_stmnt(stmnt, fun_ret_ty);
             }
             if let Some(ret) = ret {
-                if ety == types::ERROR || ety.is_unknown() || ety == types::NUMBER {
+                if ety == types::ERROR || ety.is_unknown() {
                     ety = self.get_actual_type(ret, None, fun_ret_ty);
                 } else {
                     self.get_actual_type(ret, Some(ety.clone()), fun_ret_ty);
@@ -899,6 +953,46 @@ impl Context {
             }
         }
         ety
+    }
+
+    fn add_equation_of_pattern(&mut self, pattern:&mut ast::Pattern, on_ty:&ResolvedType) {
+        match pattern {
+            ast::Pattern::Read { ident, loc, ty, id } => {
+                *ty = dbg!(on_ty).clone();
+                self.expr_ty.insert(*id,on_ty.clone());
+                self.known_locals.insert(ident.clone(), on_ty.clone());
+            },
+            ast::Pattern::ConstNumber(num, ty) => {
+                dbg!(num);
+                *ty = dbg!(on_ty).clone();
+            },
+            
+            ast::Pattern::Destructure(d) => {
+                match d {
+                    ast::DestructurePattern::Tuple(contents, ty, id) => {
+                        if let ResolvedType::Tuple { underlining, loc:_ } = on_ty {
+                            self.expr_ty.insert(*id,on_ty.clone());
+                            *ty = on_ty.clone();
+                            for (pat,ty) in contents.iter_mut().zip(underlining) {
+                                self.add_equation_of_pattern(pat, ty);
+                            }
+                        } else {
+                            *ty = types::ERROR
+                            // TODO! error reporting.
+                        }
+                    },
+                    ast::DestructurePattern::Struct { fields } => {
+                        todo!("need to work on destructuring structures");
+                    },
+                    ast::DestructurePattern::Unit => ()
+                }
+            }
+            ast::Pattern::Or(lhs, rhs) => {
+                self.add_equation_of_pattern(lhs.as_mut(), on_ty);
+                self.add_equation_of_pattern(rhs.as_mut(), on_ty);
+            }
+            _=>(),
+        }
     }
 
     fn add_equation_to_arm(&mut self, arm: &mut ast::MatchArm, ty: &ResolvedType) {
@@ -1208,7 +1302,8 @@ impl Context {
         let ast::Match { on, id, arms, .. } = match_;
         if id != sub.0 {
             self.apply_substution_expr(sub, on.as_mut());
-            for ast::MatchArm { block, ret, .. } in arms {
+            for ast::MatchArm { block, ret, cond, .. } in arms {
+                self.apply_substution_pattern(cond,sub);
                 for stmnt in block {
                     self.apply_substution_statement(sub, stmnt);
                 }
@@ -1329,10 +1424,11 @@ impl Context {
         for ast::MatchArm {
             block,
             ret,
-            cond: _, //TODO! for DU patterns and binding patterns
+            cond, //TODO! for DU patterns and binding patterns
             loc: _,
         } in arms
         {
+            self.apply_equation_pattern(cond, id, ty.clone());
             for stmnt in block {
                 self.apply_equation_stmnt(stmnt, id, ty.clone());
             }
@@ -1343,6 +1439,34 @@ impl Context {
             }
         }
         ret_ty
+    }
+
+    fn apply_equation_pattern(&self, pat:&mut ast::Pattern, id:usize, new_ty:ResolvedType) {
+        match pat {
+            ast::Pattern::Read { ty, .. } 
+            | ast::Pattern::ConstNumber(_, ty) => ty.replace_unkown_with(id, new_ty),
+            ast::Pattern::Destructure(d) => {
+                match d {
+                    ast::DestructurePattern::Struct { fields } => {
+                        for field in fields.values_mut() {
+                            self.apply_equation_pattern(field, id, new_ty.clone());
+                        }
+                    },
+                    ast::DestructurePattern::Tuple(patterns, ty, _) => {
+                        ty.replace_unkown_with(id, new_ty.clone());
+                        for pat in patterns {
+                            self.apply_equation_pattern(pat, id, new_ty.clone());
+                        }
+                    },
+                    ast::DestructurePattern::Unit => (),
+                }
+            },
+            ast::Pattern::Or(lhs, rhs) => {
+                self.apply_equation_pattern(lhs.as_mut(), id, new_ty.clone());
+                self.apply_equation_pattern(rhs.as_mut(), id, new_ty);
+            },
+            _ => ()
+        }
     }
 
     fn replace_one_level(&self, expr: &mut ast::Expr, ty: ResolvedType) {
@@ -1533,6 +1657,36 @@ impl Context {
             ast::Expr::Error(_) => types::ERROR, //nothing to do
         }
     }
+    
+    fn apply_substution_pattern(&self, cond: &mut ast::Pattern, (eid,new_ty):(&usize,&ResolvedType)) {
+        match cond {
+            ast::Pattern::Read { id, ty, .. } if id ==eid =>*ty = new_ty.clone(),
+            ast::Pattern::Destructure(d ) => {
+                match d {
+                    ast::DestructurePattern::Tuple(patterns, ty, id) => {
+                        for pat in patterns {
+                            self.apply_substution_pattern(pat, (eid,new_ty));
+                            if id == eid {
+                                *ty = new_ty.clone()
+                            }
+                        }
+                    },
+                    ast::DestructurePattern::Struct { fields } => {
+                        for field in fields.values_mut() {
+                            self.apply_substution_pattern(field, (eid,new_ty))
+                        }
+                    },
+                    ast::DestructurePattern::Unit => ()
+                }
+            }
+            ast::Pattern::Err => (),
+            ast::Pattern::Or(lhs, rhs) =>{
+                self.apply_substution_pattern(lhs.as_mut(), (eid,new_ty));
+                self.apply_substution_pattern(rhs.as_mut(), (eid,new_ty));
+            },
+            _ => (),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1548,9 +1702,7 @@ mod tests {
     use std::collections::HashMap;
 
     use crate::{
-        inference::ast::ValueDeclaration,
-        types::{self, ResolvedType},
-        util::ExtraUtilFunctions,
+        inference::ast::ValueDeclaration, parser::Parser, types::{self, ResolvedType}, util::ExtraUtilFunctions
     };
 
     #[test]
@@ -1709,12 +1861,11 @@ let foo a = match a where
                                         ret: Some(
                                             super::ast::Expr::CharLiteral("a".to_string()).boxed()
                                         ),
-                                        cond: (
-                                            super::untyped_ast::Pattern::ConstNumber(
-                                                "0".to_string()
+                                        cond: 
+                                            super::ast::Pattern::ConstNumber(
+                                                "0".to_string(),
+                                                ResolvedType::Unknown(2),
                                             ),
-                                            4
-                                        ),
                                         loc: (2, 6)
                                     },
                                     super::ast::MatchArm {
@@ -1722,12 +1873,11 @@ let foo a = match a where
                                         ret: Some(
                                             super::ast::Expr::CharLiteral("b".to_string()).boxed()
                                         ),
-                                        cond: (
-                                            super::untyped_ast::Pattern::ConstNumber(
-                                                "1".to_string()
+                                        cond: 
+                                            super::ast::Pattern::ConstNumber(
+                                                "1".to_string(),
+                                                ResolvedType::Unknown(2),
                                             ),
-                                            5
-                                        ),
                                         loc: (3, 6)
                                     },
                                     super::ast::MatchArm {
@@ -1735,12 +1885,13 @@ let foo a = match a where
                                         ret: Some(
                                             super::ast::Expr::CharLiteral("c".to_string()).boxed()
                                         ),
-                                        cond: (
-                                            super::untyped_ast::Pattern::ConstNumber(
-                                                "2".to_string()
-                                            ),
-                                            6
-                                        ),
+                                        cond:
+                                            super::ast::Pattern::ConstNumber(
+                                                "2".to_string(),
+                                                ResolvedType::Unknown(2),
+                                            )
+                                            
+                                        ,
                                         loc: (4, 6)
                                     },
                                     super::ast::MatchArm {
@@ -1748,7 +1899,7 @@ let foo a = match a where
                                         ret: Some(
                                             super::ast::Expr::CharLiteral("d".to_string()).boxed()
                                         ),
-                                        cond: (super::untyped_ast::Pattern::Default, 7),
+                                        cond: super::ast::Pattern::Default,
                                         loc: (5, 6)
                                     },
                                 ],
@@ -2582,5 +2733,180 @@ let main _ : () -> () =
             main,
             "main"
         );
+    }
+
+    #[test]
+    fn patterns() {
+        const SRC : &'static str = "
+let ors (a:int32) = match a where
+    | 1 | 2 | 3 -> 0,
+    | a -> a,
+let tuples (v:(int32,int32)) = match v where
+    | (a,0) -> a,
+    | (1,b) -> b,
+    | _ -> 0,
+    ";
+        let ast = crate::Parser::from_source(SRC).module(String::new()).ast;
+        let dtree = ast.get_dependencies();
+        let dtree = dtree.into_iter().map(|(key,value)| (key,value.into_iter().collect())).collect();
+        let mut inference_ctx = super::Context::new(
+            dtree, 
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new()
+        );
+        let mut ast = inference_ctx.inference(ast);
+        ast.decls.sort_by_key(|decl| decl.get_ident());
+        let [ors,tuples] = &ast.decls[..] else { unreachable!() };
+        assert_eq!(
+            &super::ast::Declaration::Value(super::ast::ValueDeclaration {
+                loc:(1,4),
+                is_op:false,
+                ident:"ors".to_string(),
+                args: vec![
+                    super::ast::ArgDeclaration::Simple { loc: (1,9), ident: "a".to_string(), ty: types::INT32, id: 1 }
+                ],
+                ty:types::INT32.fn_ty(&types::INT32),
+                value:super::ast::ValueType::Expr(super::ast::Expr::Match(super::ast::Match{
+                    loc:(1,20),
+                    on:super::ast::Expr::ValueRead("a".to_string(), (1,26), 3).boxed(),
+                    arms:vec![
+                        super::ast::MatchArm{
+                            block:Vec::new(),
+                            ret:Some(super::ast::Expr::NumericLiteral { value: "0".to_string(), id: 4, ty: types::INT32 }.boxed()),
+                            cond:super::ast::Pattern::Or(
+                                super::ast::Pattern::ConstNumber("1".to_string(), types::INT32).boxed(),
+                                super::ast::Pattern::Or(
+                                    super::ast::Pattern::ConstNumber("2".to_string(), types::INT32).boxed(),
+                                    super::ast::Pattern::ConstNumber("3".to_string(), types::INT32).boxed(),
+                                ).boxed()
+                            ),
+                            loc:(2,6),
+                        },
+                        super::ast::MatchArm {
+                            block:Vec::new(),
+                            ret:Some(super::ast::Expr::ValueRead("a".to_string(), (3,11), 6).boxed()),
+                            cond:super::ast::Pattern::Read { ident: "a".to_string(), loc: (3,6), ty: types::INT32, id: 5 },
+                            loc:(3,6),
+                        }
+                    ],
+                    id:2
+                })),
+                generics:None,
+                abi:None,
+                id:0
+            }),
+            ors
+        );
+
+        assert_eq!(
+            &super::ast::Declaration::Value(super::ast::ValueDeclaration{
+                loc:(4,4),
+                is_op:false,
+                ident:"tuples".to_string(),
+                args:vec![
+                    super::ast::ArgDeclaration::Simple { 
+                        loc: (4,12), 
+                        ident: "v".to_string(), 
+                        ty: ResolvedType::Tuple { 
+                            underlining: vec![
+                                types::INT32,
+                                types::INT32,
+                            ], 
+                            loc: (0,0) 
+                        }, 
+                        id: 8 
+                    }
+                ],
+                ty:ResolvedType::Tuple { 
+                    underlining: vec![
+                        types::INT32,
+                        types::INT32,
+                    ], 
+                    loc: (0,0) 
+                }.fn_ty(&types::INT32),
+                value: super::ast::ValueType::Expr(super::ast::Expr::Match(super::ast::Match{
+                    loc:(4,31),
+                    on:super::ast::Expr::ValueRead("v".to_string(), (4,37), 10).boxed(),
+                    arms:vec![
+                        super::ast::MatchArm {
+                            block:Vec::new(),
+                            ret:Some(super::ast::Expr::ValueRead("a".to_string(), (5,15), 13).boxed()),
+                            cond:super::ast::Pattern::Destructure(super::ast::DestructurePattern::Tuple(
+                                vec![
+                                    super::ast::Pattern::Read { ident: "a".to_string(), loc: (5,7), ty: types::INT32, id: 12 },
+                                    super::ast::Pattern::ConstNumber("0".to_string(),types::INT32),
+                                ],
+                                ResolvedType::Tuple { 
+                                    underlining: vec![
+                                        types::INT32,
+                                        types::INT32,
+                                    ], 
+                                    loc: (0,0) 
+                                },
+                                11
+                            )),
+                            loc:(5,6)
+                        },
+                        super::ast::MatchArm {
+                            block:Vec::new(),
+                            ret:Some(super::ast::Expr::ValueRead("b".to_string(), (6,15), 16).boxed()),
+                            cond:super::ast::Pattern::Destructure(super::ast::DestructurePattern::Tuple(
+                                vec![
+                                    super::ast::Pattern::ConstNumber("1".to_string(),types::INT32),
+                                    super::ast::Pattern::Read { ident: "b".to_string(), loc: (6,9), ty: types::INT32, id: 15 },
+                                ],
+                                ResolvedType::Tuple { 
+                                    underlining: vec![
+                                        types::INT32,
+                                        types::INT32,
+                                    ], 
+                                    loc: (0,0) 
+                                },
+                                14
+                            )),
+                            loc:(6,6)
+                        },
+                        super::ast::MatchArm {
+                            block:Vec::new(),
+                            ret:Some(super::ast::Expr::NumericLiteral { value: "0".to_string(), id: 17, ty: types::INT32 }.boxed()),
+                            cond:super::ast::Pattern::Default,
+                            loc:(7,6)
+                        }
+                    ],
+                    id:9,
+                })),
+                generics:None,
+                abi:None,
+                id:7
+            }),
+            tuples,
+            "tuples"
+        );
+    }
+
+    #[test]
+    #[ignore = "for debugging only"]
+    fn debug() {
+        let parser = Parser::from_source("
+let a value :(int32,int32)->int32 =match value where
+    | (0,b) | (b,0) -> b,
+    | _ -> 0,
+");
+        let ast = parser.module("".to_string()).ast;
+        let dtree = ast.get_dependencies();
+        let dtree = dtree.into_iter().map(|(key,value)| (key,value.into_iter().collect())).collect();
+        let mut inference_ctx = super::Context::new(
+            dtree, 
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new()
+        );
+        let mut ast = inference_ctx.inference(ast);
+        ast.decls.sort_by_key(|decl| decl.get_ident());
+        let [a] = &ast.decls[..] else { unreachable!() };
+        println!("{a:#?}");
     }
 }
