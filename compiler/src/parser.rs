@@ -1245,7 +1245,7 @@ where
                                 break;
                             }
                             Some((Token::Comma, _)) => {
-                                self.stream.next();
+                                continue
                             }
                             _ => {
                                 errors.push(ParseError {
@@ -1495,7 +1495,8 @@ where
             });
         }
         let next = self.stream.clone().next();
-        match next {
+        println!("{abi:?} \n{generics:?}\n{errors:?}");
+        match dbg!(next) {
             Some((Token::For, loc)) => {
                 errors.push(ParseError {
                     span: loc,
@@ -1505,7 +1506,7 @@ where
                     ast: ast::Declaration::Value(ValueDeclaration {
                         loc,
                         is_op: false,
-                        ident: "<error>".to_string(),
+                        kind: ast::DeclarationKind::Simple { ident:"<error>".to_string(), loc },
                         args: vec![ArgDeclaration::Simple {
                             loc,
                             ident: "<error>".to_string(),
@@ -2115,7 +2116,7 @@ where
                         ast: ValueDeclaration {
                             loc: ident_span,
                             is_op: false,
-                            ident: "<error>".to_string(),
+                            kind: ast::DeclarationKind::Simple { ident:"<error>".to_string(), loc:ident_span },
                             args: vec![ArgDeclaration::Simple {
                                 loc: (0, 0),
                                 ident: "<error>".to_string(),
@@ -2168,7 +2169,7 @@ where
                     ast: ValueDeclaration {
                         loc: ident_span,
                         is_op,
-                        ident,
+                        kind: ast::DeclarationKind::Simple { ident, loc:ident_span },
                         args,
                         ty: Some(types::ERROR),
                         value: ValueType::Expr(ast::Expr::Error),
@@ -2191,6 +2192,7 @@ where
             } else {
                 None
             };
+            println!("ty = {ty:?}");
 
             let op = match self.stream.next() {
                 Some((Token::Op(op), _)) => op,
@@ -2204,7 +2206,7 @@ where
                             ast: ValueDeclaration {
                                 loc: ident_span,
                                 is_op,
-                                ident,
+                                kind: ast::DeclarationKind::Simple { ident, loc:ident_span },
                                 args,
                                 ty,
                                 value: ValueType::Expr(Expr::Error),
@@ -2224,7 +2226,7 @@ where
                             ast: ValueDeclaration {
                                 loc: ident_span,
                                 is_op,
-                                ident,
+                                kind: ast::DeclarationKind::Simple { ident, loc:ident_span },
                                 args,
                                 ty,
                                 value: ValueType::Expr(Expr::Error),
@@ -2240,7 +2242,7 @@ where
                             ast: ValueDeclaration {
                                 loc: ident_span,
                                 is_op,
-                                ident,
+                                kind: ast::DeclarationKind::Simple { ident, loc:ident_span },
                                 args,
                                 ty,
                                 value: ValueType::External,
@@ -2263,7 +2265,7 @@ where
                         ast: ValueDeclaration {
                             loc: ident_span,
                             is_op,
-                            ident,
+                            kind: ast::DeclarationKind::Simple { ident, loc:ident_span },
                             args,
                             ty,
                             value: ValueType::Expr(Expr::Error),
@@ -2287,7 +2289,7 @@ where
                     ast: ValueDeclaration {
                         loc: ident_span,
                         is_op,
-                        ident,
+                        kind: ast::DeclarationKind::Simple { ident, loc:ident_span },
                         args,
                         ty,
                         value: ValueType::Expr(Expr::Error),
@@ -2327,7 +2329,7 @@ where
                         ast: ValueDeclaration {
                             loc: ident_span,
                             is_op,
-                            ident,
+                            kind: ast::DeclarationKind::Simple { ident, loc:ident_span },
                             args,
                             ty,
                             value: ValueType::Expr(Expr::Error),
@@ -2362,7 +2364,7 @@ where
                 ast: ValueDeclaration {
                     loc: ident_span,
                     is_op,
-                    ident,
+                    kind: ast::DeclarationKind::Simple { ident, loc:ident_span },
                     args,
                     ty,
                     value,
@@ -2378,7 +2380,7 @@ where
             ast: ValueDeclaration {
                 loc: (0, 0),
                 is_op: false,
-                ident: "<error>".to_string(),
+                kind: ast::DeclarationKind::Simple { ident:"<error>".to_string(), loc:(0,0) },
                 args: vec![ArgDeclaration::Simple {
                     loc: (0, 0),
                     ident: "<error>".to_string(),
@@ -3301,7 +3303,7 @@ let a value:(int32,int32)->int32 =
             Statement::Declaration(ValueDeclaration {
                 loc: (0, 4),
                 is_op: false,
-                ident: "foo".to_owned(),
+                kind:ast::DeclarationKind::Simple{ ident: "foo".to_owned(), loc:(0,4) },
                 ty: Some(types::INT32),
                 args: Vec::new(),
                 value: ValueType::Expr(Expr::NumericLiteral {
@@ -3321,7 +3323,7 @@ let a value:(int32,int32)->int32 =
             ast::Declaration::Value(ValueDeclaration {
                 loc: (0, 4),
                 is_op: false,
-                ident: "foo".to_owned(),
+                kind: ast::DeclarationKind::Simple { ident: "foo".to_owned(), loc:(0,4) },
                 ty: Some(ResolvedType::Function {
                     arg: types::INT32.boxed(),
                     returns: types::INT32.boxed(),
@@ -3352,7 +3354,7 @@ let foo _ : ( int32 -> int32 ) -> int32 =
             Statement::Declaration(ValueDeclaration {
                 loc: (1, 4),
                 is_op: false,
-                ident: "foo".to_owned(),
+                kind: ast::DeclarationKind::Simple { ident:"foo".to_owned(), loc:(1,4) },
                 ty: Some(ResolvedType::Function {
                     arg: ResolvedType::Function {
                         arg: types::INT32.boxed(),
@@ -3385,7 +3387,7 @@ let foo _ : int32 -> ( int32 -> int32 ) =
             Statement::Declaration(ValueDeclaration {
                 loc: (1, 4),
                 is_op: false,
-                ident: "foo".to_owned(),
+                kind:ast::DeclarationKind::Simple{ ident: "foo".to_owned(), loc:(1,4) },
                 ty: Some(ResolvedType::Function {
                     arg: types::INT32.boxed(),
                     returns: ResolvedType::Function {
@@ -3419,7 +3421,7 @@ let foo _ : int32 -> ( int32 -> int32 ) =
             ast::Declaration::Value(ValueDeclaration {
                 loc: (0, 4),
                 is_op: false,
-                ident: "foo".to_owned(),
+                kind:ast::DeclarationKind::Simple{ ident: "foo".to_owned(), loc:(0,4) },
                 ty: Some(types::INT32),
                 args: Vec::new(),
                 value: ValueType::Expr(Expr::NumericLiteral {
@@ -3435,7 +3437,7 @@ let foo _ : int32 -> ( int32 -> int32 ) =
             ast::Declaration::Value(ValueDeclaration {
                 loc: (2, 4),
                 is_op: false,
-                ident: "bar".to_owned(),
+                kind:ast::DeclarationKind::Simple{ ident: "bar".to_owned(), loc:(2,4) },
                 ty: Some(ResolvedType::Function {
                     arg: types::INT32.boxed(),
                     returns: types::INT32.boxed(),
@@ -3450,7 +3452,7 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                     Statement::Declaration(ValueDeclaration {
                         loc: (3, 8),
                         is_op: false,
-                        ident: "baz".to_owned(),
+                        kind:ast::DeclarationKind::Simple{ ident: "baz".to_owned(), loc:(3,8) },
                         ty: Some(types::STR),
                         args: Vec::new(),
                         value: ValueType::Expr(Expr::StringLiteral(r#"merp " yes"#.to_string())),
@@ -3474,7 +3476,8 @@ let foo _ : int32 -> ( int32 -> int32 ) =
             ast::Declaration::Value(ValueDeclaration {
                 loc: (6, 4),
                 is_op: true,
-                ident: "^^".to_owned(),
+                
+                kind:ast::DeclarationKind::Simple{ ident: "^^".to_owned(), loc:(6,4) },
                 ty: Some(ResolvedType::Function {
                     arg: types::INT32.boxed(),
                     returns: ResolvedType::Function {
@@ -3531,7 +3534,8 @@ let main _ : int32 -> int32 =
             Statement::Declaration(ValueDeclaration {
                 loc: (1, 4),
                 is_op: false,
-                ident: "main".to_string(),
+                
+                kind:ast::DeclarationKind::Simple{ ident: "main".to_owned(), loc:(1,4) },
                 ty: Some(ResolvedType::Function {
                     arg: types::INT32.boxed(),
                     returns: types::INT32.boxed(),
@@ -3620,7 +3624,7 @@ let main _ : int32 -> int32 =
             Statement::Declaration(ValueDeclaration {
                 loc: (0, 4),
                 is_op: false,
-                ident: "main".to_owned(),
+                kind:ast::DeclarationKind::Simple{ ident: "main".to_owned(), loc:(0,4) },
                 ty: None,
                 args: vec![ast::ArgDeclaration::Discard{ty:None,loc:(0,9)}],
                 value: ValueType::Function(vec![
@@ -3719,7 +3723,7 @@ let main _ : int32 -> int32 =
             ast::Declaration::Value(ValueDeclaration {
                 loc: (0, 11),
                 is_op: false,
-                ident: "test".to_string(),
+                kind:ast::DeclarationKind::Simple{ ident: "test".to_owned(), loc:(0,11) },
                 args: vec![ast::ArgDeclaration::Simple {
                     loc: (0, 16),
                     ident: "a".to_string(),
@@ -3815,7 +3819,7 @@ for<T,U> type Tuple = {
             ast::Declaration::Value(ValueDeclaration {
                 loc: (0, 4),
                 is_op: false,
-                ident: "foo".to_string(),
+                kind:ast::DeclarationKind::Simple{ ident: "foo".to_owned(), loc:(0,4) },
                 args: vec![
                     ArgDeclaration::Simple {
                         loc: (0, 8),
@@ -3908,7 +3912,7 @@ for<T,U> type Tuple = {
             ast::Declaration::Value(ValueDeclaration {
                 loc: (0, 4),
                 is_op: false,
-                ident: "inline_expr".to_string(),
+                kind:ast::DeclarationKind::Simple{ ident: "inline_expr".to_owned(), loc:(0,4) },
                 args: vec![ast::ArgDeclaration::Simple {
                     ident: "a".to_string(),
                     loc: (0, 16),
@@ -3949,7 +3953,7 @@ for<T,U> type Tuple = {
             ast::Declaration::Value(ValueDeclaration {
                 loc: (2, 4),
                 is_op: false,
-                ident: "out_of_line_expr".to_string(),
+                kind:ast::DeclarationKind::Simple{ ident: "out_of_line_expr".to_owned(), loc:(2,4) },
                 args: vec![ast::ArgDeclaration::Simple {
                     ident: "a".to_string(),
                     loc: (2, 21),
@@ -3997,7 +4001,7 @@ for<T,U> type Tuple = {
             ast::Declaration::Value(ValueDeclaration {
                 loc: (7, 4),
                 is_op: false,
-                ident: "expr_with_statement".to_string(),
+                kind:ast::DeclarationKind::Simple{ ident: "expr_with_statement".to_owned(), loc:(7,4) },
                 args: vec![ast::ArgDeclaration::Simple {
                     loc: (7, 24),
                     ident: "a".to_string(),
@@ -4056,7 +4060,7 @@ for<T,U> type Tuple = {
             ast::Declaration::Value(ValueDeclaration {
                 loc: (14, 4),
                 is_op: false,
-                ident: "expr_with_else_if".to_string(),
+                kind:ast::DeclarationKind::Simple{ ident: "expr_with_else_if".to_owned(), loc:(14,4) },
                 args: vec![
                     ast::ArgDeclaration::Simple {
                         loc: (14, 22),
@@ -4116,7 +4120,7 @@ for<T,U> type Tuple = {
             ast::Declaration::Value(ValueDeclaration {
                 loc: (16, 4),
                 is_op: false,
-                ident: "statement".to_string(),
+                kind:ast::DeclarationKind::Simple{ ident: "statement".to_owned(), loc:(16,4) },
                 args: vec![ast::ArgDeclaration::Simple {
                     loc: (16, 14),
                     ident: "a".to_string(),
@@ -4179,7 +4183,7 @@ for<T,U> type Tuple = {
             ast::Declaration::Value(ValueDeclaration {
                 loc: (24, 4),
                 is_op: false,
-                ident: "statement_with_else_if".to_string(),
+                kind:ast::DeclarationKind::Simple{ ident: "statement_with_else_if".to_owned(), loc:(24,4) },
                 args: vec![
                     ast::ArgDeclaration::Simple {
                         loc: (24, 27),
@@ -4238,7 +4242,7 @@ for<T,U> type Tuple = {
             ast::Declaration::Value(ValueDeclaration {
                 loc: (32, 4),
                 is_op: false,
-                ident: "expr_multi_with_elseif".to_string(),
+                kind:ast::DeclarationKind::Simple{ ident: "expr_multi_with_elseif".to_owned(), loc:(32,4) },
                 args: vec![
                     ast::ArgDeclaration::Simple {
                         loc: (32, 27),
@@ -4302,7 +4306,7 @@ for<T,U> type Tuple = {
             ast::Declaration::Value(ValueDeclaration {
                 loc: (0, 4),
                 is_op: false,
-                ident: "match_expr_ints".to_string(),
+                kind:ast::DeclarationKind::Simple{ ident: "match_expr_ints".to_owned(), loc:(0,4) },
                 args: vec![ast::ArgDeclaration::Simple {
                     loc: (0, 20),
                     ident: "x".to_string(),
@@ -4363,7 +4367,7 @@ for<T,U> type Tuple = {
             ast::Declaration::Value(ValueDeclaration {
                 loc: (5, 4),
                 is_op: false,
-                ident: "match_expr_with_block".to_string(),
+                kind:ast::DeclarationKind::Simple{ ident: "match_expr_with_block".to_owned(), loc:(5,4) },
                 args: vec![ArgDeclaration::Simple {
                     loc: (5, 26),
                     ident: "x".to_string(),
@@ -4383,7 +4387,7 @@ for<T,U> type Tuple = {
                             block: vec![ast::Statement::Declaration(ValueDeclaration {
                                 loc: (7, 12),
                                 is_op: false,
-                                ident: "a".to_string(),
+                                kind:ast::DeclarationKind::Simple{ ident: "a".to_owned(), loc:(7,12) },
                                 args: Vec::new(),
                                 ty: Some(types::INT32),
                                 value: ValueType::Expr(ast::Expr::NumericLiteral {
@@ -4446,7 +4450,7 @@ for<T,U> type Tuple = {
             ast::Declaration::Value(ValueDeclaration {
                 loc: (12, 4),
                 is_op: false,
-                ident: "match_statement".to_string(),
+                kind:ast::DeclarationKind::Simple{ ident: "match_statement".to_owned(), loc:(12,4) },
                 args: vec![ArgDeclaration::Simple {
                     loc: (12, 20),
                     ident: "x".to_string(),
@@ -4524,13 +4528,12 @@ for<T,U> type Tuple = {
         const SRC: &'static str = r#"
 let arr = [0,0,0,0];
 "#;
-
         let arr = Parser::from_source(SRC).declaration().ast;
         assert_eq!(
             ast::Declaration::Value(ast::ValueDeclaration {
                 loc: (1, 4),
                 is_op: false,
-                ident: "arr".to_string(),
+                kind:ast::DeclarationKind::Simple{ ident: "arr".to_owned(), loc:(1,4) },
                 args: Vec::new(),
                 ty: None,
                 value: ast::ValueType::Expr(ast::Expr::ArrayLiteral {
@@ -4571,7 +4574,7 @@ extern "C" let ex (a:int32) b = a + b;
             ast::Declaration::Value(ValueDeclaration {
                 loc: (1, 15),
                 is_op: false,
-                ident: "putchar".to_string(),
+                kind:ast::DeclarationKind::Simple{ ident: "putchar".to_owned(), loc:(1,15) },
                 args: Vec::new(),
                 ty: Some(types::INT32.fn_ty(&types::INT32)),
                 value: ValueType::External,
@@ -4588,7 +4591,7 @@ extern "C" let ex (a:int32) b = a + b;
             ast::Declaration::Value(ValueDeclaration {
                 loc: (2, 15),
                 is_op: false,
-                ident: "ex".to_string(),
+                kind:ast::DeclarationKind::Simple{ ident: "ex".to_owned(), loc:(2,15) },
                 args: vec![
                     ast::ArgDeclaration::Simple {
                         loc: (2, 19),
@@ -4635,7 +4638,7 @@ let cons a : int32 -> (int32,int32) = (a,0)
             &ast::Declaration::Value(ValueDeclaration {
                 loc: (1, 4),
                 is_op: false,
-                ident: "ty".to_string(),
+                kind:ast::DeclarationKind::Simple{ ident: "ty".to_owned(), loc:(1,4) },
                 args: vec![ArgDeclaration::Discard {ty:None,loc:(1,7)}],
                 ty: Some(
                     ResolvedType::Tuple {
@@ -4657,7 +4660,7 @@ let cons a : int32 -> (int32,int32) = (a,0)
             &ast::Declaration::Value(ValueDeclaration {
                 loc: (3, 4),
                 is_op: false,
-                ident: "cons".to_string(),
+                kind:ast::DeclarationKind::Simple{ ident: "cons".to_owned(), loc:(3,4) },
                 args: vec![ArgDeclaration::Simple {
                     loc: (3, 9),
                     ident: "a".to_string(),
@@ -4757,7 +4760,7 @@ let unit () = ();
             &Declaration::Value(ValueDeclaration{
                 loc:(1,4),
                 is_op:false,
-                ident:"simple".to_string(),
+                kind:ast::DeclarationKind::Simple{ ident: "simple".to_owned(), loc:(1,4) },
                 args:vec![
                     ArgDeclaration::Simple {
                         loc: (1,11),
@@ -4777,7 +4780,7 @@ let unit () = ();
             &Declaration::Value(ValueDeclaration{
                 loc:(2,4),
                 is_op:false,
-                ident:"decon_arg".to_string(),
+                kind:ast::DeclarationKind::Simple{ ident: "decon_arg".to_owned(), loc:(2,4) },
                 args:vec![
                     ArgDeclaration::DestructureTuple(vec![
                         ArgDeclaration::Simple {
@@ -4805,7 +4808,7 @@ let unit () = ();
             &Declaration::Value(ValueDeclaration{
                 loc:(3,4),
                 is_op:false,
-                ident:"discard".to_string(),
+                kind:ast::DeclarationKind::Simple{ ident: "discard".to_owned(), loc:(3,4) },
                 args:vec![
                     ArgDeclaration::Discard{
                         loc: (3,12),
@@ -4824,7 +4827,7 @@ let unit () = ();
             &Declaration::Value(ValueDeclaration{
                 loc:(4,4),
                 is_op:false,
-                ident:"unit".to_string(),
+                kind:ast::DeclarationKind::Simple{ ident: "unit".to_owned(), loc:(4,4) },
                 args:vec![
                     ArgDeclaration::Unit {
                         loc:(4,9),

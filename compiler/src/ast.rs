@@ -52,9 +52,10 @@ impl ModuleDeclaration {
                     if v.value == ValueType::External {
                         continue;
                     }
-                    let old = v.ident.clone();
-                    v.ident = path.iter().cloned().join("::") + "::" + &v.ident;
-                    (old, v.ident.clone())
+                    let DeclarationKind::Simple { ident, .. } = &mut v.kind else { unreachable!() };
+                    let old = ident.clone();
+                    *ident = path.iter().cloned().join("::") + "::" + &ident;
+                    (old, ident.clone())
                 }
                 Declaration::TypeDefinition(def) => {
                     let old = def.get_ident();
@@ -106,7 +107,10 @@ impl Declaration {
     fn get_dependencies(&self) -> HashMap<String, HashSet<String>> {
         match self {
             Declaration::Mod(m) => m.get_dependencies(),
-            Declaration::Value(v) => [(v.ident.clone(), v.get_dependencies())].into(),
+            Declaration::Value(v) =>{
+                let DeclarationKind::Simple { ident, .. } = &v.kind else { return [].into() };
+                [(ident.clone(), v.get_dependencies())].into()
+            } ,
             Declaration::TypeDefinition(_) => [].into(),
         }
     }
@@ -261,10 +265,36 @@ pub struct Abi {
 }
 
 #[derive(PartialEq, Debug)]
+pub enum DeclarationKind {
+    Unit,
+    Simple {
+        ident : String,
+        loc : crate::Location,
+    },
+    TupleDeconstruction(Vec<Self>),
+    Discard(crate::Location),
+    #[allow(unused)]
+    /// TODO! struct deconstructions
+    StructDeconstruction(()),
+}
+
+impl DeclarationKind {
+    fn get_names(&self) -> HashSet<String> {
+        match self {
+            Self::StructDeconstruction(()) => todo!("struct deconstruction"),
+            Self::Unit
+            | Self::Discard(_)=>HashSet::new(),
+            Self::Simple { ident, .. } => [ident.clone()].into(),
+            Self::TupleDeconstruction(inner) => inner.iter().flat_map(Self::get_names).collect(),
+        }
+    }
+}
+
+#[derive(PartialEq, Debug)]
 pub struct ValueDeclaration {
     pub loc: crate::Location, //should be location of the ident.
     pub is_op: bool,
-    pub ident: String,
+    pub kind: DeclarationKind,
     pub args: Vec<ArgDeclaration>,
     pub ty: Option<ResolvedType>,
     pub value: ValueType,
@@ -331,7 +361,7 @@ impl ValueType {
                         |(mut known_values, mut dependencies), stmnt| {
                             dependencies.extend(stmnt.get_dependencies(known_values.clone()));
                             if let Statement::Declaration(decl) = &stmnt {
-                                known_values.push(decl.ident.clone())
+                                known_values.extend(decl.kind.get_names());
                             }
                             (known_values, dependencies)
                         },
@@ -391,7 +421,7 @@ impl Statement {
                     for stmnt in &if_.true_branch {
                         dependencies.extend(stmnt.get_dependencies(known_values.clone()));
                         if let Statement::Declaration(decl) = stmnt {
-                            known_values.push(decl.ident.clone());
+                            known_values.extend(decl.kind.get_names());
                         }
                     }
                 }
@@ -402,7 +432,7 @@ impl Statement {
                         for stmnt in &elif.1 {
                             dependencies.extend(stmnt.get_dependencies(known_values.clone()));
                             if let Statement::Declaration(decl) = stmnt {
-                                known_values.push(decl.ident.clone());
+                                known_values.extend(decl.kind.get_names());
                             }
                         }
                     }
@@ -412,7 +442,7 @@ impl Statement {
                     for stmnt in &if_.else_branch {
                         dependencies.extend(stmnt.get_dependencies(known_values.clone()));
                         if let Statement::Declaration(decl) = stmnt {
-                            known_values.push(decl.ident.clone());
+                            known_values.extend(decl.kind.get_names());
                         }
                     }
                 }
@@ -426,7 +456,7 @@ impl Statement {
                         for stmnt in &arm.block {
                             dependencies.extend(stmnt.get_dependencies(known_values.clone()));
                             if let Statement::Declaration(decl) = stmnt {
-                                known_values.push(decl.ident.clone());
+                                known_values.extend(decl.kind.get_names());
                             }
                         }
                         if let Some(ret) = &arm.ret {
@@ -675,7 +705,7 @@ impl Expr {
                     for stmnt in &if_.true_branch.0 {
                         dependencies.extend(stmnt.get_dependencies(known_values.clone()));
                         if let Statement::Declaration(decl) = stmnt {
-                            known_values.push(decl.ident.clone());
+                            known_values.extend(decl.kind.get_names());
                         }
                     }
                     dependencies.extend(if_.true_branch.1.get_dependencies(known_values));
@@ -687,7 +717,7 @@ impl Expr {
                         for stmnt in &elif.1 {
                             dependencies.extend(stmnt.get_dependencies(known_values.clone()));
                             if let Statement::Declaration(decl) = stmnt {
-                                known_values.push(decl.ident.clone());
+                                known_values.extend(decl.kind.get_names());
                             }
                         }
                         dependencies.extend(elif.2.get_dependencies(known_values));
@@ -698,7 +728,7 @@ impl Expr {
                     for stmnt in &if_.else_branch.0 {
                         dependencies.extend(stmnt.get_dependencies(known_values.clone()));
                         if let Statement::Declaration(decl) = stmnt {
-                            known_values.push(decl.ident.clone());
+                            known_values.extend(decl.kind.get_names());
                         }
                     }
                     dependencies.extend(if_.else_branch.1.get_dependencies(known_values));
@@ -713,7 +743,7 @@ impl Expr {
                         for stmnt in &arm.block {
                             dependencies.extend(stmnt.get_dependencies(known_values.clone()));
                             if let Statement::Declaration(decl) = stmnt {
-                                known_values.push(decl.ident.clone());
+                                known_values.extend(decl.kind.get_names());
                             }
                         }
                         if let Some(ret) = &arm.ret {
@@ -783,6 +813,10 @@ pub struct MatchArm {
 }
 impl MatchArm {
     fn replace(&mut self, nice_name: &str, actual: &str) {
+        let names = self.cond.get_idents();
+        if names.contains(nice_name) {
+            return;
+        }
         for stmnt in &mut self.block {
             stmnt.replace(nice_name, actual);
         }
@@ -815,6 +849,21 @@ pub enum Pattern {
     // todo! variant patterns.
 }
 
+impl Pattern {
+    fn get_idents(&self) -> HashSet<String> {
+        match self {
+            Self::Read(name, _) => [name.clone()].into(),
+            Self::Destructure(d) => d.get_idents(),
+            Self::Or(lhs,rhs) => {
+                let mut idents = lhs.get_idents();
+                idents.extend(rhs.get_idents());
+                idents
+            }
+            _ => HashSet::new(),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum PatternDestructure {
     Struct {
@@ -822,4 +871,13 @@ pub enum PatternDestructure {
     },
     Tuple(Vec<Pattern>),
     Unit,
+}
+impl PatternDestructure {
+    fn get_idents(&self) -> HashSet<String> {
+        match self {
+            Self::Tuple(pats) => pats.iter().flat_map(Pattern::get_idents).collect(),
+            Self::Struct { fields } => todo!("struct destructuring"),
+            Self::Unit => HashSet::new(),
+        }
+    }
 }

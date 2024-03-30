@@ -2639,7 +2639,7 @@ impl TypedMatch {
     }
 
     pub fn get_ty(&self) -> ResolvedType {
-        if self
+        if dbg!(self)
             .arms
             .iter()
             .map(|it| it.ret.as_ref().map(|it| it.get_ty()))
@@ -2656,7 +2656,7 @@ impl TypedMatch {
                 .map(|it| it.ret.as_ref().map(|it| it.get_ty()).unwrap_or(types::UNIT))
                 .filter(ResolvedType::is_error)
                 .counts();
-            let most_common = types
+            let most_common = dbg!(types)
                 .iter()
                 .max_by_key(|(_, it)| *it)
                 .map(|(it, _)| it)
@@ -3055,8 +3055,8 @@ mod tests {
     #[ignore = "for debugging only"]
     fn debugging() {
         const SRC: &'static str = r#"
-let a value :(int32,int32)->int32 = match value where
-    | (0,b) | (b,0) -> b,
+let b value : (int32,(int32,int32)) -> int32 = match value where
+    | (0, (0,b) | (b,0) ) | (b,_) -> b,
     | _ -> 0,
 "#;
         let parser = Parser::from_source(SRC);

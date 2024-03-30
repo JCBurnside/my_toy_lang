@@ -2538,6 +2538,147 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
 
+    fn compile_complex_pattern(
+        &mut self,
+        pat:TypedPattern,
+        fun : FunctionValue<'ctx>,
+        cond_v : &BasicValueEnum<'ctx>,
+        cond_ty : &ResolvedType,
+        curr_block : BasicBlock<'ctx>,
+        next_block : BasicBlock<'ctx>,
+        bindings_block : BasicBlock<'ctx>,
+        bindings_phi : &mut HashMap<String,PhiValue<'ctx>>,
+        bindings_to_make : &mut HashMap<String,BasicValueEnum<'ctx>>,
+    ) -> BasicBlock<'ctx> {
+        if pat.is_simple() {
+            let value = self.compile_pattern_simple(pat, cond_v, cond_ty);
+            for (name,value) in bindings_to_make {
+                let phi = bindings_phi[name];
+                phi.add_incoming(&[(value,curr_block)]);
+            }
+            self.builder.build_conditional_branch(value, bindings_block, next_block);
+            return curr_block;
+        }
+
+        match pat {
+            TypedPattern::Destructure(TypedDestructure::Tuple(conds)) => {
+                let ResolvedType::Tuple { underlining, .. } = cond_ty else { unreachable!() };
+                let tuple_ty = self.type_resolver.resolve_type_as_basic(cond_ty.clone());
+                let mut conds = conds
+                    .into_iter()
+                    .zip(underlining)
+                    .enumerate()
+                    .map(|(idx,(cond,ty))| {
+                        (cond,idx,ty)
+                    })
+                    .into_group_map_by(|(cond,_,_)| cond.is_simple());
+                let simple = if let Some((_,simple_conds)) = conds.remove_entry(&true) {
+                    simple_conds.into_iter()
+                    .map(|(pat,idx,ty)| {
+                        let value = self.builder.build_struct_gep(tuple_ty, cond_v.into_pointer_value(), idx as _, "").unwrap();
+                        self.compile_pattern_simple(pat, &value.as_basic_value_enum(), ty)
+                    })
+                    .collect_vec()
+                    .into_iter()
+                    .reduce(|accum,next| {
+                        self.builder.build_and(accum,next,"").unwrap()
+                    }).expect("if there is no simple conditions then how did we end up here?")
+                } else {
+                    self.ctx.bool_type().const_int(1, false)
+                };
+                let new_block = self.ctx.append_basic_block(fun, "arm");
+                new_block.move_after(curr_block);
+                self.builder.build_conditional_branch(simple, new_block, next_block);
+                self.builder.position_at_end(new_block);
+                let mut curr_block = new_block;
+                let mut complex = conds.remove_entry(&false).map(|(_,a)| a).unwrap_or_else(Vec::new);
+                complex.sort_by_key(|(pat,_,_)| {
+                    match pat {
+                        TypedPattern::Read(_, _, _) => 0,
+                        TypedPattern::Or(_, _) => 2,
+                        // not much should be here as most else will be classed as simple.
+                        _ => 1,
+                    }
+                });
+                for (pat,idx,ty) in complex {
+                    let value = self.builder.build_struct_gep(tuple_ty, cond_v.into_pointer_value(), idx as _, "").unwrap();
+                    if let TypedPattern::Read(name, _, _) = pat {
+                        bindings_to_make.insert(name,value.as_basic_value_enum());
+                    } else {
+                        curr_block = self.compile_complex_pattern(
+                            pat, 
+                            fun, 
+                            &value.as_basic_value_enum(), 
+                            ty, 
+                            curr_block, 
+                            next_block, 
+                            bindings_block, 
+                            bindings_phi, 
+                            bindings_to_make
+                        );
+                    }
+                }
+                curr_block
+            },
+            TypedPattern::Destructure(_) => todo!("other kinds of destructure"),
+            TypedPattern::Or(lhs, rhs) => {
+                let rhs_block = self.ctx.append_basic_block(fun, "arm");
+                rhs_block.move_after(curr_block);
+                let mut lhs_bindings = bindings_to_make.clone();
+                let curr_block = self.compile_complex_pattern(
+                    *lhs, 
+                    fun, 
+                    cond_v, 
+                    cond_ty, 
+                    curr_block, 
+                    rhs_block, 
+                    bindings_block, 
+                    bindings_phi, 
+                    &mut lhs_bindings,
+                );
+                for (name,value) in lhs_bindings {
+                    bindings_phi[&name].add_incoming(&[(&value,curr_block)]);
+                }
+                self.builder.build_unconditional_branch(bindings_block);
+                self.builder.position_at_end(rhs_block);
+                let curr_block = self.compile_complex_pattern(
+                    *rhs, 
+                    fun, 
+                    cond_v, 
+                    cond_ty, 
+                    curr_block, 
+                    next_block, 
+                    bindings_block, 
+                    bindings_phi, 
+                    bindings_to_make
+                );
+                for (name,value) in bindings_to_make {
+                    bindings_phi[name].add_incoming(&[(value,curr_block)]);
+                }
+                self.builder.build_unconditional_branch(bindings_block);
+                curr_block
+            }
+            TypedPattern::Read(name, _, _) => {
+                bindings_phi[&name].add_incoming(&[(cond_v,curr_block)]);
+                for (name,value) in bindings_to_make {
+                    bindings_phi[name].add_incoming(&[(value,curr_block)]);
+                }
+                self.builder.build_unconditional_branch(next_block);
+                curr_block
+            }
+            TypedPattern::Default => {
+                for (name,value) in bindings_to_make {
+                    bindings_phi[name].add_incoming(&[(value,curr_block)]);
+                }
+                self.builder.build_unconditional_branch(next_block);
+                curr_block
+            },
+            // handled by the simple case
+            TypedPattern::Const(_, _) => curr_block,
+            TypedPattern::Err => unreachable!()
+        }
+    }
+
     fn compile_pattern(
         &mut self,
         pat : TypedPattern,
@@ -2600,9 +2741,22 @@ impl<'ctx> CodeGen<'ctx> {
                         }
                     }.unwrap();
                 },
-                _ => unreachable!("not sure what to do here yet"),
+
+                _ =>{ 
+                    let mut bindings = HashMap::new();
+                    self.compile_complex_pattern(
+                        pat, 
+                        fun, 
+                        cond_v, 
+                        cond_ty, 
+                        curr_block, 
+                        next_block, 
+                        bindings_block, 
+                        bindings_phi, 
+                        &mut bindings,
+                    );
+                },
             }
-        
     }
 
     fn compile_arm(

@@ -149,14 +149,14 @@ impl Context {
         let untyped_ast::ValueDeclaration {
             loc,
             is_op,
-            ident,
+            kind,
             args,
             ty,
             value,
             generictypes,
             abi,
         } = val;
-
+        let untyped_ast::DeclarationKind::Simple { ident, loc:_ } = kind else { unreachable!() };
         let id = self.get_next_expr_id();
         let decl_ty = ty.unwrap_or_else(|| self.get_next_type_id());
         self.known_values.insert(ident.clone(), decl_ty.clone());
@@ -1715,7 +1715,7 @@ mod tests {
                 super::untyped_ast::ValueDeclaration {
                     loc: (0, 0),
                     is_op: false,
-                    ident: "foo".to_string(),
+                    kind:super::untyped_ast::DeclarationKind::Simple{ ident: "foo".to_owned(), loc:(0,0) },
                     args: vec![super::untyped_ast::ArgDeclaration::Simple {
                         loc: (0, 0),
                         ident: "a".to_string(),
@@ -2890,8 +2890,8 @@ let tuples (v:(int32,int32)) = match v where
     #[ignore = "for debugging only"]
     fn debug() {
         let parser = Parser::from_source("
-let a value :(int32,int32)->int32 =match value where
-    | (0,b) | (b,0) -> b,
+let b value : (int32,(int32,int32)) -> int32 = match value where
+    | (0, (0,b) | (b,0) ) | (b,_) -> b,
     | _ -> 0,
 ");
         let ast = parser.module("".to_string()).ast;
