@@ -57,3 +57,12 @@ let main _ : () -> () =
     f [1,2,3,4,5];
     test (1,2);
     return ();
+
+let destructuring_sample (t:(int32,int32)) =
+    let (a,b) = t;
+    return a + b;
+
+let destructuring_sample2 (a,b) =
+    print_int32 a;
+    print_int32 b;
+    return ();
