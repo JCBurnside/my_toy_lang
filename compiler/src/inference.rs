@@ -29,8 +29,8 @@ impl Context {
         ast: untyped_ast::ModuleDeclaration,
     ) -> ast::ModuleDeclaration {
         let mut ast = self.assign_ids_module(ast);
-        self.try_to_infer(&mut ast);
-        self.apply_equations(&mut ast);
+        self.try_to_infer(dbg!(&mut ast));
+        self.apply_equations(dbg!(&mut ast));
         ast
     }
 
@@ -90,13 +90,51 @@ impl Context {
     }
     pub(crate) fn assign_ids_top_level(
         &mut self,
-        decl: untyped_ast::Declaration,
-    ) -> ast::Declaration {
+        decl: untyped_ast::TopLevelDeclaration,
+    ) -> ast::TopLevelDeclaration {
         match decl {
-            untyped_ast::Declaration::TypeDefinition(ty) => ast::Declaration::Type(ty),
-            untyped_ast::Declaration::Mod(_) => todo!(),
-            untyped_ast::Declaration::Value(v) => {
-                ast::Declaration::Value(self.assign_ids_value_decl(v))
+            untyped_ast::TopLevelDeclaration::TypeDefinition(ty) => ast::TopLevelDeclaration::Type(ty),
+            untyped_ast::TopLevelDeclaration::Mod(_) => todo!(),
+            untyped_ast::TopLevelDeclaration::Value(untyped_ast::TopLevelValue{ loc, is_op, ident, args, ty, value, generics, abi }) => {
+                // ast::Declaration::Value(self.assign_ids_value_decl(v))
+                let ty = ty.unwrap_or_else(|| self.get_next_type_id());
+                let id = self.get_next_expr_id();
+                self.known_values.insert(ident.clone(),ty.clone());
+                let args = args
+                    .into_iter()
+                    .enumerate()
+                    .map(|(idx,arg)| {
+                        let expected = if !ty.is_function() {
+                            None
+                        } else {
+                            Some(ty.get_nth_arg(idx))
+                        };
+                        self.assign_ids_arg(arg,expected.as_ref())
+                    })
+                    .collect();
+                let value = match value {
+                    untyped_ast::ValueType::Expr(expr) => {
+                        ast::ValueType::Expr(self.assign_ids_expr(expr, None))
+                    }
+                    untyped_ast::ValueType::Function(stmnts) => ast::ValueType::Function(
+                        stmnts
+                            .into_iter()
+                            .map(|stmnt| self.assign_ids_stmnt(stmnt))
+                            .collect(),
+                    ),
+                    untyped_ast::ValueType::External => ast::ValueType::External,
+                };
+                ast::TopLevelDeclaration::Value(ast::TopLevelValue { 
+                    loc, 
+                    is_op, 
+                    ident, 
+                    args, 
+                    ty, 
+                    value, 
+                    generics, 
+                    abi, 
+                    id 
+                })
             }
         }
     }
@@ -142,6 +180,7 @@ impl Context {
             }
         }
     }
+
     pub(crate) fn assign_ids_value_decl(
         &mut self,
         val: untyped_ast::ValueDeclaration,
@@ -149,17 +188,18 @@ impl Context {
         let untyped_ast::ValueDeclaration {
             loc,
             is_op,
-            kind,
+            target,
             args,
             ty,
             value,
             generictypes,
             abi,
         } = val;
-        let untyped_ast::DeclarationKind::Simple { ident, loc:_ } = kind else { unreachable!() };
-        let id = self.get_next_expr_id();
         let decl_ty = ty.unwrap_or_else(|| self.get_next_type_id());
-        self.known_values.insert(ident.clone(), decl_ty.clone());
+        let target = self.assign_ids_pattern(target, &decl_ty);
+        let id = self.get_next_expr_id();
+
+        self.known_values.extend(target.get_idents_with_types());
         let args = args
             .into_iter()
             .enumerate()
@@ -187,7 +227,7 @@ impl Context {
         ast::ValueDeclaration {
             loc,
             is_op,
-            ident,
+            target,
             args,
             ty: decl_ty,
             value,
@@ -201,8 +241,9 @@ impl Context {
         match stmnt {
             untyped_ast::Statement::Declaration(decl) => {
                 let decl = self.assign_ids_value_decl(decl);
+
                 self.known_locals
-                    .insert(decl.ident.clone(), decl.ty.clone());
+                    .extend(decl.target.get_idents_with_types());
                 ast::Statement::Declaration(decl)
             }
             untyped_ast::Statement::Return(ret, loc) => {
@@ -518,9 +559,9 @@ impl Context {
         let order = self.dependency_tree.iter().sorted_by(|(lhs_name,lhs_depends), (rhs_name,rhs_depends)| {
             match (lhs_depends.contains(*rhs_name), rhs_depends.contains(*lhs_name)) {
                 (true,true) => {
-                    if decls.iter().find(|decl| &decl.get_ident() == *lhs_name).map_or(false, ast::Declaration::has_ty) {
+                    if decls.iter().find(|decl| &decl.get_ident() == *lhs_name).map_or(false, ast::TopLevelDeclaration::has_ty) {
                         Ordering::Less//left has explict type so it can come first
-                    } else if decls.iter().find(|decl| &decl.get_ident() == *rhs_name).map_or(false, ast::Declaration::has_ty) {
+                    } else if decls.iter().find(|decl| &decl.get_ident() == *rhs_name).map_or(false, ast::TopLevelDeclaration::has_ty) {
                         Ordering::Greater//right has explict type so it can come first
                     } else {
                         todo!("remove this case.  both lhs and rhs. means they depend on each other.")
@@ -538,12 +579,54 @@ impl Context {
         for decl in decls {
             self.known_locals.clear();
             match decl {
-                ast::Declaration::Value(value) => {
-                    self.infer_decl(value);
+                ast::TopLevelDeclaration::Value(value) => {
+                    for arg in &value.args {
+                        self.infer_arg(arg)
+                    }
+                    match &mut value.value {
+                        ast::ValueType::Expr(e) => {
+                            let mut ty = if value.ty.is_unknown() {
+                                None
+                            } else {
+                                let ty = value.ty.remove_args(value.args.len());
+                                Some(ty)
+                            };
+                            let actual = self.get_actual_type(e,ty.clone(),&mut ty);
+                            if value.ty.is_unknown() {
+                                value.ty = value
+                                    .args
+                                    .iter()
+                                    .map(|arg| arg.get_ty())
+                                    .rev()
+                                    .fold(actual, |ty, arg| arg.fn_ty(&ty));
+            
+                                //not sure if this the correct way to handle this.
+                            }
+                        },
+                        ast::ValueType::Function(stmnts) => {
+                            let mut ty = if value.ty.is_unknown() {
+                                None
+                            } else {
+                                Some(value.ty.remove_args(value.args.len()))
+                            };
+                            for stmnt in stmnts {
+                                self.infer_stmnt(stmnt, &mut ty);
+                            }
+                            if value.ty.is_unknown() {
+                                let fun = value
+                                    .args
+                                    .iter()
+                                    .map(|arg| arg.get_ty())
+                                    .reduce(|ty, arg| ty.fn_ty(&arg));
+                                value.ty = fun.unwrap().fn_ty(&ty.unwrap_or(types::ERROR)); //not sure if this the correct way to handle this.
+                            }
+                        }
+                        ast::ValueType::External => (),
+                    }
                     self.known_values
-                        .insert(value.ident.clone(), value.ty.clone());
+                       .insert(value.ident.clone(), value.ty.clone());
                 }
-                ast::Declaration::Type(_) => (), //don't think there is anything to be done here.
+                ast::TopLevelDeclaration::Type(_) => (), //don't think there is anything to be done here.
             }
         }
     }
@@ -584,6 +667,7 @@ impl Context {
     }
 
     fn infer_decl(&mut self, value: &mut ast::ValueDeclaration) {
+        
         for arg in &value.args {
             self.infer_arg(arg);
         }
@@ -607,6 +691,7 @@ impl Context {
 
                     //not sure if this the correct way to handle this.
                 }
+                self.add_equation_of_pattern(&mut value.target, &value.ty);
             }
             ast::ValueType::Function(stmnts) => {
                 let mut ty = if value.ty.is_unknown() {
@@ -910,7 +995,7 @@ impl Context {
                 *result = ety.clone();
                 ety
             }
-            ast::Expr::Match(match_) => self.handle_match(dbg!(match_), expected, fun_ret_ty),
+            ast::Expr::Match(match_) => self.handle_match(match_, expected, fun_ret_ty),
         }
     }
 
@@ -958,13 +1043,12 @@ impl Context {
     fn add_equation_of_pattern(&mut self, pattern:&mut ast::Pattern, on_ty:&ResolvedType) {
         match pattern {
             ast::Pattern::Read { ident, loc, ty, id } => {
-                *ty = dbg!(on_ty).clone();
+                *ty = on_ty.clone();
                 self.expr_ty.insert(*id,on_ty.clone());
                 self.known_locals.insert(ident.clone(), on_ty.clone());
             },
             ast::Pattern::ConstNumber(num, ty) => {
-                dbg!(num);
-                *ty = dbg!(on_ty).clone();
+                *ty = on_ty.clone();
             },
             
             ast::Pattern::Destructure(d) => {
@@ -1010,7 +1094,7 @@ impl Context {
             ast::Statement::Declaration(value) => {
                 self.infer_decl(value);
                 self.known_locals
-                    .insert(value.ident.clone(), value.ty.clone());
+                    .extend(value.target.get_idents_with_types());
             }
             ast::Statement::Return(expr, _) => {
                 let ret = self.get_actual_type(expr, fun_ret_ty.clone(), fun_ret_ty);
@@ -1104,12 +1188,30 @@ impl Context {
         });
         for decl in decls {
             match decl {
-                ast::Declaration::Value(v) => {
+                ast::TopLevelDeclaration::Value(v) => {
                     for (id, ty) in &equations {
-                        self.apply_equation_decl(v, *id, ty.clone());
+                        v.ty.replace_unknown_with(*id,ty.clone());
+                        for arg in &mut v.args {
+                            arg.replace_unknown_with(*id,ty.clone());
+                        }
+                        match &mut v.value {
+                            ast::ValueType::Expr(expr) => {
+                                self.apply_equation_expr(expr, *id, ty.clone());
+                            }
+                            ast::ValueType::Function(stmnts) => {
+                                for stmnt in stmnts {
+                                    if let Some(rt) = self.apply_equation_stmnt(stmnt, *id, ty.clone()) {
+                                        if v.ty.is_unknown() || v.ty.is_error() {
+                                            v.ty = rt;
+                                        }
+                                    }
+                                }
+                            }
+                            ast::ValueType::External => (),
+                        }
                     }
                 }
-                ast::Declaration::Type(_) => (), //Nothing to do.
+                ast::TopLevelDeclaration::Type(_) => (), //Nothing to do.
             }
         }
     }
@@ -1118,7 +1220,7 @@ impl Context {
         let ast::ValueDeclaration {
             loc: _,
             is_op: _,
-            ident: _,
+            target,
             args,
             ty: v_ty,
             value,
@@ -1126,9 +1228,10 @@ impl Context {
             abi: _,
             id: _,
         } = decl;
-        v_ty.replace_unkown_with(id, ty.clone());
+        v_ty.replace_unknown_with(id, ty.clone());
+        self.apply_equation_pattern(target, id, ty.clone());
         for arg in args.iter_mut() {
-            arg.replace_unkown_with(id, ty.clone());
+            arg.replace_unknown_with(id, ty.clone());
         }
         match value {
             ast::ValueType::Expr(expr) => {
@@ -1149,9 +1252,23 @@ impl Context {
 
     fn apply_substutions(&mut self, ast: &mut ast::ModuleDeclaration) {
         for (id,sub) in self.expr_ty.clone() {
+            let sub = (&id,&sub);
             for decl in &mut ast.decls {
                 match decl {
-                    ast::Declaration::Value(v) => self.apply_substution_decl((&id,&sub), v),
+                    ast::TopLevelDeclaration::Value(v) => {
+                        for arg in &mut v.args {
+                            self.apply_substution_arg(sub, arg);
+                        }
+                        match &mut v.value {
+                            ast::ValueType::Expr(expr) => self.apply_substution_expr(sub, expr),
+                            ast::ValueType::Function(stmnts) => {
+                                for stmnt in stmnts {
+                                    self.apply_substution_statement(sub, stmnt);
+                                }
+                            }
+                            ast::ValueType::External => (),
+                        }
+                    },
                     _ => (),
                 }
             }
@@ -1191,8 +1308,8 @@ impl Context {
         sub: (&usize, &ResolvedType),
         decl: &mut ast::ValueDeclaration,
     ) {
-        let ast::ValueDeclaration { value, args, .. } = decl;
-
+        let ast::ValueDeclaration { value, args, target, .. } = decl;
+        self.apply_substution_pattern(target, sub);
         for arg in args {
             self.apply_substution_arg(sub, arg);
         }
@@ -1403,7 +1520,7 @@ impl Context {
                 *returns = fn_ret.as_ref().clone();
             }
         }
-        returns.replace_unkown_with(id, ty);
+        returns.replace_unknown_with(id, ty);
         returns.clone()
     }
 
@@ -1444,7 +1561,7 @@ impl Context {
     fn apply_equation_pattern(&self, pat:&mut ast::Pattern, id:usize, new_ty:ResolvedType) {
         match pat {
             ast::Pattern::Read { ty, .. } 
-            | ast::Pattern::ConstNumber(_, ty) => ty.replace_unkown_with(id, new_ty),
+            | ast::Pattern::ConstNumber(_, ty) => ty.replace_unknown_with(id, new_ty),
             ast::Pattern::Destructure(d) => {
                 match d {
                     ast::DestructurePattern::Struct { fields } => {
@@ -1453,7 +1570,7 @@ impl Context {
                         }
                     },
                     ast::DestructurePattern::Tuple(patterns, ty, _) => {
-                        ty.replace_unkown_with(id, new_ty.clone());
+                        ty.replace_unknown_with(id, new_ty.clone());
                         for pat in patterns {
                             self.apply_equation_pattern(pat, id, new_ty.clone());
                         }
@@ -1515,7 +1632,7 @@ impl Context {
                 id: _,
                 ty: l_ty,
             } => {
-                l_ty.replace_unkown_with(id, ty);
+                l_ty.replace_unknown_with(id, ty);
                 if l_ty.is_unknown() {
                     types::NUMBER
                 } else {
@@ -1640,7 +1757,7 @@ impl Context {
                 if result.is_unknown() || result.is_error() {
                     *result = else_result;
                 }
-                result.replace_unkown_with(id, ty);
+                result.replace_unknown_with(id, ty);
                 result.clone()
             }
             ast::Expr::Match(match_) => self.apply_equation_match(match_, id, ty),
@@ -1702,7 +1819,7 @@ mod tests {
     use std::collections::HashMap;
 
     use crate::{
-        inference::ast::ValueDeclaration, parser::Parser, types::{self, ResolvedType}, util::ExtraUtilFunctions
+        inference::ast::TopLevelValue, parser::Parser, types::{self, ResolvedType}, util::ExtraUtilFunctions
     };
 
     #[test]
@@ -1711,11 +1828,11 @@ mod tests {
         let ast = super::untyped_ast::ModuleDeclaration {
             loc: None,
             name: "foo".to_string(),
-            declarations: vec![super::untyped_ast::Declaration::Value(
-                super::untyped_ast::ValueDeclaration {
+            declarations: vec![super::untyped_ast::TopLevelDeclaration::Value(
+                super::untyped_ast::TopLevelValue {
                     loc: (0, 0),
                     is_op: false,
-                    kind:super::untyped_ast::DeclarationKind::Simple{ ident: "foo".to_owned(), loc:(0,0) },
+                    ident:"foo".to_owned(), 
                     args: vec![super::untyped_ast::ArgDeclaration::Simple {
                         loc: (0, 0),
                         ident: "a".to_string(),
@@ -1725,7 +1842,7 @@ mod tests {
                     value: super::untyped_ast::ValueType::Expr(
                         super::untyped_ast::Expr::ValueRead("a".to_string(), (0, 0)),
                     ),
-                    generictypes: None,
+                    generics: None,
                     abi: None,
                 },
             )],
@@ -1742,11 +1859,11 @@ mod tests {
             super::ast::ModuleDeclaration {
                 loc: (0, 0),
                 name: "foo".to_string(),
-                decls: vec![super::ast::Declaration::Value(
-                    super::ast::ValueDeclaration {
+                decls: vec![super::ast::TopLevelDeclaration::Value(
+                    super::ast::TopLevelValue {
                         loc: (0, 0),
                         is_op: false,
-                        ident: "foo".to_string(),
+                        ident:"foo".to_string(),
                         args: vec![super::ast::ArgDeclaration::Simple {
                             loc: (0, 0),
                             ident: "a".to_string(),
@@ -1774,11 +1891,11 @@ mod tests {
             super::ast::ModuleDeclaration {
                 loc: (0, 0),
                 name: "foo".to_string(),
-                decls: vec![super::ast::Declaration::Value(
-                    super::ast::ValueDeclaration {
+                decls: vec![super::ast::TopLevelDeclaration::Value(
+                    super::ast::TopLevelValue {
                         loc: (0, 4),
                         is_op: false,
-                        ident: "foo".to_string(),
+                        ident:"foo".to_string(),
                         args: vec![super::ast::ArgDeclaration::Simple {
                             loc: (0, 8),
                             ident: "a".to_string(),
@@ -1838,11 +1955,11 @@ let foo a = match a where
             super::ast::ModuleDeclaration {
                 loc: (0, 0),
                 name: "foo".to_string(),
-                decls: vec![super::ast::Declaration::Value(
-                    super::ast::ValueDeclaration {
+                decls: vec![super::ast::TopLevelDeclaration::Value(
+                    super::ast::TopLevelValue {
                         loc: (1, 4),
                         is_op: false,
-                        ident: "foo".to_string(),
+                        ident:"foo".to_string(),
                         args: vec![super::ast::ArgDeclaration::Simple {
                             loc: (1, 8),
                             ident: "a".to_string(),
@@ -1920,11 +2037,11 @@ let foo a = match a where
             super::ast::ModuleDeclaration {
                 loc: (0, 0),
                 name: "foo".to_string(),
-                decls: vec![super::ast::Declaration::Value(
-                    super::ast::ValueDeclaration {
+                decls: vec![super::ast::TopLevelDeclaration::Value(
+                    super::ast::TopLevelValue {
                         loc: (0, 4),
                         is_op: false,
-                        ident: "foo".to_string(),
+                        ident:"foo".to_string(),
                         args: vec![super::ast::ArgDeclaration::Simple {
                             loc: (0, 8),
                             ident: "a".to_string(),
@@ -1977,11 +2094,11 @@ for<T> let foo x y : T -> T -> () = ()
             super::ast::ModuleDeclaration {
                 loc: (0, 0),
                 name: "foo".to_string(),
-                decls: vec![super::ast::Declaration::Value(
-                    super::ast::ValueDeclaration {
+                decls: vec![super::ast::TopLevelDeclaration::Value(
+                    super::ast::TopLevelValue {
                         loc: (1, 11),
                         is_op: false,
-                        ident: "foo".to_string(),
+                        ident:"foo".to_string(), 
                         args: vec![
                             super::ast::ArgDeclaration::Simple {
                                 loc: (1, 15),
@@ -2088,10 +2205,10 @@ let complex x =
                 loc: (0, 0),
                 name: "foo".to_string(),
                 decls: vec![
-                    super::ast::Declaration::Value(super::ast::ValueDeclaration {
+                    super::ast::TopLevelDeclaration::Value(super::ast::TopLevelValue {
                         loc: (3, 4),
                         is_op: false,
-                        ident: "annotated_arg".to_string(),
+                        ident:"annotated_arg".to_string(),
                         args: vec![super::ast::ArgDeclaration::Simple {
                             loc: (3, 19),
                             ident: "x".to_string(),
@@ -2133,10 +2250,10 @@ let complex x =
                         abi: None,
                         id: 0
                     }),
-                    super::ast::Declaration::Value(super::ast::ValueDeclaration {
+                    super::ast::TopLevelDeclaration::Value(super::ast::TopLevelValue {
                         loc: (5, 4),
                         is_op: false,
-                        ident: "complex".to_string(),
+                        ident:"complex".to_string(),
                         args: vec![super::ast::ArgDeclaration::Simple {
                             loc: (5, 12),
                             ident: "x".to_string(),
@@ -2291,15 +2408,15 @@ let unit_unit _ : () -> () = ()
 
         let mut module = ctx.inference(module.ast);
 
-        module.decls.sort_by_key(super::ast::Declaration::get_ident);
+        module.decls.sort_by_key(super::ast::TopLevelDeclaration::get_ident);
         let [int_int, int_unit, unit_int, unit_unit] = &module.decls[..] else {
             unreachable!()
         };
         assert_eq!(
-            &super::ast::Declaration::Value(ValueDeclaration {
+            &super::ast::TopLevelDeclaration::Value(TopLevelValue {
                 loc: (5, 4),
                 is_op: false,
-                ident: "int_int".to_string(),
+                ident:"int_int".to_string(),
                 args: vec![super::ast::ArgDeclaration::Simple {
                     loc: (5, 12),
                     ident: "x".to_string(),
@@ -2324,10 +2441,10 @@ let unit_unit _ : () -> () = ()
             "int_int"
         );
         assert_eq!(
-            &super::ast::Declaration::Value(ValueDeclaration {
+            &super::ast::TopLevelDeclaration::Value(TopLevelValue {
                 loc: (1, 4),
                 is_op: false,
-                ident: "int_unit".to_string(),
+                ident:"int_unit".to_string(),
                 args: vec![super::ast::ArgDeclaration::Discard {
                     loc: (1, 13),
                     ty: types::INT32,
@@ -2346,10 +2463,10 @@ let unit_unit _ : () -> () = ()
             "int_unit"
         );
         assert_eq!(
-            &super::ast::Declaration::Value(ValueDeclaration {
+            &super::ast::TopLevelDeclaration::Value(TopLevelValue {
                 loc: (3, 4),
                 is_op: false,
-                ident: "unit_int".to_string(),
+                ident:"unit_int".to_string(),
                 args: vec![super::ast::ArgDeclaration::Discard {
                     loc: (3, 13),
                     ty: types::UNIT,
@@ -2372,10 +2489,10 @@ let unit_unit _ : () -> () = ()
             "unit_int"
         );
         assert_eq!(
-            &super::ast::Declaration::Value(ValueDeclaration {
+            &super::ast::TopLevelDeclaration::Value(TopLevelValue {
                 loc: (7, 4),
                 is_op: false,
-                ident: "unit_unit".to_string(),
+                ident:"unit_unit".to_string(),
                 args: vec![super::ast::ArgDeclaration::Discard {
                     loc: (7, 14),
                     ty: types::UNIT,
@@ -2415,10 +2532,10 @@ let if_expr a b : bool -> int32 -> int32 = if a then b else 0
             unreachable!()
         };
         assert_eq!(
-            &super::ast::Declaration::Value(super::ast::ValueDeclaration {
+            &super::ast::TopLevelDeclaration::Value(super::ast::TopLevelValue {
                 loc: (1, 4),
                 is_op: false,
-                ident: "if_expr".to_string(),
+                ident:"if_expr".to_string(),
                 args: vec![
                     super::ast::ArgDeclaration::Simple {
                         loc: (1, 12),
@@ -2494,10 +2611,10 @@ let returns a : bool -> int32 =
             unreachable!()
         };
         assert_eq!(
-            &super::ast::Declaration::Value(super::ast::ValueDeclaration {
+            &super::ast::TopLevelDeclaration::Value(super::ast::TopLevelValue {
                 loc: (1, 4),
                 is_op: false,
-                ident: "returns".to_string(),
+                ident:"returns".to_string(),
                 args: vec![super::ast::ArgDeclaration::Simple {
                     loc: (1, 12),
                     ident: "a".to_string(),
@@ -2572,15 +2689,15 @@ let consume a = fst a;
         );
 
         let mut ast = ctx.inference(ast);
-        ast.decls.sort_by_key(super::ast::Declaration::get_ident);
+        ast.decls.sort_by_key(super::ast::TopLevelDeclaration::get_ident);
         let [consume, produce] = &ast.decls[..] else {
             unreachable!("more than the declared functions?")
         };
-        assert_eq!(&super::ast::Declaration::Value(
-            super::ast::ValueDeclaration {
+        assert_eq!(&super::ast::TopLevelDeclaration::Value(
+            super::ast::TopLevelValue {
                 loc: (3,4),
                 is_op: false,
-                ident: "consume".to_string(),
+                ident:"consume".to_string(),
                 args: vec![
                     super::ast::ArgDeclaration::Simple { 
                         loc: (3,12), 
@@ -2618,7 +2735,7 @@ let consume a = fst a;
         );
 
         assert_eq!(
-            &super::ast::Declaration::Value(super::ast::ValueDeclaration {
+            &super::ast::TopLevelDeclaration::Value(super::ast::TopLevelValue {
                 loc:(1,4),
                 is_op:false,
                 ident:"produce".to_string(),
@@ -2673,7 +2790,7 @@ let main _ : () -> () =
         ast.decls.sort_by_key(|decl| decl.get_ident());
         let [f,main]=&ast.decls[..] else { unreachable!() };
         assert_eq!(
-            &super::ast::Declaration::Value(super::ast::ValueDeclaration{
+            &super::ast::TopLevelDeclaration::Value(super::ast::TopLevelValue{
                 loc : (1,4),
                 is_op:false,
                 ident:"f".to_string(),
@@ -2695,7 +2812,7 @@ let main _ : () -> () =
             "the function"
         );
         assert_eq!(
-            &super::ast::Declaration::Value(super::ast::ValueDeclaration{
+            &super::ast::TopLevelDeclaration::Value(super::ast::TopLevelValue{
                 loc : (3,4),
                 is_op:false,
                 ident:"main".to_string(),
@@ -2760,7 +2877,7 @@ let tuples (v:(int32,int32)) = match v where
         ast.decls.sort_by_key(|decl| decl.get_ident());
         let [ors,tuples] = &ast.decls[..] else { unreachable!() };
         assert_eq!(
-            &super::ast::Declaration::Value(super::ast::ValueDeclaration {
+            &super::ast::TopLevelDeclaration::Value(super::ast::TopLevelValue {
                 loc:(1,4),
                 is_op:false,
                 ident:"ors".to_string(),
@@ -2801,7 +2918,7 @@ let tuples (v:(int32,int32)) = match v where
         );
 
         assert_eq!(
-            &super::ast::Declaration::Value(super::ast::ValueDeclaration{
+            &super::ast::TopLevelDeclaration::Value(super::ast::TopLevelValue{
                 loc:(4,4),
                 is_op:false,
                 ident:"tuples".to_string(),
@@ -2883,6 +3000,93 @@ let tuples (v:(int32,int32)) = match v where
             }),
             tuples,
             "tuples"
+        );
+    }
+    #[test]
+    fn destructureing_statement() {
+        let ast = Parser::from_source("
+let a (v:(int32,int32)) =
+    let (x,y) = v;
+    return ();
+").module("".to_string()).ast;
+        let dtree = ast.get_dependencies();
+        let dtree = dtree.into_iter().map(|(key,value)| (key,value.into_iter().collect())).collect();
+        let mut inference_ctx = crate::inference::Context::new(
+            dtree, 
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new()
+        );
+        let ast = inference_ctx.inference(ast);
+        let [a]=&ast.decls[..] else { unreachable!() };
+        use super::ast;
+        assert_eq!(
+            &ast::TopLevelDeclaration::Value(ast::TopLevelValue {
+                loc:(1,4),
+                is_op:false,
+                ident:"a".to_string(),
+                args:vec![ast::ArgDeclaration::Simple{
+                    ident:"v".to_string(),
+                    ty:ResolvedType::Tuple {
+                        underlining:vec![
+                            types::INT32,
+                            types::INT32,
+                        ],
+                        loc:(0,0)
+                    },
+                    loc:(1,7),
+                    id:1,
+                }],
+                ty: ResolvedType::Tuple {
+                    underlining:vec![
+                        types::INT32,
+                        types::INT32,
+                    ],
+                    loc:(0,0)
+                }.fn_ty(&types::UNIT), 
+                value: ast::ValueType::Function(vec![
+                    ast::Statement::Declaration(ast::ValueDeclaration {
+                        loc:(2,8),
+                        is_op:false,
+                        target:ast::Pattern::Destructure(ast::DestructurePattern::Tuple(
+                            vec![
+                                ast::Pattern::Read{ ident:"x".to_string(), ty:types::INT32, loc:(2,9), id:3},
+                                ast::Pattern::Read{ ident:"y".to_string(), ty:types::INT32, loc:(2,11), id:4 },
+                            ],
+                            ResolvedType::Tuple {
+                                underlining:vec![
+                                    types::INT32,
+                                    types::INT32,
+                                ],
+                                loc:(0,0)
+                            },
+                            2
+                        )),
+                        args:Vec::new(),
+                        value:ast::ValueType::Expr(
+                            ast::Expr::ValueRead("v".to_string(),
+                            (2,16),
+                            6
+                        )),
+                        ty:ResolvedType::Tuple {
+                            underlining:vec![
+                                types::INT32,
+                                types::INT32,
+                            ],
+                            loc:(0,0)
+                        },
+                        generics:None,
+                        abi:None,
+                        id:5
+                    }),
+                    ast::Statement::Return(ast::Expr::UnitLiteral,(3,4))
+                ]), 
+                generics: None, 
+                abi: None,
+                id:0
+            }),
+            a
         );
     }
 

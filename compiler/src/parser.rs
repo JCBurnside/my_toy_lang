@@ -7,7 +7,7 @@ use itertools::Itertools;
 
 use crate::{
     ast::{
-        self, ArgDeclaration, BinaryOpCall, Expr, FieldDecl, FnCall, Match, Pattern, PatternDestructure, Statement, StructConstruction, StructDefinition, ValueDeclaration, ValueType
+        self, ArgDeclaration, BinaryOpCall, Expr, FieldDecl, FnCall, Match, Pattern, PatternDestructure, Statement, StructConstruction, StructDefinition, TopLevelDeclaration, TopLevelValue, ValueDeclaration, ValueType
     },
     lexer::TokenStream,
     tokens::Token,
@@ -39,15 +39,17 @@ enum ParseErrorReason {
     DeclarationError,
     UnexpectedEndOfFile,
     UnsupportedEscape,
+    UnsupportedFeature,
     UnexpectedToken,
     NoElseBlock,
     UnknownError, //internal use.  should basically never be hit.
 }
 
-pub struct ParserReturns<T> {
+#[derive(Debug)]
+pub struct ParserReturns<T:std::fmt::Debug> {
     pub ast: T,
     pub loc: crate::Location,
-    pub warnings: Vec<Warning>, //TODO! add warnings and a way to treat warnings as errors
+    pub warnings: Vec<Warning>, //TODO! add warnings and a way next_toplevel treat warnings as errors
     pub errors: Vec<ParseError>,
 }
 
@@ -93,7 +95,7 @@ where
         let mut warnings = Vec::new();
         let mut errors = Vec::new();
         while self.has_next() {
-            let decl = self.declaration();
+            let decl = self.next_toplevel();
             warnings.extend(decl.warnings);
             errors.extend(decl.errors);
             decls.push(decl.ast);
@@ -110,9 +112,277 @@ where
         }
     }
 
+    pub fn next_toplevel(&mut self) -> ParserReturns<TopLevelDeclaration> {
+        let ParserReturns {
+            ast: abi,
+            loc: extern_loc,
+            mut warnings,
+            mut errors,
+        } = self.abi();
+        let ParserReturns {
+            ast: generics,
+            loc: for_loc,
+            warnings: for_warnings,
+            errors: for_errors,
+        } = self.collect_generics();
+        warnings.extend(for_warnings);
+        errors.extend(for_errors);
+        if abi.is_some() && generics.is_some() {
+            errors.push(ParseError {
+                span: for_loc,
+                reason: ParseErrorReason::DeclarationError,
+            });
+        }
+        match self.stream.clone().next() {
+            Some((Token::For, loc)) => {
+                errors.push(ParseError {
+                    span: loc,
+                    reason: ParseErrorReason::DeclarationError,
+                });
+                ParserReturns {
+                    ast: ast::TopLevelDeclaration::Value(TopLevelValue {
+                        loc,
+                        is_op: false,
+                        ident: "<error>".to_string(),
+                        args: vec![ArgDeclaration::Simple {
+                            loc,
+                            ident: "<error>".to_string(),
+                            ty: Some(types::ERROR),
+                        }],
+                        ty: Some(types::ERROR),
+                        value: ValueType::Expr(Expr::Error),
+                        generics: generics,
+                        abi: None,
+                    }),
+                    loc,
+                    warnings,
+                    errors,
+                }
+            }
+            Some((Token::Type | Token::Enum, loc)) => {
+                if abi.is_some() {
+                    errors.push(ParseError {
+                        span: extern_loc,
+                        reason: ParseErrorReason::DeclarationError,
+                    });
+                }
+                let decl = self.type_decl(generics);
+                warnings.extend(decl.warnings);
+                errors.extend(decl.errors);
+                ParserReturns {
+                    ast: ast::TopLevelDeclaration::TypeDefinition(decl.ast),
+                    loc,
+                    warnings,
+                    errors,
+                }
+            }
+            Some((Token::Let,_)) => {
+                let _ = self.stream.next();
+                let (token, ident_span) = self.stream.next().unwrap();
+                let (ident, is_op) = match token {
+                    Token::Ident(ident) => (ident, false),
+                    Token::Op(ident) => (ident, true),
+                    _ => {
+                        return ParserReturns {
+                            ast: TopLevelDeclaration::Value(TopLevelValue {
+                                loc: ident_span,
+                                is_op: false,
+                                ident:"<error>".to_string(),
+                                args: vec![ArgDeclaration::Simple {
+                                    loc: (0, 0),
+                                    ident: "<error>".to_string(),
+                                    ty: Some(types::ERROR),
+                                }],
+                                ty: Some(types::ERROR),
+                                value: ValueType::Expr(Expr::Error),
+                                generics,
+                                abi,
+                            }),
+                            loc: ident_span,
+                            warnings: Vec::new(),
+                            errors: vec![ParseError {
+                                span: ident_span,
+                                reason: ParseErrorReason::DeclarationError,
+                            }],
+                        }
+                    }
+                };
+                let args = self.collect_args();
+                warnings.extend(args.warnings);
+                errors.extend(args.errors);
+                let mut args = args.ast;
+                if is_op && (args.len() > 2 || args.len() == 0) {
+                    errors.push(ParseError { span: ident_span, reason:ParseErrorReason::ArgumentError });
+                }
+                let mut ty = if let Some((Token::Colon, _)) =self.stream.peek() {
+                    let _ = self.stream.next();
+                    let ty = self.collect_type();
+                    warnings.extend(ty.warnings);
+                    errors.extend(ty.errors);
+                    Some(ty.ast)
+                } else {
+                    if is_op {
+                        errors.push(ParseError { span: ident_span, reason: ParseErrorReason::DeclarationError });
+                    }
+                    None
+                };
+                let value = match self.stream.peek() {
+                    Some((Token::Op(op),_)) if op == "=" => {
+                        let _ = self.stream.next();
+                        match self.stream.peek() {
+                            Some((Token::BeginBlock,_)) => {
+                                let block = self.collect_block();
+                                warnings.extend(block.warnings);
+                                errors.extend(block.errors);
+                                ValueType::Function(block.ast)
+                            }
+                            Some(_) => {
+                                let expr = self.next_expr();
+                                warnings.extend(expr.warnings);
+                                errors.extend(expr.errors);
+                                ValueType::Expr(expr.ast)
+                            }
+                            None => {
+                                errors.push(ParseError{
+                                    span:(0,0),
+                                    reason:ParseErrorReason::UnexpectedEndOfFile,
+                                });
+                                ValueType::Expr(Expr::Error)
+                            }
+                        }
+                    },
+                    Some((Token::Seq,_)) if abi.is_some() => {
+                        let _ = self.stream.next();
+                        ValueType::External
+                    },
+                    Some((_,loc)) => {
+                        errors.push(ParseError{
+                            span:*loc,
+                            reason:ParseErrorReason::UnexpectedToken,
+                        });
+                        ValueType::Expr(Expr::Error)
+                    },
+                    None => {
+                        errors.push(ParseError{
+                            span:(0,0),
+                            reason:ParseErrorReason::UnexpectedEndOfFile,
+                        });
+                        ValueType::Expr(Expr::Error)
+                    }
+                };
+                if let Some(generics) = &generics {
+                    for arg in &mut args {
+                        generics
+                            .decls
+                            .iter()
+                            .map(|(_,it)| it)
+                            .for_each(|name| arg.apply_generic(name));
+                    }
+                    if let Some(ty) = &mut ty {
+                        *ty = generics
+                            .decls
+                            .iter()
+                            .map(|(_, it)| it)
+                            .fold(ty.clone(), |ty, name| ty.replace_user_with_generic(name));
+                    }
+                }
+                ParserReturns {
+                    ast:TopLevelDeclaration::Value(TopLevelValue {
+                        loc:ident_span,
+                        is_op,
+                        ident,
+                        args,
+                        ty,
+                        value,
+                        generics,
+                        abi,
+                    }),
+                    loc:ident_span,
+                    warnings,
+                    errors,
+                }
+            },
+            Some((Token::EoF,loc)) => {
+                errors.push(ParseError {
+                    span:loc,
+                    reason:ParseErrorReason::UnexpectedEndOfFile,
+                });
+                ParserReturns {
+                    ast: ast::TopLevelDeclaration::Value(TopLevelValue {
+                        loc,
+                        is_op: false,
+                        ident: "<error>".to_string(),
+                        args: vec![ArgDeclaration::Simple {
+                            loc,
+                            ident: "<error>".to_string(),
+                            ty: Some(types::ERROR),
+                        }],
+                        ty: Some(types::ERROR),
+                        value: ValueType::Expr(Expr::Error),
+                        generics: generics,
+                        abi: None,
+                    }),
+                    loc,
+                    warnings,
+                    errors,
+                }
+            },
+            Some((_,loc)) => {
+                errors.push(ParseError {
+                    span:(0,0),
+                    reason:ParseErrorReason::UnexpectedToken,
+                });
+                ParserReturns {
+                    ast: ast::TopLevelDeclaration::Value(TopLevelValue {
+                        loc,
+                        is_op: false,
+                        ident: "<error>".to_string(),
+                        args: vec![ArgDeclaration::Simple {
+                            loc,
+                            ident: "<error>".to_string(),
+                            ty: Some(types::ERROR),
+                        }],
+                        ty: Some(types::ERROR),
+                        value: ValueType::Expr(Expr::Error),
+                        generics: generics,
+                        abi: None,
+                    }),
+                    loc,
+                    warnings,
+                    errors,
+                }
+            }
+            None => {
+                errors.push(ParseError {
+                    span:(0,0),
+                    reason:ParseErrorReason::UnexpectedEndOfFile,
+                });
+                ParserReturns {
+                    ast: ast::TopLevelDeclaration::Value(TopLevelValue {
+                        loc:(0,0),
+                        is_op: false,
+                        ident: "<error>".to_string(),
+                        args: vec![ArgDeclaration::Simple {
+                            loc:(0,0),
+                            ident: "<error>".to_string(),
+                            ty: Some(types::ERROR),
+                        }],
+                        ty: Some(types::ERROR),
+                        value: ValueType::Expr(Expr::Error),
+                        generics: generics,
+                        abi: None,
+                    }),
+                    loc:(0,0),
+                    warnings,
+                    errors,
+                }
+            }
+            
+        }
+    }
     pub fn next_statement(&mut self) -> ParserReturns<Statement> {
-        match dbg!(self.stream.clone().next()) {
-            Some((Token::Let, _)) | Some((Token::For, _)) => {
+        match self.stream.clone().next() {
+            Some((Token::For, _)) => {
                 let ParserReturns {
                     ast: generics,
                     loc,
@@ -135,13 +405,33 @@ where
                     errors,
                 }
             }
+            Some((Token::Let, _)) => {
+                let inner = match self.stream.clone().nth(1) {
+                    Some((Token::GroupOpen,_)) => self.destructuring_declaration(),
+                    Some((Token::Ident(_),_)) if self.stream.clone().nth(2).map(|(a,_)|a) == Some(Token::CurlOpen) => self.destructuring_declaration(),
+                    _ => self.fn_declaration(None, None),
+                };
+                if let Some((Token::Seq, _)) = self.stream.clone().next() {
+                    self.stream.next();
+                } else {
+                    // TODO generated error here.
+                    println!("expected ; on line {}", inner.loc.0);
+                }
+                
+                ParserReturns {
+                    ast: Statement::Declaration(inner.ast),
+                    loc:inner.loc,
+                    warnings:inner.warnings,
+                    errors:inner.errors,
+                }
+            }
             Some((Token::Return, _)) => {
                 let inner = self.ret();
                 if let Some((Token::Seq, _)) = self.stream.clone().next() {
                     self.stream.next();
                 } else {
                     println!("expected ; on line {}", inner.loc.0);
-                    //TODO! convert to an error that is added and returned as part of the ast.
+                    //TODO! convert next_toplevel an error that is added and returned as part of the ast.
                 }
                 inner
             }
@@ -160,7 +450,7 @@ where
                     self.stream.next();
                 } else {
                     println!("expected ; on line {}", inner.get_loc().0);
-                    //TODO! convert to a warning that is added and returned as part of the ast.
+                    //TODO! convert next_toplevel a warning that is added and returned as part of the ast.
                 }
                 ParserReturns {
                     ast: inner,
@@ -234,7 +524,7 @@ where
                     .clone()
                     .skip(1)
                     .skip_while(|(it, _)| match it {
-                        //skip this whole expression to examine what's after it.
+                        //skip this whole expression next_toplevel examine what's after it.
                         Token::GroupOpen => {
                             group_opens += 1;
                             true
@@ -1473,7 +1763,7 @@ where
         }
     }
 
-    fn declaration(&mut self) -> ParserReturns<ast::Declaration> {
+    fn declaration(&mut self) -> ParserReturns<ast::ValueDeclaration> {
         let ParserReturns {
             ast: abi,
             loc: extern_loc,
@@ -1495,60 +1785,9 @@ where
             });
         }
         let next = self.stream.clone().next();
-        println!("{abi:?} \n{generics:?}\n{errors:?}");
-        match dbg!(next) {
-            Some((Token::For, loc)) => {
-                errors.push(ParseError {
-                    span: loc,
-                    reason: ParseErrorReason::DeclarationError,
-                });
-                ParserReturns {
-                    ast: ast::Declaration::Value(ValueDeclaration {
-                        loc,
-                        is_op: false,
-                        kind: ast::DeclarationKind::Simple { ident:"<error>".to_string(), loc },
-                        args: vec![ArgDeclaration::Simple {
-                            loc,
-                            ident: "<error>".to_string(),
-                            ty: Some(types::ERROR),
-                        }],
-                        ty: Some(types::ERROR),
-                        value: ValueType::Expr(Expr::Error),
-                        generictypes: generics,
-                        abi: None,
-                    }),
-                    loc,
-                    warnings,
-                    errors,
-                }
-            }
-            Some((Token::Type | Token::Enum, loc)) => {
-                if abi.is_some() {
-                    errors.push(ParseError {
-                        span: extern_loc,
-                        reason: ParseErrorReason::DeclarationError,
-                    });
-                }
-                let decl = self.type_decl(generics);
-                warnings.extend(decl.warnings);
-                errors.extend(decl.errors);
-                ParserReturns {
-                    ast: ast::Declaration::TypeDefinition(decl.ast),
-                    loc,
-                    warnings,
-                    errors,
-                }
-            }
+        match next {
             Some((Token::Let, _)) => {
-                let decl = self.fn_declaration(abi, generics);
-                warnings.extend(decl.warnings);
-                errors.extend(decl.errors);
-                ParserReturns {
-                    ast: ast::Declaration::Value(decl.ast),
-                    loc: decl.loc,
-                    warnings,
-                    errors,
-                }
+                self.fn_declaration(abi, generics)
             }
             Some((Token::Seq, _)) => {
                 let _ = self.stream.next();
@@ -1798,7 +2037,7 @@ where
                         .filter(|(token, _)| &Token::Comma != token)
                         .take_while(|(token, _)| &Token::Op(">".to_string()) != token)
                         .collect_vec();
-                    // TODO should probably fold to ensure that it is comma seperated.
+                    // TODO should probably fold next_toplevel ensure that it is comma seperated.
                     let first_span = out.first().unwrap().1;
                     let num = out.len();
                     out.dedup_by_key(|(it, _)| it.clone());
@@ -1867,7 +2106,7 @@ where
         #[allow(unused_mut)]
         let mut warnings = Vec::new();
         let mut errors = Vec::new();
-        match self.stream.clone().next() {
+        match dbg!(self.stream.clone().next()) {
             Some((Token::GroupOpen,_)) => {//(
                 let Some((Token::GroupOpen,open_loc)) = self.stream.next() else { unreachable!() };
                 match self.stream.clone().next() {
@@ -1937,7 +2176,7 @@ where
                                         }
                                     }
                                 ];
-                                let _ = self.stream.next(); //,
+                                let _ = dbg!(self.stream.next()); //,
                                 while let Some((Token::Ident(_)|Token::GroupOpen,_)) = self.stream.clone().next() {
                                     let arg = self.parse_arg();
                                     warnings.extend(arg.warnings);
@@ -2013,7 +2252,40 @@ where
                             },
                         }
                     }
-                    _ => todo!(),
+                    _ => {//(<unknown>
+                        let inner = self.parse_arg();
+                        warnings.extend(inner.warnings);
+                        errors.extend(inner.errors);
+                        let mut inner = inner.ast;
+                        if let Some((Token::Colon,_)) = self.stream.clone().next() {
+                            let _ = self.stream.next();
+                            let ty = self.collect_type();
+                            warnings.extend(ty.warnings);
+                            errors.extend(ty.errors);
+                            let new_ty = ty.ast;
+                            match &mut inner {
+                                ArgDeclaration::DestructureStruct { loc, struct_ident, fields, renamed_fields } => (),//generate warning.
+                                ArgDeclaration::Discard { ty, .. }
+                                | ArgDeclaration::DestructureTuple(_, ty, _)
+                                | ArgDeclaration::Unit { ty, .. }
+                                | ArgDeclaration::Simple { ty, .. } => *ty = Some(new_ty), 
+                            }
+                        }
+                        if let Some((Token::GroupClose,_)) = self.stream.clone().next() {
+                            let _ = self.stream.next();
+                        } else {
+                            errors.push(ParseError {
+                                span:open_loc,
+                                reason:ParseErrorReason::UnbalancedBraces
+                            });
+                        }
+                        ParserReturns {
+                            ast:inner,
+                            loc:open_loc,
+                            warnings,
+                            errors,
+                        }
+                    },
                 }
             }
             Some((Token::Ident(_),_)) => {
@@ -2101,6 +2373,79 @@ where
         }
     }
 
+    fn destructuring_declaration(
+        &mut self,
+    ) -> ParserReturns<ValueDeclaration> {
+        let Some((Token::Let,_)) = self.stream.next() else { unreachable!() };
+        let ParserReturns { 
+            ast:kind, 
+            loc, 
+            mut warnings, 
+            mut errors 
+        } = self.collect_pattern();
+        let ty = if let Some((Token::Colon,_)) = self.stream.peek() {
+            let _ = self.stream.next();
+            let ty = self.collect_type();
+            warnings.extend(ty.warnings);
+            errors.extend(ty.errors);
+            Some(ty.ast)
+        } else {
+            None
+        };
+        if let Some((Token::Op(eq),loc)) = self.stream.peek() {
+            if eq != "=" {
+                errors.push(ParseError { 
+                    span: *loc, 
+                    reason: ParseErrorReason::UnexpectedToken 
+                });
+            } else {
+                let _ = self.stream.next();
+            }
+        } else {
+            errors.push(ParseError { 
+                span: loc, 
+                reason: ParseErrorReason::UnexpectedToken 
+            });
+        }
+        let expr = match self.stream.peek() {
+            Some((Token::BeginBlock,loc)) => {
+                errors.push(ParseError{
+                    span:*loc,
+                    reason:ParseErrorReason::UnsupportedFeature,
+                });
+                let result = self.collect_block();
+                warnings.extend(result.warnings);
+                errors.extend(result.errors);
+                ast::Expr::Error
+            },
+            Some(_) => {
+                let result = self.next_expr();
+                warnings.extend(result.warnings);
+                errors.extend(result.errors);
+                result.ast
+            }
+            _ => {
+                errors.push(ParseError { span: (0,0), reason:ParseErrorReason::UnexpectedEndOfFile });
+                ast::Expr::Error
+            }
+        };
+        ParserReturns {
+            ast:ValueDeclaration {
+                loc,
+                is_op: false,
+                target: kind,
+                args: Vec::new(),
+                ty,
+                value: ValueType::Expr(expr),
+                generictypes: None,
+                abi: None,
+            },
+            loc,
+            warnings,
+            errors,
+        }
+    }
+
     fn fn_declaration(
         &mut self,
         abi: Option<ast::Abi>,
@@ -2116,7 +2461,7 @@ where
                         ast: ValueDeclaration {
                             loc: ident_span,
                             is_op: false,
-                            kind: ast::DeclarationKind::Simple { ident:"<error>".to_string(), loc:ident_span },
+                            target: ast::Pattern::Read("<error>".to_string(), ident_span),
                             args: vec![ArgDeclaration::Simple {
                                 loc: (0, 0),
                                 ident: "<error>".to_string(),
@@ -2169,7 +2514,7 @@ where
                     ast: ValueDeclaration {
                         loc: ident_span,
                         is_op,
-                        kind: ast::DeclarationKind::Simple { ident, loc:ident_span },
+                        target: ast::Pattern::Read(ident, ident_span),
                         args,
                         ty: Some(types::ERROR),
                         value: ValueType::Expr(ast::Expr::Error),
@@ -2192,7 +2537,6 @@ where
             } else {
                 None
             };
-            println!("ty = {ty:?}");
 
             let op = match self.stream.next() {
                 Some((Token::Op(op), _)) => op,
@@ -2206,7 +2550,7 @@ where
                             ast: ValueDeclaration {
                                 loc: ident_span,
                                 is_op,
-                                kind: ast::DeclarationKind::Simple { ident, loc:ident_span },
+                                target: ast::Pattern::Read(ident,ident_span),
                                 args,
                                 ty,
                                 value: ValueType::Expr(Expr::Error),
@@ -2226,7 +2570,7 @@ where
                             ast: ValueDeclaration {
                                 loc: ident_span,
                                 is_op,
-                                kind: ast::DeclarationKind::Simple { ident, loc:ident_span },
+                                target: ast::Pattern::Read(ident, ident_span),
                                 args,
                                 ty,
                                 value: ValueType::Expr(Expr::Error),
@@ -2242,7 +2586,7 @@ where
                             ast: ValueDeclaration {
                                 loc: ident_span,
                                 is_op,
-                                kind: ast::DeclarationKind::Simple { ident, loc:ident_span },
+                                target: ast::Pattern::Read(ident, ident_span),
                                 args,
                                 ty,
                                 value: ValueType::External,
@@ -2256,7 +2600,7 @@ where
                     }
                 }
                 _ => {
-                    //TODO! progress to valid point.
+                    //TODO! progress next_toplevel valid point.
                     errors.push(ParseError {
                         span: ident_span,
                         reason: ParseErrorReason::DeclarationError,
@@ -2265,7 +2609,7 @@ where
                         ast: ValueDeclaration {
                             loc: ident_span,
                             is_op,
-                            kind: ast::DeclarationKind::Simple { ident, loc:ident_span },
+                            target: ast::Pattern::Read(ident, ident_span),
                             args,
                             ty,
                             value: ValueType::Expr(Expr::Error),
@@ -2280,7 +2624,7 @@ where
             };
 
             if op != "=" {
-                //TODO! progress to until valid point.
+                //TODO! progress next_toplevel until valid point.
                 errors.push(ParseError {
                     span: ident_span,
                     reason: ParseErrorReason::DeclarationError,
@@ -2289,7 +2633,7 @@ where
                     ast: ValueDeclaration {
                         loc: ident_span,
                         is_op,
-                        kind: ast::DeclarationKind::Simple { ident, loc:ident_span },
+                        target: ast::Pattern::Read(ident, ident_span),
                         args,
                         ty,
                         value: ValueType::Expr(Expr::Error),
@@ -2329,7 +2673,7 @@ where
                         ast: ValueDeclaration {
                             loc: ident_span,
                             is_op,
-                            kind: ast::DeclarationKind::Simple { ident, loc:ident_span },
+                            target: ast::Pattern::Read(ident, ident_span),
                             args,
                             ty,
                             value: ValueType::Expr(Expr::Error),
@@ -2364,7 +2708,7 @@ where
                 ast: ValueDeclaration {
                     loc: ident_span,
                     is_op,
-                    kind: ast::DeclarationKind::Simple { ident, loc:ident_span },
+                    target: ast::Pattern::Read(ident, ident_span),
                     args,
                     ty,
                     value,
@@ -2380,7 +2724,7 @@ where
             ast: ValueDeclaration {
                 loc: (0, 0),
                 is_op: false,
-                kind: ast::DeclarationKind::Simple { ident:"<error>".to_string(), loc:(0,0) },
+                target: ast::Pattern::Read("<error>".to_string(), (0,0)),
                 args: vec![ArgDeclaration::Simple {
                     loc: (0, 0),
                     ident: "<error>".to_string(),
@@ -2776,7 +3120,7 @@ where
                             if let Some((Token::EndBlock, _)) = self.stream.peek() {
                                 let _ = self.stream.next();
                             } else {
-                                println!("did you mean to move back a block?");
+                                println!("did you mean next_toplevel move back a block?");
                             }
                             (body, Some(ret.boxed()))
                         }
@@ -2818,7 +3162,7 @@ where
             if let Some((Token::EndBlock, _)) = self.stream.peek() {
                 let _ = self.stream.next();
             } else {
-                println!("did you mean to go back to the containing block level?");
+                println!("did you mean next_toplevel go back next_toplevel the containing block level?");
             }
         }
 
@@ -2997,18 +3341,14 @@ where
                 (Pattern::Error,loc)
             }
         };
-        let pattern = if let Some((Token::Op(_),_)) = self.stream.peek() {
-            let Some((Token::Op(op),loc)) = self.stream.next() else { unreachable!() };
+        let pattern = if let Some((Token::Op(op),_)) = self.stream.peek() {
             if op == "|" {
+                let _ = self.stream.next();
                 let next=self.collect_pattern();
                 warnings.extend(next.warnings);
                 errors.extend(next.errors);
                 Pattern::Or(pattern.boxed(), next.ast.boxed())
             } else {
-                errors.push(ParseError {
-                    span:loc,
-                    reason:ParseErrorReason::UnexpectedToken
-                });
                 pattern
             }
         } else {
@@ -3056,7 +3396,7 @@ where
             if let Some((Token::EndBlock, _)) = self.stream.peek() {
                 let _ = self.stream.next();
             } else {
-                println!("did you mean to have the closing ] on the same level as the opening?")
+                println!("did you mean next_toplevel have the closing ] on the same level as the opening?")
             }
         }
 
@@ -3189,7 +3529,7 @@ impl std::fmt::Debug for ShuntingYardOptions {
 mod tests {
 
     use crate::{
-        ast::{ArgDeclaration, Declaration, IfBranching, IfExpr, MatchArm, StructDefinition},
+        ast::{ArgDeclaration, TopLevelDeclaration, IfBranching, IfExpr, MatchArm, StructDefinition},
         types::ResolvedType,
     };
 
@@ -3289,11 +3629,12 @@ mod tests {
     #[ignore = "This is for singled out tests"]
     fn for_debugging_only() {
         let mut parser = Parser::from_source("
-let a value:(int32,int32)->int32 =
-    match value where
-    | (0,b) | (b,0) -> b,
-    | _ -> 0,");
-        dbg!(parser.declaration().ast);
+let a (v:(int32,int32)) =
+    let (x,y) = v;
+    return ();
+
+let b ((x,y):(int32,int32)) = (); ");
+        dbg!(parser.module("".to_string()));
     }
     #[test]
     fn individual_simple_expressions() {
@@ -3303,7 +3644,7 @@ let a value:(int32,int32)->int32 =
             Statement::Declaration(ValueDeclaration {
                 loc: (0, 4),
                 is_op: false,
-                kind:ast::DeclarationKind::Simple{ ident: "foo".to_owned(), loc:(0,4) },
+                target:ast::Pattern::Read("foo".to_owned(),(0,4)),
                 ty: Some(types::INT32),
                 args: Vec::new(),
                 value: ValueType::Expr(Expr::NumericLiteral {
@@ -3320,10 +3661,10 @@ let a value:(int32,int32)->int32 =
 "#,
         );
         assert_eq!(
-            ast::Declaration::Value(ValueDeclaration {
+            ast::TopLevelDeclaration::Value(TopLevelValue {
                 loc: (0, 4),
                 is_op: false,
-                kind: ast::DeclarationKind::Simple { ident: "foo".to_owned(), loc:(0,4) },
+                ident: "foo".to_owned(),
                 ty: Some(ResolvedType::Function {
                     arg: types::INT32.boxed(),
                     returns: types::INT32.boxed(),
@@ -3336,10 +3677,10 @@ let a value:(int32,int32)->int32 =
                     },
                     (1, 4)
                 )]),
-                generictypes: None,
+                generics: None,
                 abi: None,
             }),
-            parser.declaration().ast
+            parser.next_toplevel().ast
         )
     }
 
@@ -3354,7 +3695,7 @@ let foo _ : ( int32 -> int32 ) -> int32 =
             Statement::Declaration(ValueDeclaration {
                 loc: (1, 4),
                 is_op: false,
-                kind: ast::DeclarationKind::Simple { ident:"foo".to_owned(), loc:(1,4) },
+                target: ast::Pattern::Read("foo".to_owned(), (1,4)),
                 ty: Some(ResolvedType::Function {
                     arg: ResolvedType::Function {
                         arg: types::INT32.boxed(),
@@ -3387,7 +3728,7 @@ let foo _ : int32 -> ( int32 -> int32 ) =
             Statement::Declaration(ValueDeclaration {
                 loc: (1, 4),
                 is_op: false,
-                kind:ast::DeclarationKind::Simple{ ident: "foo".to_owned(), loc:(1,4) },
+                target:ast::Pattern::Read("foo".to_owned(), (1,4)),
                 ty: Some(ResolvedType::Function {
                     arg: types::INT32.boxed(),
                     returns: ResolvedType::Function {
@@ -3418,26 +3759,26 @@ let foo _ : int32 -> ( int32 -> int32 ) =
         const SRC: &'static str = include_str!("../../samples/test.fb");
         let mut parser = Parser::from_source(SRC);
         assert_eq!(
-            ast::Declaration::Value(ValueDeclaration {
+            ast::TopLevelDeclaration::Value(TopLevelValue {
                 loc: (0, 4),
                 is_op: false,
-                kind:ast::DeclarationKind::Simple{ ident: "foo".to_owned(), loc:(0,4) },
+                ident:"foo".to_owned(),
                 ty: Some(types::INT32),
                 args: Vec::new(),
                 value: ValueType::Expr(Expr::NumericLiteral {
                     value: "3".to_owned(),
                 }),
-                generictypes: None,
+                generics: None,
                 abi: None,
             }),
-            parser.declaration().ast,
+            parser.next_toplevel().ast,
             "simple declaration"
         );
         assert_eq!(
-            ast::Declaration::Value(ValueDeclaration {
+            ast::TopLevelDeclaration::Value(TopLevelValue {
                 loc: (2, 4),
                 is_op: false,
-                kind:ast::DeclarationKind::Simple{ ident: "bar".to_owned(), loc:(2,4) },
+                ident:"bar".to_owned(),
                 ty: Some(ResolvedType::Function {
                     arg: types::INT32.boxed(),
                     returns: types::INT32.boxed(),
@@ -3452,7 +3793,7 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                     Statement::Declaration(ValueDeclaration {
                         loc: (3, 8),
                         is_op: false,
-                        kind:ast::DeclarationKind::Simple{ ident: "baz".to_owned(), loc:(3,8) },
+                        target:Pattern::Read("baz".to_owned(), (3,8)),
                         ty: Some(types::STR),
                         args: Vec::new(),
                         value: ValueType::Expr(Expr::StringLiteral(r#"merp " yes"#.to_string())),
@@ -3466,18 +3807,18 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                         (4, 4)
                     )
                 ]),
-                generictypes: None,
+                generics: None,
                 abi: None,
             }),
-            parser.declaration().ast,
+            parser.next_toplevel().ast,
             "declaration with block"
         );
         assert_eq!(
-            ast::Declaration::Value(ValueDeclaration {
+            ast::TopLevelDeclaration::Value(TopLevelValue {
                 loc: (6, 4),
                 is_op: true,
                 
-                kind:ast::DeclarationKind::Simple{ ident: "^^".to_owned(), loc:(6,4) },
+                ident:"^^".to_owned(),
                 ty: Some(ResolvedType::Function {
                     arg: types::INT32.boxed(),
                     returns: ResolvedType::Function {
@@ -3513,10 +3854,10 @@ let foo _ : int32 -> ( int32 -> int32 ) =
                         (8, 4)
                     )
                 ]),
-                generictypes: None,
+                generics: None,
                 abi: None,
             }),
-            parser.declaration().ast,
+            parser.next_toplevel().ast,
             "operator declaration w/ function call",
         );
     }
@@ -3535,7 +3876,7 @@ let main _ : int32 -> int32 =
                 loc: (1, 4),
                 is_op: false,
                 
-                kind:ast::DeclarationKind::Simple{ ident: "main".to_owned(), loc:(1,4) },
+                target:Pattern::Read("main".to_owned(), (1,4)),
                 ty: Some(ResolvedType::Function {
                     arg: types::INT32.boxed(),
                     returns: types::INT32.boxed(),
@@ -3624,7 +3965,7 @@ let main _ : int32 -> int32 =
             Statement::Declaration(ValueDeclaration {
                 loc: (0, 4),
                 is_op: false,
-                kind:ast::DeclarationKind::Simple{ ident: "main".to_owned(), loc:(0,4) },
+                target:Pattern::Read("main".to_owned(), (0,4)),
                 ty: None,
                 args: vec![ast::ArgDeclaration::Discard{ty:None,loc:(0,9)}],
                 value: ValueType::Function(vec![
@@ -3720,10 +4061,10 @@ let main _ : int32 -> int32 =
     fn generics() {
         let mut parser = Parser::from_source("for<T> let test a : T -> T = a");
         assert_eq!(
-            ast::Declaration::Value(ValueDeclaration {
+            ast::TopLevelDeclaration::Value(TopLevelValue {
                 loc: (0, 11),
                 is_op: false,
-                kind:ast::DeclarationKind::Simple{ ident: "test".to_owned(), loc:(0,11) },
+                ident:"test".to_owned(),
                 args: vec![ast::ArgDeclaration::Simple {
                     loc: (0, 16),
                     ident: "a".to_string(),
@@ -3743,13 +4084,13 @@ let main _ : int32 -> int32 =
                     loc: (0, 22)
                 }),
                 value: ast::ValueType::Expr(ast::Expr::ValueRead("a".to_string(), (0, 29))),
-                generictypes: Some(ast::GenericsDecl {
+                generics: Some(ast::GenericsDecl {
                     for_loc: (0, 0),
                     decls: [((0, 4), "T".to_string())].into_iter().collect(),
                 }),
                 abi: None,
             }),
-            parser.declaration().ast,
+            parser.next_toplevel().ast,
         )
     }
 
@@ -3764,7 +4105,7 @@ for<T,U> type Tuple = {
 }"#;
         let mut parser = Parser::from_source(SRC);
         assert_eq!(
-            ast::Declaration::TypeDefinition(ast::TypeDefinition::Struct(StructDefinition {
+            ast::TopLevelDeclaration::TypeDefinition(ast::TypeDefinition::Struct(StructDefinition {
                 ident: "Foo".to_string(),
                 generics: None,
                 values: vec![ast::FieldDecl {
@@ -3774,11 +4115,11 @@ for<T,U> type Tuple = {
                 }],
                 loc: (0, 5)
             },)),
-            parser.declaration().ast,
+            parser.next_toplevel().ast,
             "basic"
         );
         assert_eq!(
-            ast::Declaration::TypeDefinition(ast::TypeDefinition::Struct(StructDefinition {
+            ast::TopLevelDeclaration::TypeDefinition(ast::TypeDefinition::Struct(StructDefinition {
                 ident: "Tuple".to_string(),
                 generics: Some(ast::GenericsDecl {
                     for_loc: (3, 0),
@@ -3804,7 +4145,7 @@ for<T,U> type Tuple = {
                 ],
                 loc: (3, 14)
             })),
-            parser.declaration().ast,
+            parser.next_toplevel().ast,
             "generic"
         )
     }
@@ -3816,10 +4157,10 @@ for<T,U> type Tuple = {
 ";
         let mut parser = Parser::from_source(SRC);
         assert_eq!(
-            ast::Declaration::Value(ValueDeclaration {
+            ast::TopLevelDeclaration::Value(TopLevelValue {
                 loc: (0, 4),
                 is_op: false,
-                kind:ast::DeclarationKind::Simple{ ident: "foo".to_owned(), loc:(0,4) },
+                ident:"foo".to_owned(),
                 args: vec![
                     ArgDeclaration::Simple {
                         loc: (0, 8),
@@ -3858,10 +4199,10 @@ for<T,U> type Tuple = {
                     },
                     (1, 4)
                 )]),
-                generictypes: None,
+                generics: None,
                 abi: None,
             }),
-            parser.declaration().ast
+            parser.next_toplevel().ast
         )
     }
 
@@ -3909,10 +4250,10 @@ for<T,U> type Tuple = {
     fn control_flow_if() {
         let mut parser = Parser::from_source(include_str!("../../samples/control_flow_if.fb"));
         assert_eq!(
-            ast::Declaration::Value(ValueDeclaration {
+            ast::TopLevelDeclaration::Value(TopLevelValue {
                 loc: (0, 4),
                 is_op: false,
-                kind:ast::DeclarationKind::Simple{ ident: "inline_expr".to_owned(), loc:(0,4) },
+                ident:"inline_expr".to_owned(),
                 args: vec![ast::ArgDeclaration::Simple {
                     ident: "a".to_string(),
                     loc: (0, 16),
@@ -3942,18 +4283,18 @@ for<T,U> type Tuple = {
                     ),
                     loc: (0, 36)
                 })),
-                generictypes: None,
+                generics: None,
                 abi: None,
             }),
-            parser.declaration().ast,
+            parser.next_toplevel().ast,
             "inline_expr"
         );
 
         assert_eq!(
-            ast::Declaration::Value(ValueDeclaration {
+            ast::TopLevelDeclaration::Value(TopLevelValue {
                 loc: (2, 4),
                 is_op: false,
-                kind:ast::DeclarationKind::Simple{ ident: "out_of_line_expr".to_owned(), loc:(2,4) },
+                ident:"out_of_line_expr".to_owned(),
                 args: vec![ast::ArgDeclaration::Simple {
                     ident: "a".to_string(),
                     loc: (2, 21),
@@ -3990,18 +4331,18 @@ for<T,U> type Tuple = {
                     ),
                     loc: (2, 41)
                 })),
-                generictypes: None,
+                generics: None,
                 abi: None,
             }),
-            parser.declaration().ast,
+            parser.next_toplevel().ast,
             "out_of_line_expr"
         );
 
         assert_eq!(
-            ast::Declaration::Value(ValueDeclaration {
+            ast::TopLevelDeclaration::Value(TopLevelValue {
                 loc: (7, 4),
                 is_op: false,
-                kind:ast::DeclarationKind::Simple{ ident: "expr_with_statement".to_owned(), loc:(7,4) },
+                ident:"expr_with_statement".to_owned(),
                 args: vec![ast::ArgDeclaration::Simple {
                     loc: (7, 24),
                     ident: "a".to_string(),
@@ -4049,18 +4390,18 @@ for<T,U> type Tuple = {
                     ),
                     loc: (7, 44)
                 })),
-                generictypes: None,
+                generics: None,
                 abi: None,
             }),
-            parser.declaration().ast,
+            parser.next_toplevel().ast,
             "expr_with_statement"
         );
 
         assert_eq!(
-            ast::Declaration::Value(ValueDeclaration {
+            ast::TopLevelDeclaration::Value(TopLevelValue {
                 loc: (14, 4),
                 is_op: false,
-                kind:ast::DeclarationKind::Simple{ ident: "expr_with_else_if".to_owned(), loc:(14,4) },
+                ident:"expr_with_else_if".to_owned(),
                 args: vec![
                     ast::ArgDeclaration::Simple {
                         loc: (14, 22),
@@ -4109,18 +4450,18 @@ for<T,U> type Tuple = {
                     ),
                     loc: (14, 52)
                 })),
-                generictypes: None,
+                generics: None,
                 abi: None,
             }),
-            parser.declaration().ast,
+            parser.next_toplevel().ast,
             "expr with else if"
         );
 
         assert_eq!(
-            ast::Declaration::Value(ValueDeclaration {
+            ast::TopLevelDeclaration::Value(TopLevelValue {
                 loc: (16, 4),
                 is_op: false,
-                kind:ast::DeclarationKind::Simple{ ident: "statement".to_owned(), loc:(16,4) },
+                ident:"statement".to_owned(),
                 args: vec![ast::ArgDeclaration::Simple {
                     loc: (16, 14),
                     ident: "a".to_string(),
@@ -4172,18 +4513,18 @@ for<T,U> type Tuple = {
                     ],
                     loc: (17, 4)
                 })]),
-                generictypes: None,
+                generics: None,
                 abi: None,
             }),
-            parser.declaration().ast,
+            parser.next_toplevel().ast,
             "statement"
         );
 
         assert_eq!(
-            ast::Declaration::Value(ValueDeclaration {
+            ast::TopLevelDeclaration::Value(TopLevelValue {
                 loc: (24, 4),
                 is_op: false,
-                kind:ast::DeclarationKind::Simple{ ident: "statement_with_else_if".to_owned(), loc:(24,4) },
+                ident:"statement_with_else_if".to_owned(),
                 args: vec![
                     ast::ArgDeclaration::Simple {
                         loc: (24, 27),
@@ -4231,18 +4572,18 @@ for<T,U> type Tuple = {
                     )],
                     loc: (25, 4),
                 })]),
-                generictypes: None,
+                generics: None,
                 abi: None,
             }),
-            parser.declaration().ast,
+            parser.next_toplevel().ast,
             "statement_with_else_if"
         );
 
         assert_eq!(
-            ast::Declaration::Value(ValueDeclaration {
+            ast::TopLevelDeclaration::Value(TopLevelValue {
                 loc: (32, 4),
                 is_op: false,
-                kind:ast::DeclarationKind::Simple{ ident: "expr_multi_with_elseif".to_owned(), loc:(32,4) },
+                ident:"expr_multi_with_elseif".to_owned(),
                 args: vec![
                     ast::ArgDeclaration::Simple {
                         loc: (32, 27),
@@ -4291,10 +4632,10 @@ for<T,U> type Tuple = {
                     ),
                     loc: (32, 57)
                 })),
-                generictypes: None,
+                generics: None,
                 abi: None,
             }),
-            parser.declaration().ast,
+            parser.next_toplevel().ast,
             "multi line expr with else if"
         );
     }
@@ -4303,10 +4644,10 @@ for<T,U> type Tuple = {
     fn control_flow_match() {
         let mut parser = Parser::from_source(include_str!("../../samples/control_flow_match.fb"));
         assert_eq!(
-            ast::Declaration::Value(ValueDeclaration {
+            ast::TopLevelDeclaration::Value(TopLevelValue {
                 loc: (0, 4),
                 is_op: false,
-                kind:ast::DeclarationKind::Simple{ ident: "match_expr_ints".to_owned(), loc:(0,4) },
+                ident:"match_expr_ints".to_owned(),
                 args: vec![ast::ArgDeclaration::Simple {
                     loc: (0, 20),
                     ident: "x".to_string(),
@@ -4356,18 +4697,18 @@ for<T,U> type Tuple = {
                         },
                     ]
                 })),
-                generictypes: None,
+                generics: None,
                 abi: None,
             }),
-            parser.declaration().ast,
+            parser.next_toplevel().ast,
             "match_expr_ints"
         );
 
         assert_eq!(
-            ast::Declaration::Value(ValueDeclaration {
+            ast::TopLevelDeclaration::Value(TopLevelValue {
                 loc: (5, 4),
                 is_op: false,
-                kind:ast::DeclarationKind::Simple{ ident: "match_expr_with_block".to_owned(), loc:(5,4) },
+                ident:"match_expr_with_block".to_owned(),
                 args: vec![ArgDeclaration::Simple {
                     loc: (5, 26),
                     ident: "x".to_string(),
@@ -4387,7 +4728,7 @@ for<T,U> type Tuple = {
                             block: vec![ast::Statement::Declaration(ValueDeclaration {
                                 loc: (7, 12),
                                 is_op: false,
-                                kind:ast::DeclarationKind::Simple{ ident: "a".to_owned(), loc:(7,12) },
+                                target:Pattern::Read("a".to_owned(), (7,12)),
                                 args: Vec::new(),
                                 ty: Some(types::INT32),
                                 value: ValueType::Expr(ast::Expr::NumericLiteral {
@@ -4440,17 +4781,17 @@ for<T,U> type Tuple = {
                         },
                     ]
                 })),
-                generictypes: None,
+                generics: None,
                 abi: None,
             }),
-            parser.declaration().ast,
+            parser.next_toplevel().ast,
             "match_expr_with_block"
         );
         assert_eq!(
-            ast::Declaration::Value(ValueDeclaration {
+            ast::TopLevelDeclaration::Value(TopLevelValue {
                 loc: (12, 4),
                 is_op: false,
-                kind:ast::DeclarationKind::Simple{ ident: "match_statement".to_owned(), loc:(12,4) },
+                ident:"match_statement".to_owned(),
                 args: vec![ArgDeclaration::Simple {
                     loc: (12, 20),
                     ident: "x".to_string(),
@@ -4516,10 +4857,10 @@ for<T,U> type Tuple = {
                         },
                     ]
                 })]),
-                generictypes: None,
+                generics: None,
                 abi: None,
             }),
-            parser.declaration().ast,
+            parser.next_toplevel().ast,
             "match_statement",
         );
     }
@@ -4528,12 +4869,12 @@ for<T,U> type Tuple = {
         const SRC: &'static str = r#"
 let arr = [0,0,0,0];
 "#;
-        let arr = Parser::from_source(SRC).declaration().ast;
+        let arr = Parser::from_source(SRC).next_toplevel().ast;
         assert_eq!(
-            ast::Declaration::Value(ast::ValueDeclaration {
+            ast::TopLevelDeclaration::Value(TopLevelValue {
                 loc: (1, 4),
                 is_op: false,
-                kind:ast::DeclarationKind::Simple{ ident: "arr".to_owned(), loc:(1,4) },
+                ident:"arr".to_owned(),
                 args: Vec::new(),
                 ty: None,
                 value: ast::ValueType::Expr(ast::Expr::ArrayLiteral {
@@ -4553,7 +4894,7 @@ let arr = [0,0,0,0];
                     ],
                     loc: (1, 10)
                 }),
-                generictypes: None,
+                generics: None,
                 abi: None,
             }),
             arr,
@@ -4568,17 +4909,17 @@ extern "C" let putchar : int32 -> int32;
 extern "C" let ex (a:int32) b = a + b;
 "#;
         let mut parser = Parser::from_source(SRC);
-        let putchar = parser.declaration().ast;
-        let ex = parser.declaration().ast;
+        let putchar = parser.next_toplevel().ast;
+        let ex = parser.next_toplevel().ast;
         assert_eq!(
-            ast::Declaration::Value(ValueDeclaration {
+            ast::TopLevelDeclaration::Value(TopLevelValue {
                 loc: (1, 15),
                 is_op: false,
-                kind:ast::DeclarationKind::Simple{ ident: "putchar".to_owned(), loc:(1,15) },
+                ident:"putchar".to_owned(),
                 args: Vec::new(),
                 ty: Some(types::INT32.fn_ty(&types::INT32)),
                 value: ValueType::External,
-                generictypes: None,
+                generics: None,
                 abi: Some(ast::Abi {
                     loc: (1, 0),
                     identifier: "C".to_string(),
@@ -4588,10 +4929,10 @@ extern "C" let ex (a:int32) b = a + b;
             "input function"
         );
         assert_eq!(
-            ast::Declaration::Value(ValueDeclaration {
+            ast::TopLevelDeclaration::Value(TopLevelValue {
                 loc: (2, 15),
                 is_op: false,
-                kind:ast::DeclarationKind::Simple{ ident: "ex".to_owned(), loc:(2,15) },
+                ident:"ex".to_owned(),
                 args: vec![
                     ast::ArgDeclaration::Simple {
                         loc: (2, 19),
@@ -4611,7 +4952,7 @@ extern "C" let ex (a:int32) b = a + b;
                     rhs: Expr::ValueRead("b".to_string(), (2, 36)).boxed(),
                     operator: "+".to_string()
                 })),
-                generictypes: None,
+                generics: None,
                 abi: Some(ast::Abi {
                     loc: (2, 0),
                     identifier: "C".to_string(),
@@ -4635,10 +4976,10 @@ let cons a : int32 -> (int32,int32) = (a,0)
             unreachable!()
         };
         assert_eq!(
-            &ast::Declaration::Value(ValueDeclaration {
+            &ast::TopLevelDeclaration::Value(TopLevelValue {
                 loc: (1, 4),
                 is_op: false,
-                kind:ast::DeclarationKind::Simple{ ident: "ty".to_owned(), loc:(1,4) },
+                ident:"ty".to_owned(),
                 args: vec![ArgDeclaration::Discard {ty:None,loc:(1,7)}],
                 ty: Some(
                     ResolvedType::Tuple {
@@ -4650,17 +4991,17 @@ let cons a : int32 -> (int32,int32) = (a,0)
                 value: ValueType::Expr(Expr::NumericLiteral {
                     value: "0".to_string()
                 }),
-                generictypes: None,
+                generics: None,
                 abi: None,
             }),
             ty
         );
 
         assert_eq!(
-            &ast::Declaration::Value(ValueDeclaration {
+            &ast::TopLevelDeclaration::Value(TopLevelValue {
                 loc: (3, 4),
                 is_op: false,
-                kind:ast::DeclarationKind::Simple{ ident: "cons".to_owned(), loc:(3,4) },
+                ident:"cons".to_owned(),
                 args: vec![ArgDeclaration::Simple {
                     loc: (3, 9),
                     ident: "a".to_string(),
@@ -4679,7 +5020,7 @@ let cons a : int32 -> (int32,int32) = (a,0)
                     ],
                     loc: (3, 38)
                 }),
-                generictypes: None,
+                generics: None,
                 abi: None
             }),
             cons
@@ -4752,15 +5093,16 @@ let simple a = ();
 let decon_arg (a,b) = ();
 let discard _ = ();
 let unit () = ();
+let annotated_arg_tuple ((x,y):(int32,int32)) = ();
 ";
 
         let ast = Parser::from_source(SRC).module("".to_string()).ast;
-        let [simple,decon,discard, unit] = &ast.declarations[..] else {unreachable!()};
+        let [simple,decon,discard, unit, annotated_decon] = &ast.declarations[..] else {unreachable!()};
         assert_eq!(
-            &Declaration::Value(ValueDeclaration{
+            &TopLevelDeclaration::Value(TopLevelValue {
                 loc:(1,4),
                 is_op:false,
-                kind:ast::DeclarationKind::Simple{ ident: "simple".to_owned(), loc:(1,4) },
+                ident:"simple".to_owned(),
                 args:vec![
                     ArgDeclaration::Simple {
                         loc: (1,11),
@@ -4770,17 +5112,17 @@ let unit () = ();
                 ],
                 ty:None,
                 value:ValueType::Expr(Expr::UnitLiteral),
-                generictypes:None,
+                generics:None,
                 abi:None,
             }),
             simple,
             "let simple a = ();"
         );
         assert_eq!(
-            &Declaration::Value(ValueDeclaration{
+            &TopLevelDeclaration::Value(TopLevelValue{
                 loc:(2,4),
                 is_op:false,
-                kind:ast::DeclarationKind::Simple{ ident: "decon_arg".to_owned(), loc:(2,4) },
+                ident:"decon_arg".to_owned(),
                 args:vec![
                     ArgDeclaration::DestructureTuple(vec![
                         ArgDeclaration::Simple {
@@ -4798,17 +5140,17 @@ let unit () = ();
                 ],
                 ty:None,
                 value:ValueType::Expr(Expr::UnitLiteral),
-                generictypes:None,
+                generics:None,
                 abi:None,
             }),
             decon,
             "let decon_arg (a,b) = ()"
         );
         assert_eq!(
-            &Declaration::Value(ValueDeclaration{
+            &TopLevelDeclaration::Value(TopLevelValue{
                 loc:(3,4),
                 is_op:false,
-                kind:ast::DeclarationKind::Simple{ ident: "discard".to_owned(), loc:(3,4) },
+                ident:"discard".to_owned(),
                 args:vec![
                     ArgDeclaration::Discard{
                         loc: (3,12),
@@ -4817,17 +5159,17 @@ let unit () = ();
                 ],
                 ty:None,
                 value:ValueType::Expr(Expr::UnitLiteral),
-                generictypes:None,
+                generics:None,
                 abi:None,
             }),
             discard,
             "let discard _ = ();"
         );
         assert_eq!(
-            &Declaration::Value(ValueDeclaration{
+            &TopLevelDeclaration::Value(TopLevelValue {
                 loc:(4,4),
                 is_op:false,
-                kind:ast::DeclarationKind::Simple{ ident: "unit".to_owned(), loc:(4,4) },
+                ident:"unit".to_owned(),
                 args:vec![
                     ArgDeclaration::Unit {
                         loc:(4,9),
@@ -4836,11 +5178,127 @@ let unit () = ();
                 ],
                 ty:None,
                 value:ValueType::Expr(Expr::UnitLiteral),
-                generictypes:None,
+                generics:None,
                 abi:None,
             }),
             unit,
             "let unit () = ();"
+        );
+        assert_eq!(
+            &TopLevelDeclaration::Value(TopLevelValue{
+                loc:(5,4),
+                is_op:false,
+                ident:"annotated_arg_tuple".to_owned(),
+                args:vec![
+                    ArgDeclaration::DestructureTuple(vec![
+                        ArgDeclaration::Simple {
+                            loc: (5,26),
+                            ident: "x".to_string(),
+                            ty: None, 
+                        },
+                        ArgDeclaration::Simple {
+                            loc: (5,28),
+                            ident: "y".to_string(),
+                            ty: None, 
+                        },
+                    ], 
+                    Some(ResolvedType::Tuple { 
+                        underlining: vec![
+                            types::INT32,
+                            types::INT32,
+                        ], 
+                        loc: (5,31) 
+                    }), (5,25)),
+                ],
+                ty:None,
+                value:ValueType::Expr(Expr::UnitLiteral),
+                generics:None,
+                abi:None,
+            }),
+            annotated_decon,
+            "let annotated_arg_tuple ((x,y):(int32,int32)) = ();"
+        );
+    }
+    #[test]
+    fn destructuring_statement() {
+        let mut parser = super::Parser::from_source("
+let (x,y) = v;
+let ((x,y),z) = v;
+let (x,y,z) = v;
+let (x,y):(int32,int32) = v;
+//yes this will all fail typecheking.
+");
+        assert_eq!(
+            Statement::Declaration(ValueDeclaration { 
+                loc: (1,4), 
+                is_op: false, 
+                target:Pattern::Destructure(PatternDestructure::Tuple(vec![
+                    Pattern::Read("x".to_string(), (1,5)),
+                    Pattern::Read("y".to_string(), (1,7)),
+                ])), 
+                args:Vec::new(), 
+                ty:None, 
+                value:ValueType::Expr(ast::Expr::ValueRead("v".to_string(), (1,12))), 
+                generictypes: None, 
+                abi: None,
+            }),
+            parser.next_statement().ast
+        );
+
+        assert_eq!(
+            Statement::Declaration(ValueDeclaration { 
+                loc: (2,4), 
+                is_op: false, 
+                target:Pattern::Destructure(PatternDestructure::Tuple(vec![
+                    Pattern::Destructure(PatternDestructure::Tuple(vec![
+                        Pattern::Read("x".to_string(), (2,6)),
+                        Pattern::Read("y".to_string(), (2,8)),
+                    ])),
+                    Pattern::Read("z".to_string(), (2,11))
+                ])), 
+                args:Vec::new(), 
+                ty:None, 
+                value:ValueType::Expr(ast::Expr::ValueRead("v".to_string(), (2,16))), 
+                generictypes: None, 
+                abi: None,
+            }),
+            parser.next_statement().ast
+        );
+        assert_eq!(
+            Statement::Declaration(ValueDeclaration { 
+                loc: (3,4), 
+                is_op: false, 
+                target:Pattern::Destructure(PatternDestructure::Tuple(vec![
+                    Pattern::Read("x".to_string(), (3,5)),
+                    Pattern::Read("y".to_string(), (3,7)),
+                    Pattern::Read("z".to_string(), (3,9)),
+                ])), 
+                args:Vec::new(), 
+                ty:None, 
+                value:ValueType::Expr(ast::Expr::ValueRead("v".to_string(), (3,14))), 
+                generictypes: None, 
+                abi: None,
+            }),
+            parser.next_statement().ast
+        );
+        assert_eq!(
+            Statement::Declaration(ValueDeclaration { 
+                loc: (4,4), 
+                is_op: false, 
+                target:Pattern::Destructure(PatternDestructure::Tuple(vec![
+                    Pattern::Read("x".to_string(), (4,5)),
+                    Pattern::Read("y".to_string(), (4,7)),
+                ])), 
+                args:Vec::new(), 
+                ty:Some(ResolvedType::Tuple{
+                    underlining:vec![types::INT32,types::INT32],
+                    loc:(4,10),
+                }), 
+                value:ValueType::Expr(ast::Expr::ValueRead("v".to_string(), (4,26))), 
+                generictypes: None, 
+                abi: None,
+            }),
+            parser.next_statement().ast
         );
     }
 }

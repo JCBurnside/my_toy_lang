@@ -22,7 +22,7 @@ use itertools::Itertools;
 
 use crate::type_resolver::TypeResolver;
 use compiler::typed_ast::{
-    collect_args, ResolvedTypeDeclaration, StructDefinition, TypedArgDeclaration, TypedBinaryOpCall, TypedDeclaration, TypedDestructure, TypedExpr, TypedFnCall, TypedIfBranching, TypedIfExpr, TypedMatch, TypedMatchArm, TypedMemberRead, TypedPattern, TypedStatement, TypedValueDeclaration, TypedValueType
+    collect_args, ResolvedTypeDeclaration, StructDefinition, TypedArgDeclaration, TypedBinaryOpCall, TypedDeclaration, TypedDestructure, TypedExpr, TypedFnCall, TypedIfBranching, TypedIfExpr, TypedMatch, TypedMatchArm, TypedMemberRead, TypedPattern, TypedStatement, TypedTopLevelValue, TypedValueDeclaration, TypedValueType
 };
 use compiler::types::{self, ResolvedType};
 use multimap::MultiMap;
@@ -142,7 +142,7 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
 
-    fn compile_function(&mut self, decl: TypedValueDeclaration) {
+    fn compile_function(&mut self, decl: TypedTopLevelValue) {
         #[cfg(debug_assertions)]
         let _ = self.module.print_to_file("./debug.ll");
         let v = self.incomplete_functions.get(&decl.ident).unwrap().clone();
@@ -399,6 +399,68 @@ impl<'ctx> CodeGen<'ctx> {
         let _ = ret_block.move_after(v.get_last_basic_block().unwrap());
     }
 
+    fn compile_destructure(&mut self, expr_ty : ResolvedType, value:BasicValueEnum<'ctx>, pat:TypedPattern) {
+        match pat {
+            TypedPattern::Const(_, _) => {
+                println!("invalid code.");
+            },
+            TypedPattern::Read(name, ty, loc) =>{
+                let value = self.value_or_load(ty.clone(), value);
+                let ty = self.type_resolver.resolve_type_as_basic(ty);
+                let target = self.builder.build_alloca(ty, &name).unwrap();
+                self.builder.build_store(target,value).unwrap();
+                if let Some(fnscope) = &self.difunction {
+                    let Some(dibuilder) = &self.dibuilder else {
+                        unreachable!()
+                    };
+                    let Some(file) = &self.difile else {
+                        unreachable!()
+                    };
+                    let diloc = dibuilder.create_debug_location(
+                        self.ctx,
+                        loc.0.try_into().unwrap(),
+                        loc.1.try_into().unwrap(),
+                        fnscope.as_debug_info_scope(),
+                        None,
+                    );
+                    let local = dibuilder.create_auto_variable(
+                        fnscope.as_debug_info_scope(),
+                        &name,
+                        file.clone(),
+                        loc.0.try_into().unwrap(),
+                        self.ditypes[&ty.to_string()],
+                        false,
+                        DIFlags::ZERO,
+                        0,
+                    );
+                    self.dilocals.insert(name.clone(), local);
+                    dibuilder.insert_declare_at_end(
+                        target,
+                        Some(local),
+                        None,
+                        diloc,
+                        self.builder.get_insert_block().unwrap(),
+                    );
+                }
+                
+                self.locals.insert(name,target);
+            },
+            TypedPattern::Err => println!("errors shouldn't be here"),
+            TypedPattern::Destructure(TypedDestructure::Unit) |
+            TypedPattern::Default => (),
+            TypedPattern::Or(_, _) => todo!("or patterns aren't allowed in here"),
+            TypedPattern::Destructure(TypedDestructure::Tuple(patterns)) => {
+                let tuple_ty = self.type_resolver.resolve_type_as_basic(expr_ty.clone());
+                let ResolvedType::Tuple { underlining, .. } = expr_ty else { unreachable!() };
+                for (idx,(pat,expr_ty)) in patterns.into_iter().zip(underlining).enumerate() {
+                    let value = self.builder.build_struct_gep(tuple_ty, value.into_pointer_value(), idx as _, "").unwrap();
+                    self.compile_destructure(expr_ty, value.as_basic_value_enum(), pat);
+                }
+            },
+            TypedPattern::Destructure(TypedDestructure::Struct { fields }) => todo!(),
+        }
+    }
+
     pub fn compile_statement(&mut self, stmnt: TypedStatement) {
         match stmnt {
             TypedStatement::IfBranching(ifbranch) => {
@@ -630,61 +692,15 @@ impl<'ctx> CodeGen<'ctx> {
             }
 
             TypedStatement::Declaration(TypedValueDeclaration {
-                ident,
+                target,
                 ty,
                 value,
                 loc,
                 ..
             }) => {
                 if let TypedValueType::Expr(expr) = value {
-                    let rty = self.type_resolver.resolve_type_as_basic(ty.clone());
-                    let pvalue = self.builder.build_alloca(rty, &ident).unwrap();
-                    let result = self.compile_expr(expr);
-                    let result = if ty.is_user() && result.is_pointer_value() {
-                        self.builder
-                            .build_load(rty, result.into_pointer_value(), "")
-                            .unwrap()
-                            .as_any_value_enum()
-                    } else {
-                        result
-                    };
-                    self.builder
-                        .build_store::<BasicValueEnum>(pvalue, result.try_into().unwrap())
-                        .unwrap();
-                    self.locals.insert(ident.clone(), pvalue);
-                    if let Some(fnscope) = &self.difunction {
-                        let Some(dibuilder) = &self.dibuilder else {
-                            unreachable!()
-                        };
-                        let Some(file) = &self.difile else {
-                            unreachable!()
-                        };
-                        let diloc = dibuilder.create_debug_location(
-                            self.ctx,
-                            loc.0.try_into().unwrap(),
-                            loc.1.try_into().unwrap(),
-                            fnscope.as_debug_info_scope(),
-                            None,
-                        );
-                        let local = dibuilder.create_auto_variable(
-                            fnscope.as_debug_info_scope(),
-                            &ident,
-                            file.clone(),
-                            loc.0.try_into().unwrap(),
-                            self.ditypes[&ty.to_string()],
-                            false,
-                            DIFlags::ZERO,
-                            0,
-                        );
-                        self.dilocals.insert(ident.clone(), local);
-                        dibuilder.insert_declare_at_end(
-                            pvalue,
-                            Some(local),
-                            None,
-                            diloc,
-                            self.builder.get_insert_block().unwrap(),
-                        );
-                    }
+                    let expr = convert_to_basic_value(self.compile_expr(expr));
+                    self.compile_destructure(ty, expr, target);
                 } else {
                     todo!("unsure here?")
                 }
@@ -1976,8 +1992,8 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
 
-    fn create_curry_list(&mut self, decl: &TypedValueDeclaration) -> GlobalValue<'ctx> {
-        let TypedValueDeclaration {
+    fn create_curry_list(&mut self, decl: &TypedTopLevelValue) -> GlobalValue<'ctx> {
+        let TypedTopLevelValue {
             ident, args, ty, ..
         } = decl;
         let curry_placeholder = self
@@ -2165,11 +2181,8 @@ impl<'ctx> CodeGen<'ctx> {
         #[cfg(debug_assertions)]
         let _ = self.module.print_to_file("./debug.ll");
         for decl in ast.declarations.into_iter().filter(|it| match it {
-            TypedDeclaration::Value(TypedValueDeclaration { value, .. })
-                if value == &TypedValueType::External =>
-            {
-                false
-            }
+            TypedDeclaration::Value(TypedTopLevelValue { value, .. })
+            if value == &TypedValueType::External =>false,
             _ => true,
         }) {
             self.compile_decl(decl);
@@ -2455,7 +2468,7 @@ impl<'ctx> CodeGen<'ctx> {
         let on = convert_to_basic_value(self.compile_expr(*on));
         let fun = current_block.get_parent().unwrap();
         let ret_block = self.ctx.append_basic_block(fun, "");
-        let cond_blocks = std::iter::once(current_block).chain(std::iter::repeat_with(|| self.ctx.append_basic_block(fun, "arm"))).take(arms.len()).collect_vec();
+        let cond_blocks = std::iter::once(current_block).chain(std::iter::repeat_with(|| self.ctx.append_basic_block(fun, ""))).take(arms.len()).collect_vec();
         let values = 
             arms.into_iter()
             .zip(&cond_blocks)
@@ -2586,7 +2599,7 @@ impl<'ctx> CodeGen<'ctx> {
                 } else {
                     self.ctx.bool_type().const_int(1, false)
                 };
-                let new_block = self.ctx.append_basic_block(fun, "arm");
+                let new_block = self.ctx.append_basic_block(fun, "");
                 new_block.move_after(curr_block);
                 self.builder.build_conditional_branch(simple, new_block, next_block);
                 self.builder.position_at_end(new_block);
@@ -2622,7 +2635,7 @@ impl<'ctx> CodeGen<'ctx> {
             },
             TypedPattern::Destructure(_) => todo!("other kinds of destructure"),
             TypedPattern::Or(lhs, rhs) => {
-                let rhs_block = self.ctx.append_basic_block(fun, "arm");
+                let rhs_block = self.ctx.append_basic_block(fun, "");
                 rhs_block.move_after(curr_block);
                 let mut lhs_bindings = bindings_to_make.clone();
                 let curr_block = self.compile_complex_pattern(
@@ -2710,7 +2723,7 @@ impl<'ctx> CodeGen<'ctx> {
                 },
                 TypedPattern::Err => unreachable!(),
                 TypedPattern::Or(lhs, rhs) => {
-                    let rhs_block = self.ctx.append_basic_block(fun, "arm");
+                    let rhs_block = self.ctx.append_basic_block(fun, "");
                     rhs_block.move_after(curr_block);
                     self.compile_pattern(*lhs, fun, cond_v, cond_ty, curr_block, rhs_block, bindings_block, bindings_phi);
                     self.builder.position_at_end(rhs_block);
@@ -2771,7 +2784,7 @@ impl<'ctx> CodeGen<'ctx> {
     ) -> (BasicBlock<'ctx>, Option<BasicValueEnum<'ctx>>) {
         let TypedMatchArm { loc, cond, block, ret } = arm;
         
-        let arm_block = self.ctx.append_basic_block(fun, "body");
+        let arm_block = self.ctx.append_basic_block(fun, "");
         arm_block.move_after(cond_block);
         self.builder.position_at_end(cond_block);
         if cond.is_simple() && cond != TypedPattern::Default {

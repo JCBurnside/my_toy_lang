@@ -3,7 +3,7 @@ use std::{collections::{HashMap, HashSet}, num::NonZeroU8};
 use thiserror::Error;
 
 use crate::{
-    inference::ast::{self, Declaration, Expr},
+    inference::ast::{self, TopLevelDeclaration, Expr},
     types::{self, FloatWidth, IntWidth, ResolvedType},
     util::ExtraUtilFunctions,
 };
@@ -29,7 +29,7 @@ impl TypedModuleDeclaration {
         let mut fwd_declares = fwd_declares.clone();
         fwd_declares.extend(decls.iter().filter_map(|it| {
             match it {
-                Declaration::Type(decl) => match decl {
+                TopLevelDeclaration::Type(decl) => match decl {
                     ast::TypeDefinition::Alias(name, value) => Some((name.clone(), value.clone())),
                     ast::TypeDefinition::Enum(_) => todo!(),
                     ast::TypeDefinition::Struct(strct) => Some((
@@ -46,7 +46,7 @@ impl TypedModuleDeclaration {
                         },
                     )),
                 },
-                Declaration::Value(decl) if decl.is_op == false => {
+                TopLevelDeclaration::Value(decl) if decl.is_op == false => {
                     Some((decl.ident.clone(), decl.ty.clone()))
                 }
                 _ => None,
@@ -55,7 +55,7 @@ impl TypedModuleDeclaration {
         let externs = decls
             .iter()
             .filter_map(|decl| match decl {
-                ast::Declaration::Value(decl) if decl.value == ast::ValueType::External => {
+                ast::TopLevelDeclaration::Value(decl) if decl.value == ast::ValueType::External => {
                     Some((decl.ident.clone(), decl.ty.clone()))
                 }
                 _ => None,
@@ -64,7 +64,7 @@ impl TypedModuleDeclaration {
         let types: HashMap<String, ast::TypeDefinition> = decls
             .iter()
             .filter_map::<(String, ast::TypeDefinition), _>(|it| match it {
-                ast::Declaration::Type(def) => Some((def.get_ident(), def.clone())),
+                ast::TopLevelDeclaration::Type(def) => Some((def.get_ident(), def.clone())),
                 _ => None,
             })
             .collect();
@@ -132,7 +132,7 @@ impl ResolvedGenericsDecl {
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum TypedDeclaration {
-    Value(TypedValueDeclaration),
+    Value(TypedTopLevelValue),
     TypeDefinition(ResolvedTypeDeclaration),
 }
 
@@ -152,20 +152,22 @@ impl TypedDeclaration {
     }
 
     pub(crate) fn try_from(
-        data: ast::Declaration,
+        data: ast::TopLevelDeclaration,
         known_externs: &HashMap<String, ResolvedType>,
         known_values: &HashMap<String, ResolvedType>,
-        _known_ops: &HashMap<String, Vec<ResolvedType>>,
+        known_ops: &HashMap<String, Vec<ResolvedType>>,
         known_types: &HashMap<String, ast::TypeDefinition>,
     ) -> Result<Self, TypingError> {
         match data {
-            Declaration::Value(decl) => Ok(Self::Value(TypedValueDeclaration::try_from(
+            TopLevelDeclaration::Value(decl) => Ok(Self::Value(TypedTopLevelValue::try_from(
                 decl,
                 known_externs,
                 known_values,
+                known_ops,
                 known_types,
             )?)),
-            Declaration::Type(define) => Ok(Self::TypeDefinition(
+            TopLevelDeclaration::Value(_)=>todo!(),
+            TopLevelDeclaration::Type(define) => Ok(Self::TypeDefinition(
                 ResolvedTypeDeclaration::try_from(define, known_values)?,
             )),
         }
@@ -185,7 +187,7 @@ impl TypedDeclaration {
     pub(crate) fn get_generics(&self) -> Vec<String> {
         match self {
             TypedDeclaration::Value(v) => v
-            .generictypes
+            .generics
             .as_ref()
             .map(|g| {
                     g.decls
@@ -211,6 +213,108 @@ impl TypedDeclaration {
     }
 }
 
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct TypedTopLevelValue {
+    pub loc : crate::Location,
+    pub is_op: bool,
+    pub ident : String,
+    pub args : Vec<TypedArgDeclaration>,
+    pub ty: ResolvedType,
+    pub value : TypedValueType,
+    pub generics : Option<ResolvedGenericsDecl>,
+    pub abi : Option<crate::ast::Abi>,
+}
+
+impl TypedTopLevelValue {
+    fn try_from(
+        value : ast::TopLevelValue,
+        known_externs: &HashMap<String, ResolvedType>,
+        known_values: &HashMap<String, ResolvedType>,
+        _known_ops: &HashMap<String, Vec<ResolvedType>>,
+        known_types: &HashMap<String, ast::TypeDefinition>,
+    ) -> Result<Self, TypingError> {
+        let ast::TopLevelValue {
+            loc,
+            is_op,
+            ident,
+            args,
+            ty,
+            value,
+            generics,
+            abi,
+            id,
+        } = value;
+        let mut known_values = known_values.clone();
+        let args = args.into_iter().map(TypedArgDeclaration::from).collect_vec();
+        known_values.extend(
+            args.iter()
+            .flat_map(|arg| arg.get_idents_with_types(known_types))
+        );
+        let value = match TypedValueType::try_from(
+            value,
+            known_externs,
+            &known_values,
+            known_types
+        ) {
+            Ok(value)=>value,
+            Err(e) => {
+                println!("{:?}", e);
+                TypedValueType::Err
+            }
+        };
+        if let Some(abi) = &abi {
+            if abi.identifier.as_str() == "C" {
+                if let ResolvedType::Function {
+                    arg: _, returns, ..
+                } = &ty
+                {
+                    if returns.is_function() {
+                        // TODO verify it's a valid c-function.
+                    }
+                }
+            }
+        }
+        Ok(Self{
+            loc,
+            is_op,
+            ident,
+            args,
+            ty,
+            value,
+            generics:generics.map(ResolvedGenericsDecl::from),
+            abi
+        })
+    }
+
+    pub(crate) fn replace_types(&mut self,types:&[(String,ResolvedType)]) {
+        for arg in &mut self.args {
+            arg.replace_types(types);
+        }
+        self.ty = types.iter().fold(self.ty.clone(), |ty,(name,new_ty)| ty.replace_generic(name,new_ty.clone()));
+        match &mut self.value {
+            TypedValueType::Function(stmnts) => stmnts
+                .into_iter()
+                .for_each(|stmnt| stmnt.replace_types(types)),
+            TypedValueType::Expr(expr) => expr.replace_types(types),
+            TypedValueType::External | TypedValueType::Err => (),
+        }
+    }
+    pub(crate) fn lower_generics(&mut self, context:&mut LoweringContext) {
+        self.ty.lower_generics(context);
+        match &mut self.value {
+            TypedValueType::Expr(expr)=> expr.lower_generics(context),
+            TypedValueType::Function(stmnts) => {
+                for stmnt in stmnts {
+                    context.args.clear();
+                    stmnt.lower_generics(context);
+                }
+            }
+            TypedValueType::Err => (),
+            TypedValueType::External => (),
+        }
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
 #[non_exhaustive]
@@ -383,7 +487,7 @@ impl StructDefinition {
 pub struct TypedValueDeclaration {
     pub loc: crate::Location,
     pub is_op: bool,
-    pub ident: String,
+    pub target : TypedPattern,
     pub args: Vec<TypedArgDeclaration>,
     pub value: TypedValueType,
     pub ty: ResolvedType,
@@ -413,7 +517,7 @@ impl TypedValueDeclaration {
             TypedValueType::Expr(expr) => expr.replace_types(replaced),
             TypedValueType::Function(stmnts) => stmnts
                 .into_iter()
-                .for_each(|expr| expr.replace_types(&replaced)),
+                .for_each(|stmnt| stmnt.replace_types(&replaced)),
             TypedValueType::External | TypedValueType::Err => (),
         }
     }
@@ -427,7 +531,7 @@ impl TypedValueDeclaration {
         let ast::ValueDeclaration {
             loc,
             is_op,
-            ident,
+            target,
             args,
             ty,
             value,
@@ -449,6 +553,7 @@ impl TypedValueDeclaration {
                 TypedValueType::Err
             }
         };
+        let target = TypedPattern::from(target, &ty);
         if let Some(abi) = &abi {
             if abi.identifier.as_str() == "C" {
                 if let ResolvedType::Function {
@@ -464,7 +569,7 @@ impl TypedValueDeclaration {
         Ok(Self {
             loc,
             is_op,
-            ident,
+            target,
             args,
             is_curried: false,
             ty,
@@ -483,7 +588,7 @@ impl TypedValueDeclaration {
                     stmnt.lower_generics(context);
                 }
             }
-            TypedValueType::Err => todo!(),
+            TypedValueType::Err => (),
             TypedValueType::External => (),
         }
     }
@@ -632,13 +737,7 @@ impl TypedValueType {
                     {
                         Ok(stmnt) => {
                             if let TypedStatement::Declaration(data) = &stmnt {
-                                let _ = known_values
-                                    .entry(data.ident.clone())
-                                    .and_modify(|it| {
-                                        *it = data.ty.clone();
-                                    })
-                                    .or_insert(data.ty.clone());
-                            }
+                                known_values.extend(data.target.get_idents_with_types());}
                             output.push(stmnt);
                         }
                         Err(e) => {
@@ -858,12 +957,7 @@ impl TypedIfBranching {
                 match TypedStatement::try_from(stmnt, known_externs, &known_values, known_types) {
                     Ok(stmnt) => {
                         if let TypedStatement::Declaration(data) = &stmnt {
-                            let _ = known_values
-                                .entry(data.ident.clone())
-                                .and_modify(|it| {
-                                    *it = data.ty.clone();
-                                })
-                                .or_insert(data.ty.clone());
+                            known_values.extend(data.target.get_idents_with_types());
                         }
                         output.push(stmnt);
                     }
@@ -912,12 +1006,7 @@ impl TypedIfBranching {
                         ) {
                             Ok(stmnt) => {
                                 if let TypedStatement::Declaration(data) = &stmnt {
-                                    let _ = block_known_values
-                                        .entry(data.ident.clone())
-                                        .and_modify(|it| {
-                                            *it = data.ty.clone();
-                                        })
-                                        .or_insert(data.ty.clone());
+                                    block_known_values.extend(data.target.get_idents_with_types());
                                 }
                                 block.push(stmnt);
                             }
@@ -945,12 +1034,7 @@ impl TypedIfBranching {
                 ) {
                     Ok(stmnt) => {
                         if let TypedStatement::Declaration(data) = &stmnt {
-                            let _ = else_block_known_values
-                                .entry(data.ident.clone())
-                                .and_modify(|it| {
-                                    *it = data.ty.clone();
-                                })
-                                .or_insert(data.ty.clone());
+                            else_block_known_values.extend(data.target.get_idents_with_types());
                         }
                         block.push(stmnt);
                     }
@@ -1680,12 +1764,8 @@ impl TypedIfExpr {
                 ) {
                     Ok(stmnt) => {
                         if let TypedStatement::Declaration(data) = &stmnt {
-                            let _ = true_block_known_values
-                                .entry(data.ident.clone())
-                                .and_modify(|it| {
-                                    *it = data.ty.clone();
-                                })
-                                .or_insert(data.ty.clone());
+                            true_block_known_values
+                                .extend(data.target.get_idents_with_types());
                         }
                         block.push(stmnt);
                     }
@@ -1735,12 +1815,7 @@ impl TypedIfExpr {
                     match TypedStatement::try_from(stmnt, known_externs, &block_known_values, known_types) {
                         Ok(stmnt) => {
                             if let TypedStatement::Declaration(data) = &stmnt {
-                                let _ = block_known_values
-                                    .entry(data.ident.clone())
-                                    .and_modify(|it| {
-                                        *it = data.ty.clone();
-                                    })
-                                    .or_insert(data.ty.clone());
+                                block_known_values.extend(data.target.get_idents_with_types());
                             }
                             block.push(stmnt);
                         }
@@ -1789,12 +1864,7 @@ impl TypedIfExpr {
                 ) {
                     Ok(stmnt) => {
                         if let TypedStatement::Declaration(data) = &stmnt {
-                            let _ = else_block_known_values
-                                .entry(data.ident.clone())
-                                .and_modify(|it| {
-                                    *it = data.ty.clone();
-                                })
-                                .or_insert(data.ty.clone());
+                            else_block_known_values.extend(data.target.get_idents_with_types());
                         }
                         block.push(stmnt);
                     }
@@ -2066,7 +2136,7 @@ fn modify_declaration(
             TypedValueType::External | TypedValueType::Err => (),
         }
         to_lower
-            .generictypes
+            .generics
             .as_mut()
             .unwrap()
             .decls
@@ -2074,8 +2144,8 @@ fn modify_declaration(
                 ResolvedType::Generic { name, .. } => !replaced.iter().any(|(r, _)| r == name),
                 _ => false,
             });
-        if to_lower.generictypes.as_ref().unwrap().decls.is_empty() {
-            to_lower.generictypes = None;
+        if to_lower.generics.as_ref().unwrap().decls.is_empty() {
+            to_lower.generics = None;
         }
     }
     match &mut to_lower {
@@ -2727,7 +2797,7 @@ impl TypedMatchArm {
             match TypedStatement::try_from(stmnt, known_externs, &known_values, known_types) {
                 Ok(stmnt) => {
                     if let TypedStatement::Declaration(v) = &stmnt {
-                        known_values.insert(v.ident.clone(), v.ty.clone());
+                        known_values.extend(v.target.get_idents_with_types());
                     }
                     new_block.push(stmnt);
                 }
@@ -2788,7 +2858,7 @@ impl TypedMatchArm {
             match TypedStatement::try_from(stmnt, known_externs, &known_values, known_types) {
                 Ok(stmnt) => {
                     if let TypedStatement::Declaration(v) = &stmnt {
-                        known_values.insert(v.ident.clone(), v.ty.clone());
+                        known_values.extend(v.target.get_idents_with_types());
                     }
                     new_block.push(stmnt);
                 }
@@ -3035,6 +3105,9 @@ mod tests {
     use super::TypedExpr;
     use crate::inference::ast;
     use crate::parser::Parser;
+    use crate::typed_ast::TypedDestructure;
+    use crate::typed_ast::TypedPattern;
+    use crate::typed_ast::TypedTopLevelValue;
     use crate::typed_ast::{
         ResolvedGenericsDecl, ResolvedTypeDeclaration, StructDefinition, TypedBinaryOpCall,
         TypedDeclaration, TypedFnCall, TypedIfBranching, TypedIfExpr, TypedMatch, TypedMatchArm,
@@ -3316,7 +3389,7 @@ let b value : (int32,(int32,int32)) -> int32 = match value where
                 Statement::Declaration(ast::ValueDeclaration {
                     loc: (0, 0),
                     is_op: false,
-                    ident: "foo".to_string(),
+                    target: ast::Pattern::Read { ident: "foo".to_string(), loc: (0,0), ty: types::INT32, id: 0 },
                     args: Vec::new(),
                     ty: types::INT32,
                     value: ast::ValueType::Expr(ast::Expr::NumericLiteral {
@@ -3336,7 +3409,7 @@ let b value : (int32,(int32,int32)) -> int32 = match value where
             TypedStatement::Declaration(TypedValueDeclaration {
                 loc: (0, 0),
                 is_op: false,
-                ident: "foo".to_string(),
+                target: TypedPattern::Read("foo".to_string(),types::INT32,(0,0)),
                 args: Vec::new(),
                 value: TypedValueType::Expr(TypedExpr::IntegerLiteral {
                     value: "1".to_string(),
@@ -3408,10 +3481,10 @@ let b value : (int32,(int32,int32)) -> int32 = match value where
         use super::TypedArgDeclaration;
         assert_eq!(
             TypedDeclaration::try_from(
-                ast::Declaration::Value(ast::ValueDeclaration {
+                ast::TopLevelDeclaration::Value(ast::TopLevelValue {
                     loc: (0, 0),
                     is_op: false,
-                    ident: "test".to_string(),
+                    ident:"test".to_string(), 
                     args: vec![ast::ArgDeclaration::Simple {
                         ident: "a".to_string(),
                         loc: (0, 0),
@@ -3441,7 +3514,7 @@ let b value : (int32,(int32,int32)) -> int32 = match value where
                 &HashMap::new(),
             )
             .expect(""),
-            TypedDeclaration::Value(super::TypedValueDeclaration {
+            TypedDeclaration::Value(super::TypedTopLevelValue {
                 loc: (0, 0),
                 is_op: false,
                 ident: "test".to_string(),
@@ -3462,9 +3535,8 @@ let b value : (int32,(int32,int32)) -> int32 = match value where
                     },
                     (0, 0)
                 )]),
-                generictypes: None,
+                generics: None,
                 abi: None,
-                is_curried: false
             }),
             r#"let test a : int32 -> int32 = 
     return 1"#
@@ -3509,7 +3581,7 @@ let main _ : () -> () =
             unreachable!()
         };
         assert_eq!(
-            &TypedDeclaration::Value(TypedValueDeclaration {
+            &TypedDeclaration::Value(TypedTopLevelValue {
                 loc: (1, 11),
                 is_op: false,
                 ident: "test".to_string(),
@@ -3542,7 +3614,7 @@ let main _ : () -> () =
                     .boxed(),
                     loc: (0, 0)
                 },
-                generictypes: Some(ResolvedGenericsDecl {
+                generics: Some(ResolvedGenericsDecl {
                     for_loc: (1, 0),
                     decls: vec![(
                         (1, 4),
@@ -3552,14 +3624,13 @@ let main _ : () -> () =
                         }
                     )],
                 }),
-                is_curried: false,
                 abi: None,
             }),
             generic,
             "generic"
         );
         assert_eq!(
-            &TypedDeclaration::Value(TypedValueDeclaration {
+            &TypedDeclaration::Value(TypedTopLevelValue {
                 loc: (3, 4),
                 is_op: false,
                 ident: "main".to_string(),
@@ -3571,7 +3642,7 @@ let main _ : () -> () =
                     TypedStatement::Declaration(TypedValueDeclaration {
                         loc: (4, 8),
                         is_op: false,
-                        ident: "x".to_string(),
+                        target: TypedPattern::Read("x".to_string(),types::INT32,(4,8)),
                         args: Vec::new(),
                         value: TypedValueType::Expr(TypedExpr::IntegerLiteral {
                             value: "3".to_string(),
@@ -3618,9 +3689,8 @@ let main _ : () -> () =
                     returns: types::UNIT.boxed(),
                     loc: (0, 0)
                 },
-                generictypes: None,
+                generics: None,
                 abi: None,
-                is_curried: false,
             }),
             main,
             "main"
@@ -3718,7 +3788,7 @@ let first a : Tuple<int32,float64> -> int32 =
         };
         assert_eq!(
             fun,
-            &TypedDeclaration::Value(TypedValueDeclaration {
+            &TypedDeclaration::Value(TypedTopLevelValue {
                 loc: (6, 4),
                 is_op: false,
                 ident: "first".to_string(),
@@ -3748,9 +3818,8 @@ let first a : Tuple<int32,float64> -> int32 =
                     returns: types::INT32.boxed(),
                     loc: (7, 36)
                 },
-                generictypes: None,
+                generics: None,
                 abi: None,
-                is_curried: false,
             }),
             "post lowering function"
         );
@@ -3816,7 +3885,7 @@ let main x : int32 -> int32 =
             unreachable!("should have three when done")
         };
         assert_eq!(
-            &TypedDeclaration::Value(TypedValueDeclaration {
+            &TypedDeclaration::Value(TypedTopLevelValue {
                 loc: (1, 11),
                 is_op: false,
                 ident: "test".to_string(),
@@ -3852,7 +3921,7 @@ let main x : int32 -> int32 =
                     .boxed(),
                     loc: (1, 23),
                 },
-                generictypes: Some(ResolvedGenericsDecl {
+                generics: Some(ResolvedGenericsDecl {
                     for_loc: (1, 0),
                     decls: vec![(
                         (1, 4),
@@ -3862,14 +3931,13 @@ let main x : int32 -> int32 =
                         }
                     )],
                 }),
-                is_curried: false,
                 abi: None,
             }),
             generic,
             "generic should be untouched"
         );
         assert_eq!(
-            &TypedDeclaration::Value(TypedValueDeclaration {
+            &TypedDeclaration::Value(TypedTopLevelValue {
                 loc: (4, 4),
                 is_op: false,
                 ident: "main".to_string(),
@@ -3911,15 +3979,14 @@ let main x : int32 -> int32 =
                     returns: types::INT32.boxed(),
                     loc: (6, 20)
                 },
-                generictypes: None,
-                is_curried: false,
+                generics: None,
                 abi: None,
             }),
             main,
             "main should have the value read changed"
         );
         assert_eq!(
-            &TypedDeclaration::Value(TypedValueDeclaration {
+            &TypedDeclaration::Value(TypedTopLevelValue {
                 loc: (1, 11),
                 is_op: false,
                 ident: "test<int32>".to_string(),
@@ -3937,9 +4004,8 @@ let main x : int32 -> int32 =
                     returns: types::INT32.boxed(),
                     loc: (0, 0)
                 },
-                generictypes: None,
+                generics: None,
                 abi: None,
-                is_curried: false,
             }),
             generated,
             "this should be generated"
@@ -3992,7 +4058,7 @@ let statement_with_else_if a b : bool -> bool -> int32 =
             unreachable!("more than two?")
         };
         assert_eq!(
-            &TypedDeclaration::Value(TypedValueDeclaration {
+            &TypedDeclaration::Value(TypedTopLevelValue {
                 loc: (1, 4),
                 is_op: false,
                 ident: "expr_with_statement".to_string(),
@@ -4071,15 +4137,14 @@ let statement_with_else_if a b : bool -> bool -> int32 =
                     returns: types::INT32.boxed(),
                     loc: (0, 0)
                 },
-                generictypes: None,
+                generics: None,
                 abi: None,
-                is_curried: false,
             }),
             expr,
             "expression if"
         );
         assert_eq!(
-            &TypedDeclaration::Value(TypedValueDeclaration {
+            &TypedDeclaration::Value(TypedTopLevelValue {
                 loc: (8, 4),
                 is_op: false,
                 ident: "statement_with_else_if".to_string(),
@@ -4137,9 +4202,8 @@ let statement_with_else_if a b : bool -> bool -> int32 =
                         loc: (9, 4)
                     }
                 )]),
-                generictypes: None,
+                generics: None,
                 abi: None,
-                is_curried: false,
             }),
             stmnt,
             "statement if"
@@ -4202,7 +4266,7 @@ let as_statement a b : int32 -> int32 -> () =
             unreachable!()
         };
         assert_eq!(
-            &TypedDeclaration::Value(TypedValueDeclaration {
+            &TypedDeclaration::Value(TypedTopLevelValue {
                 loc: (1, 4),
                 is_op: false,
                 ident: "simple_expr".to_string(),
@@ -4317,16 +4381,15 @@ let as_statement a b : int32 -> int32 -> () =
                     .boxed(),
                     loc: (0, 0)
                 },
-                generictypes: None,
+                generics: None,
                 abi: None,
-                is_curried: false,
             }),
             simple,
             "simple"
         );
 
         assert_eq!(
-            &TypedDeclaration::Value(TypedValueDeclaration {
+            &TypedDeclaration::Value(TypedTopLevelValue {
                 loc: (6, 4),
                 is_op: false,
                 ident: "nest_in_call".to_string(),
@@ -4439,16 +4502,15 @@ let as_statement a b : int32 -> int32 -> () =
                     .boxed(),
                     loc: (0, 0)
                 },
-                generictypes: None,
+                generics: None,
                 abi: None,
-                is_curried: false,
             }),
             nest_in_call,
             "nested in a call"
         );
 
         assert_eq!(
-            &TypedDeclaration::Value(TypedValueDeclaration {
+            &TypedDeclaration::Value(TypedTopLevelValue{
                 loc: (12, 4),
                 is_op: false,
                 ident: "as_statement".to_string(),
@@ -4580,9 +4642,8 @@ let as_statement a b : int32 -> int32 -> () =
                     .boxed(),
                     loc: (0, 0)
                 },
-                generictypes: None,
+                generics: None,
                 abi: None,
-                is_curried: false,
             }),
             statement,
             "in a statement and nested in itself"
@@ -4630,7 +4691,7 @@ let not_so_simple a : int32 -> [int32;4] =
         };
 
         assert_eq!(
-            &TypedDeclaration::Value(TypedValueDeclaration {
+            &TypedDeclaration::Value(TypedTopLevelValue {
                 loc: (1, 4),
                 is_op: false,
                 ident: "simple".to_string(),
@@ -4672,9 +4733,8 @@ let not_so_simple a : int32 -> [int32;4] =
                     .boxed(),
                     loc: (0, 0)
                 },
-                generictypes: None,
+                generics: None,
                 abi: None,
-                is_curried: false,
             }),
             simple,
             "simple"
@@ -4708,10 +4768,9 @@ let main _ : () -> () =
         ast.declarations.sort_by_key(|decl| decl.get_ident());
         let [f,main]=&ast.declarations[..] else { unreachable!() };
         assert_eq!(
-            &TypedDeclaration::Value(TypedValueDeclaration{
+            &TypedDeclaration::Value(TypedTopLevelValue{
                 loc : (1,4),
                 is_op:false,
-                is_curried:false,
                 ident:"f".to_string(),
                 args:vec![
                     
@@ -4724,14 +4783,14 @@ let main _ : () -> () =
                 ],
                 ty:ResolvedType::Array { underlining: types::INT32.boxed(), size: 5 }.fn_ty(&types::UNIT),
                 value:TypedValueType::Expr(TypedExpr::UnitLiteral),
-                generictypes:None,
+                generics:None,
                 abi:None,
             }),
             f,
             "the function"
         );
         assert_eq!(
-            &TypedDeclaration::Value(TypedValueDeclaration{
+            &TypedDeclaration::Value(TypedTopLevelValue{
                 loc : (3,4),
                 is_op:false,
                 ident:"main".to_string(),
@@ -4764,12 +4823,95 @@ let main _ : () -> () =
                     }),
                     TypedStatement::Return(TypedExpr::UnitLiteral, (5,4))
                 ]),
-                generictypes:None,
+                generics:None,
                 abi:None,
-                is_curried:false
             }),
             main,
             "main"
         );
+    }
+    #[test]
+    fn destructuring_statement() {
+        let ast = Parser::from_source("
+let a (v:(int32,int32)) =
+    let (x,y) = v;
+    return ();").module("".to_string()).ast;
+        let dtree = ast.get_dependencies();
+        let dtree = dtree.into_iter().map(|(key,value)| (key,value.into_iter().collect())).collect();
+        let mut inference_ctx = crate::inference::Context::new(
+            dtree, 
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new()
+        );
+        let ast = inference_ctx.inference(ast);
+        let mut ast = TypedModuleDeclaration::from(
+            ast,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        let [a] = &ast.declarations[..] else {unreachable!()};
+        assert_eq!(
+            &TypedDeclaration::Value(TypedTopLevelValue {
+                loc:(1,4),
+                is_op:false,
+                ident:"a".to_string(),
+                args:vec![TypedArgDeclaration::Simple{
+                    ident:"v".to_string(),
+                    ty:ResolvedType::Tuple {
+                        underlining:vec![
+                            types::INT32,
+                            types::INT32,
+                        ],
+                        loc:(0,0)
+                    },
+                    loc:(1,7)
+                }],
+                ty: ResolvedType::Tuple {
+                    underlining:vec![
+                        types::INT32,
+                        types::INT32,
+                    ],
+                    loc:(0,0)
+                }.fn_ty(&types::UNIT), 
+                value: TypedValueType::Function(vec![
+                    TypedStatement::Declaration(TypedValueDeclaration {
+                        loc:(2,8),
+                        is_op:false,
+                        is_curried:false,
+                        target:TypedPattern::Destructure(TypedDestructure::Tuple(vec![
+                            TypedPattern::Read("x".to_string(), types::INT32, (2,9)),
+                            TypedPattern::Read("y".to_string(), types::INT32, (2,11)),
+                        ])),
+                        args:Vec::new(),
+                        value:TypedValueType::Expr(
+                            TypedExpr::ValueRead("v".to_string(),
+                            ResolvedType::Tuple {
+                                underlining:vec![
+                                    types::INT32,
+                                    types::INT32,
+                                ],
+                                loc:(0,0)
+                            },
+                            (2,16)
+                        )),
+                        ty:ResolvedType::Tuple {
+                            underlining:vec![
+                                types::INT32,
+                                types::INT32,
+                            ],
+                            loc:(0,0)
+                        },
+                        generictypes:None,
+                        abi:None,
+                    }),
+                    TypedStatement::Return(TypedExpr::UnitLiteral,(3,4))
+                ]), 
+                generics: None, 
+                abi: None,
+            }),
+            a
+        )
     }
 }

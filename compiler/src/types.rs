@@ -220,24 +220,24 @@ impl PartialEq for ResolvedType {
 }
 
 impl ResolvedType {
-    pub(crate) fn replace_unkown_with(&mut self, id: usize, ty: Self) {
+    pub(crate) fn replace_unknown_with(&mut self, id: usize, ty: Self) {
         match self {
             Self::Unknown(i) if *i == id => *self = ty,
             Self::Ref { underlining }
             | Self::Pointer { underlining }
             | Self::Slice { underlining }
-            | Self::Array { underlining, .. } => underlining.replace_unkown_with(id, ty),
+            | Self::Array { underlining, .. } => underlining.replace_unknown_with(id, ty),
             Self::Function {
                 arg,
                 returns,
                 loc: _,
             } => {
-                arg.replace_unkown_with(id, ty.clone());
-                returns.replace_unkown_with(id, ty);
+                arg.replace_unknown_with(id, ty.clone());
+                returns.replace_unknown_with(id, ty);
             }
             Self::User { generics, .. } => {
                 for generic in generics {
-                    generic.replace_unkown_with(id, ty.clone());
+                    generic.replace_unknown_with(id, ty.clone());
                 }
             }
             _ => (),

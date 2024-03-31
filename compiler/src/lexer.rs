@@ -412,7 +412,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
             }
         } else {
             (
-                Token::Error("Unknown Lexer Error"),
+                Token::EoF,
                 (self.curr_line, self.curr_col),
             )
         }

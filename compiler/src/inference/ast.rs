@@ -12,20 +12,22 @@ pub(crate) use crate::ast::TypeDefinition;
 pub(crate) struct ModuleDeclaration {
     pub(crate) loc: crate::Location,
     pub(crate) name: String,
-    pub(crate) decls: Vec<Declaration>,
+    pub(crate) decls: Vec<TopLevelDeclaration>,
 }
 
 #[derive(PartialEq, Debug)]
-pub(crate) enum Declaration {
-    Value(ValueDeclaration),
+pub(crate) enum TopLevelDeclaration {
+    Value(TopLevelValue),
     Type(TypeDefinition),
 }
 
-impl Declaration {
+impl TopLevelDeclaration {
     pub(crate) fn get_ident(&self) -> String {
         match self {
             Self::Type(ty) => ty.get_ident(),
-            Self::Value(v) => v.ident.clone(),
+            Self::Value(v)=> {
+                v.ident.clone()
+            },
         }
     }
 
@@ -38,10 +40,23 @@ impl Declaration {
 }
 
 #[derive(PartialEq, Debug)]
+pub(crate) struct TopLevelValue {
+    pub(crate) loc : crate::Location,
+    pub(crate) is_op: bool,
+    pub(crate) ident : String,
+    pub(crate) args : Vec<ArgDeclaration>,
+    pub(crate) ty:ResolvedType,
+    pub(crate) value : ValueType,
+    pub(crate) generics : Option<GenericsDecl>,
+    pub(crate) abi : Option<crate::ast::Abi>,
+    pub(crate) id : usize
+}
+
+#[derive(PartialEq, Debug)]
 pub(crate) struct ValueDeclaration {
     pub(crate) loc: crate::Location,
     pub(crate) is_op: bool,
-    pub(crate) ident: String,
+    pub(crate) target: Pattern,
     pub(crate) args: Vec<ArgDeclaration>,
     pub(crate) ty: ResolvedType,
     pub(crate) value: ValueType,
@@ -83,14 +98,14 @@ impl ArgDeclaration {
         }
     }
     
-    pub(crate) fn replace_unkown_with(&mut self, id: usize, new_ty: ResolvedType) {
+    pub(crate) fn replace_unknown_with(&mut self, id: usize, new_ty: ResolvedType) {
         match self {
             Self::Unit { .. }| Self::DestructureStruct { .. } => (),
             Self::Simple { ty, .. }
-            | Self::Discard { ty, .. } => ty.replace_unkown_with(id, new_ty),
+            | Self::Discard { ty, .. } => ty.replace_unknown_with(id, new_ty),
             Self::DestructureTuple(contents, ty, _) => {
-                contents.iter_mut().for_each(|it| it.replace_unkown_with(id, new_ty.clone()));
-                ty.replace_unkown_with(id, new_ty);
+                contents.iter_mut().for_each(|it| it.replace_unknown_with(id, new_ty.clone()));
+                ty.replace_unknown_with(id, new_ty);
             }
         }
     }
@@ -156,6 +171,23 @@ pub(crate) enum Pattern {
     Err,
     Or(Box<Self>,Box<Self>)
 }
+impl Pattern {
+    pub(crate) fn get_idents_with_types(&self) -> HashMap<String,ResolvedType> {
+        match self {
+            Self::Read { ident, ty, .. } => [(ident.clone(),ty.clone())].into(),
+            Self::Destructure(d) => d.get_idents_with_types(),
+            Self::Or(lhs, rhs) => {
+                let mut lhs = lhs.get_idents_with_types();
+                let rhs = rhs.get_idents_with_types();
+                if lhs!=rhs {
+                    lhs.insert("<error>".to_string(), types::ERROR);
+                }
+                lhs
+            }
+            _ => HashMap::new(),
+        }
+    }
+}
 
 
 #[derive(PartialEq, Debug)]
@@ -165,6 +197,16 @@ pub(crate) enum DestructurePattern {
     },
     Tuple(Vec<Pattern>,ResolvedType,usize), // (patterns, ty, id)
     Unit,
+}
+impl DestructurePattern {
+    fn get_idents_with_types(&self) -> HashMap<String, ResolvedType> {
+        match self {
+            Self::Struct { .. } => todo!(),
+            //TODO? checking for conflicting names?
+            Self::Tuple(patterns, _, _) => patterns.iter().flat_map(Pattern::get_idents_with_types).collect(),
+            Self::Unit => HashMap::new(),
+        }
+    }
 }
 
 #[derive(PartialEq, Debug)]
