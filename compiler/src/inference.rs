@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, collections::HashMap};
+use std::{cmp::Ordering, collections::{HashMap, HashSet}};
 
 use itertools::Itertools;
 
@@ -556,25 +556,9 @@ impl Context {
             name: _,
             decls,
         } = module;
-        let order = self.dependency_tree.iter().sorted_by(|(lhs_name,lhs_depends), (rhs_name,rhs_depends)| {
-            match (lhs_depends.contains(*rhs_name), rhs_depends.contains(*lhs_name)) {
-                (true,true) => {
-                    if decls.iter().find(|decl| &decl.get_ident() == *lhs_name).map_or(false, ast::TopLevelDeclaration::has_ty) {
-                        Ordering::Less//left has explict type so it can come first
-                    } else if decls.iter().find(|decl| &decl.get_ident() == *rhs_name).map_or(false, ast::TopLevelDeclaration::has_ty) {
-                        Ordering::Greater//right has explict type so it can come first
-                    } else {
-                        todo!("remove this case.  both lhs and rhs. means they depend on each other.")
-                    }
-                }
-                (false, true) => Ordering::Less,//right depends on left thus should appear after.
-                (true, false) => Ordering::Greater,//left depends on right thus should appear after.
-                (false,false) => Ordering::Equal,//neither depend on each other.
-            }
-        })
-        .map(|(a,_)|a)
-        .cloned()
-        .collect_vec();
+        let items = self.dependency_tree.keys().cloned().collect();
+        let order = sort_on_tree(items, &self.dependency_tree);
+        let order = dbg!(order);
         decls.sort_by_key(|decl| order.iter().position(|name| name == &decl.get_ident()));
         for decl in decls {
             self.known_locals.clear();
@@ -1802,6 +1786,31 @@ impl Context {
                 self.apply_substution_pattern(rhs.as_mut(), (eid,new_ty));
             },
             _ => (),
+        }
+    }
+}
+
+fn sort_on_tree(src : Vec<String>, dependencies : &HashMap<String,Vec<String>>) -> Vec<String> {
+    let mut sorted = Vec::with_capacity(src.len());
+    let mut visited = HashSet::with_capacity(src.len());
+    for item in src {
+        visit(item,&mut visited, &mut sorted,dependencies);
+    }
+    sorted
+}
+
+fn visit(item:String, visited:&mut HashSet<String>, sorted:&mut Vec<String>, dependencies : &HashMap<String,Vec<String>>) {
+    if !visited.contains(&item) {
+        visited.insert(item.clone());
+        if let Some(deps) = dependencies.get(&item) {
+            for dep in deps {
+                visit(dep.clone(),visited,sorted,dependencies)
+            }
+        }
+        sorted.push(item)
+    } else {
+        if !sorted.contains(&item) {
+            panic!("cylic");
         }
     }
 }

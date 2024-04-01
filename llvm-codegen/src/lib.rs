@@ -47,7 +47,7 @@ pub fn compile_file(
         MultiMap::new(),
         target_machine.get_target_data(),
     );
-    let module = code_gen.compile_program(vec![ast], true, false);
+    let module = code_gen.compile_program(vec![ast], false, false);
     if let Some(path) = write_llvm_to {
         module.print_to_file(path).unwrap()
     }
