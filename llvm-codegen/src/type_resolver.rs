@@ -93,7 +93,7 @@ impl<'ctx> TypeResolver<'ctx> {
         if self.has_type(&ty) {
             return;
         }
-        match &ty {
+        match dbg!(&ty) {
             ResolvedType::Array { underlining, size } => {
                 let result = self.resolve_type_as_basic(underlining.as_ref().clone()).array_type(*size as u32);
                 self.known.insert(ty,result.as_any_type_enum());

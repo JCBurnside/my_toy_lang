@@ -1,0 +1,9 @@
+let sum3 (a:int32) (b:int32) (c:int32) = a + b + c;
+// should have a suggestion for point free.
+let sum2and3 b c = sum3 3 b c;
+
+let sum2and3_pointfree = sum3 3;
+
+let sum1and3and4 = sum2and3_pointfree 4;
+
+let main () = ();

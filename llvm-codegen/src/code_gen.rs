@@ -12,7 +12,7 @@ use inkwell::debug_info::{
 };
 use inkwell::module::Module;
 use inkwell::targets::TargetData;
-use inkwell::types::{AnyTypeEnum, BasicType, PointerType, StructType};
+use inkwell::types::{AnyTypeEnum, BasicType, BasicTypeEnum, PointerType, StructType};
 use inkwell::values::{
     AnyValue, AnyValueEnum, BasicValue, BasicValueEnum, FunctionValue, GlobalValue, IntValue, PhiValue, PointerValue
 };
@@ -1963,7 +1963,9 @@ impl<'ctx> CodeGen<'ctx> {
                                 self.known_functions
                                     .insert(decl.ident.clone(), fun.as_global_value());
                             } else {
-                                todo!("externed globals?")
+                                let ty = self.type_resolver.resolve_type_as_basic(decl.ty.clone());
+                                let gs = self.module.add_global(ty, None, &decl.ident);
+                                self.known_values.insert(decl.ident.clone(),gs.as_basic_value_enum());
                             }
                         }
                         "intrinsic" => {
@@ -1973,11 +1975,31 @@ impl<'ctx> CodeGen<'ctx> {
                             println!("unknown abi {}", abi.identifier)
                         }
                     }
-                } else if decl.ty.is_function() {
+                } else if decl.ty.is_function() && !decl.args.is_empty() {
                     let fun = self.create_curry_list(decl);
                     self.known_functions.insert(decl.ident.clone(), fun);
+                } else if decl.ty.is_function() {
+                    let TypedValueType::Expr(expr) = &decl.value else { unreachable!() };
+                    let ty = if let TypedExpr::ValueRead(name, _, _) = expr {
+                        self.ctx.struct_type(&[self.ctx.i8_type().ptr_type(AddressSpace::default()).into()], false)
+                    } else if let TypedExpr::FnCall(fun) = expr {
+                        let fields = self.fold_arg_ty(fun);
+                        let fields = [self.ctx.i8_type().ptr_type(AddressSpace::default()).into()]
+                            .into_iter()
+                            .chain(fields)
+                            .collect_vec();
+                        self.ctx.struct_type(&fields,false)
+                    } else {
+                        todo!("const other expressions?");
+                    };
+                    let value = self.module.add_global(ty, None, &decl.ident);
+                    value.set_initializer(&ty.const_zero());
+                    self.known_values.insert(decl.ident.clone(),value.as_basic_value_enum());
                 } else {
-                    //TODO! global values.
+                    let ty = self.type_resolver.resolve_type_as_basic(decl.ty.clone());
+                    let value = self.module.add_global(ty, None, &decl.ident);
+                    self.known_values.insert(decl.ident.clone(),value.as_basic_value_enum());
+                    todo!("compile time values?")
                 }
             }
             TypedDeclaration::TypeDefinition(def) => match def {
@@ -2158,7 +2180,7 @@ impl<'ctx> CodeGen<'ctx> {
     pub fn compile_module(
         &mut self,
         mut ast: compiler::typed_ast::TypedModuleDeclaration,
-    ) -> Module<'ctx> {
+    ) -> (Module<'ctx>,Vec<(TypedTopLevelValue,GlobalValue<'ctx>)>) {
         if self.dibuilder.is_some() {
             let debug_metadata_version = self.ctx.i32_type().const_int(3, false);
             self.module.add_basic_value_flag(
@@ -2167,6 +2189,7 @@ impl<'ctx> CodeGen<'ctx> {
                 debug_metadata_version,
             )
         }
+        
 
         ast.declarations.sort_by(|a, b| match (a, b) {
             (TypedDeclaration::Value(_), TypedDeclaration::Value(_)) => std::cmp::Ordering::Equal,
@@ -2180,7 +2203,23 @@ impl<'ctx> CodeGen<'ctx> {
         }
         #[cfg(debug_assertions)]
         let _ = self.module.print_to_file("./debug.ll");
-        for decl in ast.declarations.into_iter().filter(|it| match it {
+
+        let (global_curries, declarations) = {
+            let mut split = ast.declarations
+                .into_iter()
+                .into_group_map_by(|decl| {
+                    match decl {
+                        TypedDeclaration::Value(decl) => decl.args.is_empty(),
+                        TypedDeclaration::TypeDefinition(_) => false,
+                    }
+                });
+            let global_curries = if let Some((_,curries)) = split.remove_entry(&true) { curries}  else {Vec::new()};
+            let others = if let Some((_,others)) = split.remove_entry(&false) { others } else { Vec::new() };
+            (global_curries,others)
+        };
+
+
+        for decl in declarations.into_iter().filter(|it| match it {
             TypedDeclaration::Value(TypedTopLevelValue { value, .. })
             if value == &TypedValueType::External =>false,
             _ => true,
@@ -2211,7 +2250,12 @@ impl<'ctx> CodeGen<'ctx> {
         if let Some(dibuilder) = &self.dibuilder {
             dibuilder.finalize()
         }
-        self.module.clone()
+        let globals = global_curries.into_iter().map(|value|{
+            let TypedDeclaration::Value(value) = value else { unreachable!() };
+            let gv = self.module.get_global(&value.ident).unwrap();
+            (value,gv)
+        }).collect();
+        (self.module.clone(),globals)
     }
 
     pub(crate) fn replace_module(&mut self, new_module: Module<'ctx>) -> Module<'ctx> {
@@ -2356,7 +2400,7 @@ impl<'ctx> CodeGen<'ctx> {
             self.dibuilder = Some(dibulder);
             self.compile_unit = Some(compile_unit);
         }
-
+        let mut globals_to_be_init = Vec::new();
         for file in ast {
             self.current_module = file.name.clone() + ".fb";
             if is_debug {
@@ -2366,7 +2410,8 @@ impl<'ctx> CodeGen<'ctx> {
                 let difile = dibuilder.create_file(&file.name, "");
                 self.difile = Some(difile);
             }
-            self.compile_module(file);
+            let (_,values) = self.compile_module(file);
+            globals_to_be_init.extend(values);
             self.difile = None
         }
 
@@ -2381,42 +2426,25 @@ impl<'ctx> CodeGen<'ctx> {
                 );
                 let bb = self.ctx.append_basic_block(entry, "");
                 self.builder.position_at_end(bb);
+                for (value,gv) in globals_to_be_init {
+                    
+                    let TypedValueType::Expr(expr) = value.value else { unreachable!() };
+                    let TypedExpr::FnCall(fun) = &expr else { unreachable!() };
+                    let fields = self.fold_arg_ty(fun);
+                        let fields = [self.ctx.i8_type().ptr_type(AddressSpace::default()).into()]
+                            .into_iter()
+                            .chain(fields)
+                            .collect_vec();
+                    let ty = self.ctx.struct_type(&fields,false);
+                    let ptr_value =self.compile_expr(expr).into_pointer_value();
+                    let value = self.builder.build_load(ty, ptr_value, "").unwrap();
+                    self.builder.build_store(gv.as_pointer_value(), value);
+                    self.builder.build_free(ptr_value);
+                }
                 let gs = self.module.get_global(&main_name).unwrap();
                 let main = self
                     .builder
-                    .build_struct_gep(self.curry_ty, gs.as_pointer_value(), 0, "")
-                    .unwrap();
-                let main = self
-                    .builder
-                    .build_load(self.ctx.i8_type().ptr_type(AddressSpace::default()), main, "")
-                    .unwrap()
-                    .into_pointer_value();
-                let main = self
-                    .builder
-                    .build_bitcast(
-                        main,
-                        self.ctx
-                            .void_type()
-                            .fn_type(
-                                &[
-                                    self.ctx
-                                        .struct_type(
-                                            &[self
-                                                .ctx
-                                                .i8_type()
-                                                .ptr_type(AddressSpace::default())
-                                                .into()],
-                                            false,
-                                        )
-                                        .ptr_type(AddressSpace::default())
-                                        .into(),
-                                    self.type_resolver.resolve_arg_type(&types::UNIT).into(),
-                                ],
-                                false,
-                            )
-                            .ptr_type(AddressSpace::default()),
-                        "",
-                    )
+                    .build_load(self.ctx.i8_type().ptr_type(AddressSpace::default()), gs.as_pointer_value(), "main")
                     .unwrap()
                     .into_pointer_value();
                 let main_t = self.type_resolver.resolve_type_as_function(&types::UNIT.fn_ty(&types::UNIT));
@@ -2833,8 +2861,18 @@ impl<'ctx> CodeGen<'ctx> {
             value
         }
     }
+    fn fold_arg_ty(&mut self, fun : &TypedFnCall) -> Vec<BasicTypeEnum<'ctx>> {
+        let TypedFnCall { value, arg, arg_t, .. } = fun;
+        let arg_t = self.type_resolver.resolve_type_as_basic(arg_t.clone());
+        if let TypedExpr::FnCall(fun) = value.as_ref() {
+            let mut out = self.fold_arg_ty(fun);
+            out.push(arg_t);
+            out
+        } else {
+            vec![arg_t]
+        }
+    }
 }
-
 fn convert_to_basic_value<'ctx>(value: AnyValueEnum<'ctx>) -> BasicValueEnum<'ctx> {
     match value {
         AnyValueEnum::ArrayValue(v) => BasicValueEnum::ArrayValue(v),

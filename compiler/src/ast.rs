@@ -136,7 +136,9 @@ impl TopLevelValue {
     }
 
     fn get_dependencies(&self) -> HashSet<String> {
-        self.value.get_dependencies(vec![self.ident.clone()])
+        let mut values = self.args.iter().flat_map(ArgDeclaration::get_idents).collect_vec();
+        values.push(self.ident.clone());
+        self.value.get_dependencies(values)
     }
 }
 #[derive(Debug, PartialEq, Clone)]

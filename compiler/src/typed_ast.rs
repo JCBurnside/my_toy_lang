@@ -137,7 +137,7 @@ pub enum TypedDeclaration {
 }
 
 impl TypedDeclaration {
-    fn get_ident(&self) -> String {
+    pub(crate) fn get_ident(&self) -> String {
         match self {
             Self::Value(v) => v.ident.clone(),
             Self::TypeDefinition(decl) => decl.get_ident(),
