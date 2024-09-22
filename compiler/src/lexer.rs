@@ -11,7 +11,7 @@ struct Lexer<I: Clone> {
 
 macro_rules! operators {
     () => {
-        '|' | '>' | '<' | '!' | '@' | '$' | '=' | '&' | '+' | '-' | '\\' | '/' | '*' | '^' | '.'
+        '|' | '>' | '<' | '!' | '@' | '=' | '&' | '+' | '-' | '\\' | '/' | '*' | '^' | '.'
     };
 }
 
@@ -387,6 +387,11 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                     self.curr_col += 3;
                     (Token::Enum, (self.curr_line, start_col))
                 }
+                ':' if self.source_stream.clone().next() == Some(':') => {
+                    let _ = self.source_stream.next();
+                    self.curr_col += 1;
+                    (Token::Scope, (self.curr_line, start_col))
+                }
                 ':' => (Token::Colon, (self.curr_line, start_col)),
                 c => {
                     let inner: String = self
@@ -411,10 +416,7 @@ impl<I: Iterator<Item = char> + Clone> Lexer<Peekable<I>> {
                 }
             }
         } else {
-            (
-                Token::EoF,
-                (self.curr_line, self.curr_col),
-            )
+            (Token::EoF, (self.curr_line, self.curr_col))
         }
     }
 }
@@ -470,6 +472,7 @@ mod tests {
 
     use super::TokenStream;
     use itertools::Itertools;
+    use pretty_assertions::assert_eq;
 
     #[test]
     #[ignore = "for debugging only"]
@@ -710,8 +713,13 @@ let match_expr_with_block x : int32 -> int32 = match x where
         assert_eq!(
             TokenStream::from_source("extern").map(fst).collect_vec(),
             [Token::Extern, Token::EoF],
-            ""
-        )
+            "extern"
+        );
+        assert_eq!(
+            TokenStream::from_source("::").map(fst).collect_vec(),
+            [Token::Scope, Token::EoF],
+            ":: (scope)"
+        );
     }
 
     #[test]
@@ -937,8 +945,8 @@ match x where
             [
                 
                 Match,Ident("x".to_string()),Where,
-                Op("|".to_string()),Ident("Foo".to_string()),Colon,Colon,Ident("Y".to_string()),Ident("bar".to_string()),Arrow,GroupOpen,GroupClose,
-                Op("|".to_string()),Ident("Foo".to_string()),Colon,Colon,Ident("Z".to_string()),CurlOpen,Ident("a".to_string()),Comma,Ident("b".to_string()),CurlClose,Arrow,GroupOpen,GroupClose,
+                Op("|".to_string()),Ident("Foo".to_string()),Scope,Ident("Y".to_string()),Ident("bar".to_string()),Arrow,GroupOpen,GroupClose,
+                Op("|".to_string()),Ident("Foo".to_string()),Scope,Ident("Z".to_string()),CurlOpen,Ident("a".to_string()),Comma,Ident("b".to_string()),CurlClose,Arrow,GroupOpen,GroupClose,
                 EoF
             ],
             "Match"

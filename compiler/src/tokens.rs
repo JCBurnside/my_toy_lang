@@ -45,6 +45,7 @@ pub enum Token {
     BeginBlock,
     EndBlock,
     EoF,
+    Scope,
 
     Error(&'static str /*reason*/),
 }

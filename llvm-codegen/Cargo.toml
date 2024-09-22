@@ -6,8 +6,8 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "master", features = ["llvm15-0-force-dynamic"] }
+inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "master", features = ["llvm18-0-force-dynamic"] }
 compiler = { path = "../compiler" }
-itertools = "0.12.1"
+itertools = "0.13"
 multimap = "0.10.0"
 self_cell = "1.0.3"

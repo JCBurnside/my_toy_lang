@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use crate::{
     // ast::{EnumDeclation, StructDefinition},
     types::{self, ResolvedType},
-    util::ExtraUtilFunctions,
 };
 
 pub use crate::ast::GenericsDecl;
@@ -25,9 +24,7 @@ impl TopLevelDeclaration {
     pub(crate) fn get_ident(&self) -> String {
         match self {
             Self::Type(ty) => ty.get_ident(),
-            Self::Value(v)=> {
-                v.ident.clone()
-            },
+            Self::Value(v) => v.ident.clone(),
         }
     }
 
@@ -41,15 +38,15 @@ impl TopLevelDeclaration {
 
 #[derive(PartialEq, Debug)]
 pub(crate) struct TopLevelValue {
-    pub(crate) loc : crate::Location,
+    pub(crate) loc: crate::Location,
     pub(crate) is_op: bool,
-    pub(crate) ident : String,
-    pub(crate) args : Vec<ArgDeclaration>,
-    pub(crate) ty:ResolvedType,
-    pub(crate) value : ValueType,
-    pub(crate) generics : Option<GenericsDecl>,
-    pub(crate) abi : Option<crate::ast::Abi>,
-    pub(crate) id : usize
+    pub(crate) ident: String,
+    pub(crate) args: Vec<ArgDeclaration>,
+    pub(crate) ty: ResolvedType,
+    pub(crate) value: ValueType,
+    pub(crate) generics: Option<GenericsDecl>,
+    pub(crate) abi: Option<crate::ast::Abi>,
+    pub(crate) id: usize,
 }
 
 #[derive(PartialEq, Debug)]
@@ -68,49 +65,58 @@ pub(crate) struct ValueDeclaration {
 #[derive(PartialEq, Debug, Clone)]
 pub(crate) enum ArgDeclaration {
     Simple {
-        loc : crate::Location,
+        loc: crate::Location,
         ident: String,
-        ty:ResolvedType,
-        id : usize,
+        ty: ResolvedType,
+        id: usize,
     },
-    DestructureTuple(Vec<ArgDeclaration>,ResolvedType, crate::Location),
+    DestructureTuple(Vec<ArgDeclaration>, ResolvedType, crate::Location),
     DestructureStruct {
-        loc:crate::Location,
-        struct_ident : String,
-        fields : Vec<String>,
-        renamed_fields : HashMap<String,String>
+        loc: crate::Location,
+        struct_ident: String,
+        fields: Vec<String>,
+        renamed_fields: HashMap<String, String>,
     },
     Discard {
-        loc:crate::Location,
-        ty:ResolvedType,
+        loc: crate::Location,
+        ty: ResolvedType,
     },
-    Unit { loc:crate::Location, ty:ResolvedType },
+    Unit {
+        loc: crate::Location,
+        ty: ResolvedType,
+    },
 }
 
 impl ArgDeclaration {
     pub(crate) fn get_ty(&self) -> ResolvedType {
         match self {
-            Self::Unit { .. }=> types::UNIT,
-            Self::DestructureStruct { struct_ident, .. } => ResolvedType::User { name: struct_ident.clone(), generics: Vec::new(), loc: (0,0) },
+            Self::Unit { .. } => types::UNIT,
+            Self::DestructureStruct { struct_ident, .. } => ResolvedType::User {
+                name: struct_ident.clone(),
+                generics: Vec::new(),
+                loc: (0, 0),
+            },
             Self::Simple { ty, .. }
             | Self::Discard { ty, .. }
-            | Self::DestructureTuple(_, ty,_) => ty.clone()
+            | Self::DestructureTuple(_, ty, _) => ty.clone(),
         }
     }
-    
+
     pub(crate) fn replace_unknown_with(&mut self, id: usize, new_ty: ResolvedType) {
         match self {
-            Self::Unit { .. }| Self::DestructureStruct { .. } => (),
-            Self::Simple { ty, .. }
-            | Self::Discard { ty, .. } => ty.replace_unknown_with(id, new_ty),
+            Self::Unit { .. } | Self::DestructureStruct { .. } => (),
+            Self::Simple { ty, .. } | Self::Discard { ty, .. } => {
+                ty.replace_unknown_with(id, new_ty)
+            }
             Self::DestructureTuple(contents, ty, _) => {
-                contents.iter_mut().for_each(|it| it.replace_unknown_with(id, new_ty.clone()));
+                contents
+                    .iter_mut()
+                    .for_each(|it| it.replace_unknown_with(id, new_ty.clone()));
                 ty.replace_unknown_with(id, new_ty);
             }
         }
     }
 }
-
 
 #[derive(PartialEq, Debug)]
 pub(crate) enum ValueType {
@@ -157,29 +163,35 @@ pub(crate) struct MatchArm {
 #[derive(PartialEq, Debug)]
 pub(crate) enum Pattern {
     Default,
-    ConstNumber(String,ResolvedType),
+    ConstNumber(String, ResolvedType),
     ConstStr(String),
     ConstChar(String),
-    ConstBool(bool),//again why?
-    Read{
-        ident:String,
-        loc:crate::Location,
-        ty:ResolvedType,
-        id:usize,
+    ConstBool(bool), //again why?
+    Read {
+        ident: String,
+        loc: crate::Location,
+        ty: ResolvedType,
+        id: usize,
     },
     Destructure(DestructurePattern),
     Err,
-    Or(Box<Self>,Box<Self>)
+    EnumVariant {
+        ty: ResolvedType,
+        variant: String,
+        pattern: Option<Box<Self>>,
+        loc: crate::Location,
+    },
+    Or(Box<Self>, Box<Self>),
 }
 impl Pattern {
-    pub(crate) fn get_idents_with_types(&self) -> HashMap<String,ResolvedType> {
+    pub(crate) fn get_idents_with_types(&self) -> HashMap<String, ResolvedType> {
         match self {
-            Self::Read { ident, ty, .. } => [(ident.clone(),ty.clone())].into(),
+            Self::Read { ident, ty, .. } => [(ident.clone(), ty.clone())].into(),
             Self::Destructure(d) => d.get_idents_with_types(),
             Self::Or(lhs, rhs) => {
                 let mut lhs = lhs.get_idents_with_types();
                 let rhs = rhs.get_idents_with_types();
-                if lhs!=rhs {
+                if lhs != rhs {
                     lhs.insert("<error>".to_string(), types::ERROR);
                 }
                 lhs
@@ -189,13 +201,13 @@ impl Pattern {
     }
 }
 
-
 #[derive(PartialEq, Debug)]
 pub(crate) enum DestructurePattern {
     Struct {
-        fields:HashMap<String,Pattern>,
+        base_ty: ResolvedType,
+        fields: HashMap<String, Pattern>,
     },
-    Tuple(Vec<Pattern>,ResolvedType,usize), // (patterns, ty, id)
+    Tuple(Vec<Pattern>, ResolvedType, usize), // (patterns, ty, id)
     Unit,
 }
 impl DestructurePattern {
@@ -203,7 +215,10 @@ impl DestructurePattern {
         match self {
             Self::Struct { .. } => todo!(),
             //TODO? checking for conflicting names?
-            Self::Tuple(patterns, _, _) => patterns.iter().flat_map(Pattern::get_idents_with_types).collect(),
+            Self::Tuple(patterns, _, _) => patterns
+                .iter()
+                .flat_map(Pattern::get_idents_with_types)
+                .collect(),
             Self::Unit => HashMap::new(),
         }
     }
@@ -239,8 +254,8 @@ pub(crate) enum Expr {
     },
     TupleLiteral {
         contents: Vec<Expr>,
-        loc:crate::Location,
-        id:usize
+        loc: crate::Location,
+        id: usize,
     },
     #[allow(unused)]
     ListLiteral {
@@ -273,14 +288,18 @@ impl Expr {
     }
     pub(crate) fn get_retty(&self, ctx: &mut crate::inference::Context) -> ResolvedType {
         match self {
-            Expr::TupleLiteral { contents, loc, id } => {
+            Expr::TupleLiteral {
+                contents,
+                loc: _,
+                id: _,
+            } => {
                 if contents.is_empty() {
                     // in theory shouldn't need this but gonna be safe.
                     types::UNIT
                 } else {
                     ResolvedType::Tuple {
-                        underlining:contents.iter().map(|expr|expr.get_retty(ctx)).collect(),
-                        loc:(0,0)
+                        underlining: contents.iter().map(|expr| expr.get_retty(ctx)).collect(),
+                        loc: (0, 0),
                     }
                 }
             }
@@ -298,12 +317,12 @@ impl Expr {
             Expr::ArrayLiteral { contents, .. } => {
                 if contents.is_empty() {
                     ResolvedType::Array {
-                        underlining: ctx.get_next_type_id().boxed(),
+                        underlining: ctx.get_next_type_id().into(),
                         size: 0,
                     }
                 } else {
                     ResolvedType::Array {
-                        underlining: contents.first().unwrap().get_retty(ctx).boxed(),
+                        underlining: contents.first().unwrap().get_retty(ctx).into(),
                         size: contents.len(),
                     }
                 }

@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::{typed_ast, util::ExtraUtilFunctions};
+use crate::typed_ast;
 
 use itertools::Itertools;
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
@@ -86,39 +86,48 @@ pub enum ResolvedType {
     Str,
     //probably going to be implimented as a null checked pointer (at time of creation).
     Ref {
-        underlining: Box<ResolvedType>,
+        underlining: Box<Self>,
     },
     Pointer {
-        underlining: Box<ResolvedType>,
+        underlining: Box<Self>,
     },
     Unit,
     //used as rt only
     Void,
     Slice {
-        underlining: Box<ResolvedType>,
+        underlining: Box<Self>,
     },
     Function {
-        arg: Box<ResolvedType>,
-        returns: Box<ResolvedType>,
+        arg: Box<Self>,
+        returns: Box<Self>,
         loc: crate::Location,
     },
     User {
         name: String,
-        generics: Vec<ResolvedType>,
+        generics: Vec<Self>,
+        loc: crate::Location,
+    },
+
+    /// atm no way to express this in source.  Associated types and possibly variant types to come.
+    Dependent {
+        base: Box<Self>,
+        ident: String,
+        actual : Box<Self>,
+        generics: Vec<Self>,
         loc: crate::Location,
     },
 
     Array {
-        underlining: Box<ResolvedType>,
+        underlining: Box<Self>,
         size: usize,
     },
     // ForwardUser{name:String},
     Alias {
-        actual: Box<ResolvedType>,
+        actual: Box<Self>,
         loc: crate::Location,
     },
     Tuple {
-        underlining: Vec<ResolvedType>,
+        underlining: Vec<Self>,
         loc: crate::Location,
     },
     Generic {
@@ -269,8 +278,8 @@ impl ResolvedType {
 
     pub fn fn_ty(&self, returns: &Self) -> Self {
         Self::Function {
-            arg: self.clone().boxed(),
-            returns: returns.clone().boxed(),
+            arg: self.clone().into(),
+            returns: returns.clone().into(),
             loc: (0, 0),
         }
     }
@@ -284,16 +293,15 @@ impl ResolvedType {
 
     pub fn pass_by_pointer(&self) -> bool {
         match self {
-            Self::Array { .. }
-            | Self::Tuple { .. }
-            | Self::Function { .. }
-            | Self::User { .. } => true,
-            _ => false
+            Self::Array { .. } | Self::Tuple { .. } | Self::Function { .. } | Self::User { .. } => {
+                true
+            }
+            _ => false,
         }
     }
 
     pub fn is_array(&self) -> bool {
-        matches!(self,Self::Array { .. })
+        matches!(self, Self::Array { .. })
     }
 
     pub fn is_user(&self) -> bool {
@@ -302,20 +310,20 @@ impl ResolvedType {
 
     pub fn get_all_types(&self) -> HashSet<String> {
         match self {
-            ResolvedType::User { .. }
-            | ResolvedType::Bool
-            | ResolvedType::Int { .. }
-            | ResolvedType::Float { .. }
-            | ResolvedType::Char
-            | ResolvedType::Str => [self.to_string()].into(),
-            ResolvedType::Ref { underlining }
-            | ResolvedType::Pointer { underlining }
-            | ResolvedType::Slice { underlining }
-            | ResolvedType::Array { underlining, .. } => {
+            Self::User { .. }
+            | Self::Bool
+            | Self::Int { .. }
+            | Self::Float { .. }
+            | Self::Char
+            | Self::Str => [self.to_string()].into(),
+            Self::Ref { underlining }
+            | Self::Pointer { underlining }
+            | Self::Slice { underlining }
+            | Self::Array { underlining, .. } => {
                 let tys = underlining.get_all_types();
                 tys
             }
-            ResolvedType::Function {
+            Self::Function {
                 arg,
                 returns,
                 loc: _,
@@ -324,17 +332,19 @@ impl ResolvedType {
                 tys.extend(returns.get_all_types().into_iter());
                 tys
             }
-            ResolvedType::Alias { actual, loc: _ } => actual.get_all_types(),
-            ResolvedType::Tuple {
+            Self::Alias { actual, loc: _ } => actual.get_all_types(),
+            Self::Tuple {
                 underlining: underling,
                 loc: _,
             } => underling.iter().flat_map(Self::get_all_types).collect(),
-            ResolvedType::Unit
-            | ResolvedType::Number
-            | ResolvedType::Void
-            | ResolvedType::Generic { .. }
-            | ResolvedType::Unknown(_) => HashSet::new(),
-            ResolvedType::Error => todo!(),
+            Self::Dependent { base, .. } => {
+                base.get_all_types()
+                // todo associated types.
+            }
+            Self::Unit | Self::Number | Self::Void | Self::Generic { .. } | Self::Unknown(_) => {
+                HashSet::new()
+            }
+            Self::Error => todo!(),
         }
     }
 
@@ -405,24 +415,24 @@ impl ResolvedType {
     pub(crate) fn replace_user_with_generic(self, target_name: &str) -> Self {
         match self {
             ResolvedType::Ref { underlining } => Self::Ref {
-                underlining: underlining.replace_user_with_generic(target_name).boxed(),
+                underlining: underlining.replace_user_with_generic(target_name).into(),
             },
             ResolvedType::Pointer { underlining } => Self::Ref {
-                underlining: underlining.replace_user_with_generic(target_name).boxed(),
+                underlining: underlining.replace_user_with_generic(target_name).into(),
             },
             ResolvedType::Slice { underlining } => Self::Slice {
-                underlining: underlining.replace_user_with_generic(target_name).boxed(),
+                underlining: underlining.replace_user_with_generic(target_name).into(),
             },
             ResolvedType::Function { arg, returns, loc } => Self::Function {
-                arg: arg.replace_user_with_generic(target_name).boxed(),
-                returns: returns.replace_user_with_generic(target_name).boxed(),
+                arg: arg.replace_user_with_generic(target_name).into(),
+                returns: returns.replace_user_with_generic(target_name).into(),
                 loc: loc,
             },
             ResolvedType::Array {
                 underlining: underlying,
                 size,
             } => Self::Array {
-                underlining: underlying.replace_user_with_generic(target_name).boxed(),
+                underlining: underlying.replace_user_with_generic(target_name).into(),
                 size,
             },
             ResolvedType::User { name, loc, .. } if &name == target_name => {
@@ -449,6 +459,9 @@ impl ResolvedType {
                 actual: underlining,
                 ..
             }
+            | ResolvedType::Dependent {
+                base: underlining, ..
+            }
             | ResolvedType::Ref { underlining } => underlining.as_mut().lower_generics(context),
             ResolvedType::Function { arg, returns, .. } => {
                 arg.as_mut().lower_generics(context);
@@ -464,6 +477,8 @@ impl ResolvedType {
                     generics.iter().map(ResolvedType::to_string).join(",")
                 );
                 if !context.generated_generics.contains_key(&new_name) {
+                    // println!("{name}");
+
                     let mut target = context.globals.get(name).unwrap().clone();
                     let zipped = target
                         .get_generics()
@@ -472,7 +487,9 @@ impl ResolvedType {
                         .collect_vec();
                     target.replace_types(&zipped, context);
                     target.lower_generics(context);
-                    let _ = context.generated_generics.insert(new_name.clone(), target);
+                    let _ = context
+                        .generated_generics
+                        .insert(new_name.clone(), dbg!(target));
                 }
                 *name = new_name;
                 *generics = Vec::new();
@@ -514,8 +531,8 @@ impl ResolvedType {
                 }
             }
             Self::Function { arg, returns, loc } => Self::Function {
-                arg: arg.replace(nice_name, actual).boxed(),
-                returns: returns.replace(nice_name, actual).boxed(),
+                arg: arg.replace(nice_name, actual).into(),
+                returns: returns.replace(nice_name, actual).into(),
                 loc: *loc,
             },
             _ => self.clone(),
@@ -614,6 +631,7 @@ impl ResolvedType {
 impl ToString for ResolvedType {
     fn to_string(&self) -> String {
         match self {
+            ResolvedType::Dependent { .. } => todo!(),
             ResolvedType::Number => "{number}".to_string(),
             ResolvedType::Bool => "bool".to_string(),
             ResolvedType::Alias { actual, .. } => actual.to_string(),
@@ -729,20 +747,20 @@ pub use consts::*;
 
 #[cfg(test)]
 mod tests {
-    use crate::util::ExtraUtilFunctions;
 
+    use pretty_assertions::assert_eq;
     #[test]
     #[ignore = "for testing equality"]
     fn eq() {
         println!(
             "{}",
             super::ResolvedType::Function {
-                arg: super::INT32.boxed(),
-                returns: super::INT32.boxed(),
+                arg: super::INT32.into(),
+                returns: super::INT32.into(),
                 loc: (0, 0)
             } == super::ResolvedType::Function {
-                arg: super::INT32.boxed(),
-                returns: super::INT32.boxed(),
+                arg: super::INT32.into(),
+                returns: super::INT32.into(),
                 loc: (1, 0)
             }
         )

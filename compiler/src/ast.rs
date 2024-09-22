@@ -83,6 +83,101 @@ impl ModuleDeclaration {
             .flat_map(|it| it.get_dependencies())
             .collect()
     }
+
+    pub fn get_types(&self) -> HashMap<String, ResolvedType> {
+        self.declarations
+            .iter()
+            .flat_map(|decl| match decl {
+                TopLevelDeclaration::Value(_) => [].into(),
+                TopLevelDeclaration::Mod(m) => m.get_types(),
+                TopLevelDeclaration::TypeDefinition(TypeDefinition::Alias(new, old)) => {
+                    [(new.clone(), old.clone())].into()
+                }
+                TopLevelDeclaration::TypeDefinition(TypeDefinition::Struct(s)) => [(
+                    s.ident.clone(),
+                    ResolvedType::User {
+                        name: s.ident.clone(),
+                        generics: s.generics
+                        .as_ref()
+                        .map(|generics| 
+                            generics.decls.iter().map(|(loc,name)|
+                                ResolvedType::Generic { name:name.clone(), loc:*loc }
+                        ).collect())
+                        .unwrap_or_default(),
+                        loc: s.loc,
+                    }
+                )].into(),
+                TopLevelDeclaration::TypeDefinition(TypeDefinition::Enum(e)) => {
+                    let base_ty = ResolvedType::User {
+                        name: e.ident.clone(),
+                        generics: e.generics
+                        .as_ref()
+                        .map(|generics| 
+                            generics.decls.iter().map(|(loc,name)|
+                                ResolvedType::Generic { name:name.clone(), loc:*loc }
+                        ).collect())
+                        .unwrap_or_default(),
+                        loc: e.loc,
+                    };
+                    let mut out = vec![
+                        (e.ident.clone(),base_ty.clone())
+                    ];
+
+                    for variant in &e.values {
+                        match variant {
+                            EnumVariant::Unit { ident, loc } => (),
+                            EnumVariant::Tuple { ident, ty, loc, } =>
+                                out.push(
+                                    (
+                                        format!("{}::{}",&e.ident,ident),
+                                        ResolvedType::Dependent { 
+                                            base: base_ty.clone().into(), 
+                                            ident: ident.clone(),
+                                            actual : ty.clone().into(),
+                                            generics:e.generics
+                                            .as_ref()
+                                            .map(|generics| 
+                                                generics.decls.iter().map(|(loc,name)|
+                                                    ResolvedType::Generic { name:name.clone(), loc:*loc }
+                                            ).collect())
+                                            .unwrap_or_default(), 
+                                            loc: *loc
+                                        }
+                                    )
+                                ),
+                            EnumVariant::Struct { ident, fields,  loc, .. } => {
+                                let new_ident = format!("{}::{}",&e.ident,ident);
+                                let generics : Vec<_> = e.generics
+                                .as_ref()
+                                .map(|generics| 
+                                    generics.decls.iter().map(|(loc,name)|
+                                        ResolvedType::Generic { name:name.clone(), loc:*loc }
+                                ).collect())
+                                .unwrap_or_default();
+                                out.push(
+                                    (
+                                        new_ident.clone(),
+                                        ResolvedType::Dependent { 
+                                            base: base_ty.clone().into(), 
+                                            ident: ident.clone(),
+                                            actual : ResolvedType::User { 
+                                                name: new_ident, 
+                                                generics: generics.clone(), 
+                                                loc: *loc 
+                                            }.into(),
+                                            generics, 
+                                            loc: *loc
+                                        }
+                                    )
+                                )
+                            },
+                        }
+                    }
+                    HashMap::from_iter(out)
+                }
+            })
+            .collect()
+    }
 }
 
 #[derive(PartialEq, Debug)]
@@ -93,7 +188,6 @@ pub enum TopLevelDeclaration {
     Mod(ModuleDeclaration),
     Value(TopLevelValue),
 }
-
 
 impl TopLevelDeclaration {
     pub(crate) fn replace(&mut self, nice_name: &str, actual: &str) {
@@ -107,9 +201,7 @@ impl TopLevelDeclaration {
     fn get_dependencies(&self) -> HashMap<String, HashSet<String>> {
         match self {
             TopLevelDeclaration::Mod(m) => m.get_dependencies(),
-            TopLevelDeclaration::Value(v) =>{
-                [(v.ident.clone(), v.get_dependencies())].into()
-            } ,
+            TopLevelDeclaration::Value(v) => [(v.ident.clone(), v.get_dependencies())].into(),
             TopLevelDeclaration::TypeDefinition(_) => [].into(),
         }
     }
@@ -117,26 +209,33 @@ impl TopLevelDeclaration {
 
 #[derive(PartialEq, Debug)]
 pub struct TopLevelValue {
-    pub loc : crate::Location,
+    pub loc: crate::Location,
     pub is_op: bool,
-    pub ident : String,
-    pub args : Vec<ArgDeclaration>,
-    pub ty:Option<ResolvedType>,
-    pub value : ValueType,
-    pub generics : Option<GenericsDecl>,
-    pub abi : Option<Abi>,
+    pub ident: String,
+    pub args: Vec<ArgDeclaration>,
+    pub ty: Option<ResolvedType>,
+    pub value: ValueType,
+    pub generics: Option<GenericsDecl>,
+    pub abi: Option<Abi>,
 }
 
 impl TopLevelValue {
-    fn replace(&mut self, nice_name:&str, actual:&str) {
+    fn replace(&mut self, nice_name: &str, actual: &str) {
         if let Some(ty) = self.ty.as_mut() {
-            *ty = ty.replace(nice_name,actual);
+            *ty = ty.replace(nice_name, actual);
         }
         self.value.replace(nice_name, actual);
+        for arg in &mut self.args {
+            arg.replace(nice_name, actual);
+        }
     }
 
     fn get_dependencies(&self) -> HashSet<String> {
-        let mut values = self.args.iter().flat_map(ArgDeclaration::get_idents).collect_vec();
+        let mut values = self
+            .args
+            .iter()
+            .flat_map(ArgDeclaration::get_idents)
+            .collect_vec();
         values.push(self.ident.clone());
         self.value.get_dependencies(values)
     }
@@ -151,7 +250,7 @@ pub struct GenericsDecl {
 pub enum TypeDefinition {
     Alias(String, ResolvedType),
     #[allow(unused)]
-    Enum(EnumDeclation),
+    Enum(EnumDeclaration),
     Struct(StructDefinition),
 }
 
@@ -159,7 +258,7 @@ impl TypeDefinition {
     pub(crate) fn get_ident(&self) -> String {
         match self {
             TypeDefinition::Alias(name, _) => name.clone(),
-            TypeDefinition::Enum(_) => todo!(),
+            TypeDefinition::Enum(enum_) => enum_.ident.clone(),
             TypeDefinition::Struct(strct) => strct.ident.clone(),
         }
     }
@@ -167,10 +266,45 @@ impl TypeDefinition {
     fn replace(&mut self, nice_name: &str, actual: &str) {
         match self {
             Self::Alias(_, ty) => *ty = ty.replace(nice_name, actual),
-            Self::Enum(_) => todo!(),
+            Self::Enum(enum_) => {
+                if enum_.ident == nice_name {
+                    enum_.ident = actual.to_string();
+                }
+                if let Some(generics) = &enum_.generics {
+                    if generics
+                        .decls
+                        .iter()
+                        .find(|(_, ident)| ident == nice_name)
+                        .is_some()
+                    {
+                        return;
+                    }
+                }
+                for variant in &mut enum_.values {
+                    match variant {
+                        EnumVariant::Unit { .. } => (),
+                        EnumVariant::Tuple { ty, .. } => *ty = ty.replace(nice_name, actual),
+                        EnumVariant::Struct { fields, .. } => {
+                            for field in fields {
+                                field.ty = field.ty.replace(nice_name, actual);
+                            }
+                        }
+                    }
+                }
+            }
             Self::Struct(strct) => {
                 if strct.ident == nice_name {
                     strct.ident = actual.to_string();
+                }
+                if let Some(generics) = &strct.generics {
+                    if generics
+                        .decls
+                        .iter()
+                        .find(|(_, ident)| ident == nice_name)
+                        .is_some()
+                    {
+                        return;
+                    }
                 }
                 for field in &mut strct.values {
                     field.ty = field.ty.replace(nice_name, actual);
@@ -179,9 +313,9 @@ impl TypeDefinition {
         }
     }
 }
-
+/// {generics} enum {ident} = {values}
 #[derive(PartialEq, Debug, Clone)]
-pub struct EnumDeclation {
+pub struct EnumDeclaration {
     pub ident: String,
     pub generics: Option<GenericsDecl>,
     pub values: Vec<EnumVariant>,
@@ -191,9 +325,30 @@ pub struct EnumDeclation {
 #[derive(PartialEq, Debug, Clone)]
 #[allow(unused)]
 pub enum EnumVariant {
-    Unit(String, crate::Location),
-    Tuple(String, Vec<ResolvedType>, crate::Location),
-    Struct(String, StructDefinition, crate::Location),
+    /// | {ident}
+    Unit { ident: String, loc: crate::Location },
+    /// | {ident} ({ty*})
+    Tuple {
+        ident: String,
+        ty: ResolvedType,
+        loc: crate::Location,
+    },
+    /// | {ident} {{ {feilddecl*} }}
+    Struct {
+        ident: String,
+        fields: Vec<FieldDecl>,
+        loc: crate::Location,
+    },
+}
+
+impl EnumVariant {
+    pub fn get_ident(&self) -> String {
+        match self {
+            Self::Struct { ident, .. } | Self::Unit { ident, .. } | Self::Tuple { ident, .. } => {
+                ident.clone()
+            }
+        }
+    }
 }
 
 #[derive(PartialEq, Debug, Clone)]
@@ -214,71 +369,97 @@ pub struct FieldDecl {
 #[derive(PartialEq, Debug, Clone)]
 pub enum ArgDeclaration {
     Simple {
-        loc : crate::Location,
+        loc: crate::Location,
         ident: String,
-        ty:Option<ResolvedType>,
+        ty: Option<ResolvedType>,
     },
     DestructureTuple(Vec<ArgDeclaration>, Option<ResolvedType>, crate::Location),
     DestructureStruct {
-        loc:crate::Location,
-        struct_ident : String,
-        fields : Vec<String>,
-        renamed_fields : HashMap<String,String>
+        loc: crate::Location,
+        struct_ident: String,
+        fields: Vec<String>,
+        renamed_fields: HashMap<String, String>,
     },
     Discard {
-        loc:crate::Location,
-        ty:Option<ResolvedType>,
+        loc: crate::Location,
+        ty: Option<ResolvedType>,
     },
     Unit {
-        loc:crate::Location,
-        ty:Option<ResolvedType>,
+        loc: crate::Location,
+        ty: Option<ResolvedType>,
     },
 }
 
 impl ArgDeclaration {
-    pub(crate) fn apply_generic(&mut self, generic:&str) {
+    pub(crate) fn replace(&mut self, nice_name: &str, actual: &str) {
         match self {
-            Self::Discard { ty, .. }
-            | Self::Unit { ty, .. }
-            | Self::Simple { ty, .. } => if let Some(ty) = ty {
-                *ty = ty.clone().replace_user_with_generic(generic);
-            },
+            Self::Discard { ty, .. } | Self::Unit { ty, .. } | Self::Simple { ty, .. } => {
+                *ty = ty.as_ref().map(|ty| ty.replace(nice_name, actual))
+            }
+            Self::DestructureTuple(subs, ty, _) => {
+                *ty = ty.as_ref().map(|ty| ty.replace(nice_name, actual));
+                for sub_arg in subs {
+                    sub_arg.replace(nice_name, actual);
+                }
+            }
+            Self::DestructureStruct { struct_ident, .. } if struct_ident == nice_name => {
+                *struct_ident = actual.to_string();
+            }
+            Self::DestructureStruct { .. } => (),
+        }
+    }
+
+    pub(crate) fn apply_generic(&mut self, generic: &str) {
+        match self {
+            Self::Discard { ty, .. } | Self::Unit { ty, .. } | Self::Simple { ty, .. } => {
+                if let Some(ty) = ty {
+                    *ty = ty.clone().replace_user_with_generic(generic);
+                }
+            }
             Self::DestructureTuple(contents, ty, _) => {
                 if let Some(ty) = ty {
                     *ty = ty.clone().replace_user_with_generic(generic);
                 }
                 contents.iter_mut().for_each(|it| it.apply_generic(generic))
             }
-            _ => ()
+            _ => (),
         }
     }
     fn get_idents(&self) -> Vec<String> {
         match self {
             Self::Simple { ident, .. } => vec![ident.clone()],
-            Self::DestructureStruct { fields, renamed_fields, .. } => {
-                renamed_fields.values().cloned().chain(fields.iter().cloned()).collect()
-            },
-            Self::DestructureTuple(decls, _,_) => decls.iter().flat_map(Self::get_idents).collect(),
+            Self::DestructureStruct {
+                fields,
+                renamed_fields,
+                ..
+            } => renamed_fields
+                .values()
+                .cloned()
+                .chain(fields.iter().cloned())
+                .collect(),
+            Self::DestructureTuple(decls, _, _) => {
+                decls.iter().flat_map(Self::get_idents).collect()
+            }
             Self::Discard { .. } | Self::Unit { .. } => Vec::new(),
         }
     }
     fn get_types(&self) -> HashSet<String> {
         match self {
             Self::DestructureTuple(idents, ty, _) => {
-                let mut out : HashSet<String> = idents.iter().flat_map(Self::get_types).collect();
+                let mut out: HashSet<String> = idents.iter().flat_map(Self::get_types).collect();
                 if let Some(ty) = ty {
                     out.extend(ty.get_all_types());
                 }
                 out
             }
             Self::DestructureStruct { struct_ident, .. } => [struct_ident.clone()].into(),
-            Self::Discard { ty, .. }
-            | Self::Unit { ty, .. }
-            | Self::Simple { ty, .. } => if let Some(ty) = ty  {
-                ty.get_all_types()
-            } else {
-                HashSet::new()
-            },
+            Self::Discard { ty, .. } | Self::Unit { ty, .. } | Self::Simple { ty, .. } => {
+                if let Some(ty) = ty {
+                    ty.get_all_types()
+                } else {
+                    HashSet::new()
+                }
+            }
         }
     }
 }
@@ -315,18 +496,22 @@ impl ValueDeclaration {
         }
         for arg in &self.args {
             match arg {
-                ArgDeclaration::Simple { ty, .. }
-                | ArgDeclaration::DestructureTuple(_, ty, _)
-                 if ty.is_some() => {
+                ArgDeclaration::Simple { ty, .. } | ArgDeclaration::DestructureTuple(_, ty, _)
+                    if ty.is_some() =>
+                {
                     let Some(ty) = ty else { unreachable!() };
                     let tys = ty.get_all_types();
                     output.extend(tys);
                 }
 
-                _=>(),
+                _ => (),
             }
         }
-        let args = self.args.iter().flat_map(ArgDeclaration::get_idents).collect_vec();
+        let args = self
+            .args
+            .iter()
+            .flat_map(ArgDeclaration::get_idents)
+            .collect_vec();
         let dependencies = self.value.get_dependencies(args);
         output.extend(dependencies);
         output
@@ -832,20 +1017,29 @@ pub enum Pattern {
     ConstStr(String),
     ConstChar(String),
     ConstBool(bool), //... this is one is odd but gonna support it anyway and eventaully warn with suggestion to convert to if
-    Read(String,crate::Location),
+    Read(String, crate::Location),
     Destructure(PatternDestructure),
+    EnumVariant {
+        ty: Option<String>,
+        variant: String,
+        pattern: Option<Box<Self>>,
+        loc: crate::Location,
+    },
+    // maybe this one day?
+    // {name} @ {subpatterns}
+    // Binding(String /*name*/,Box<Self>/*sub_patterns*/,crate::locations)
     Error,
-    Or(Box<Self>, Box<Self>),/*
-        | 0 | 1 | 2 -> Combo(
-                            ConstNumber(0),
-                            Combo(
-                                ConstNumber(1),
-                                ConstNumber(2)
-                            )
-                        )
-    */
-    // todo! conditional branch
-    // todo! variant patterns.
+    Or(Box<Self>, Box<Self>), /*
+                                  | 0 | 1 | 2 -> Combo(
+                                                      ConstNumber(0),
+                                                      Combo(
+                                                          ConstNumber(1),
+                                                          ConstNumber(2)
+                                                      )
+                                                  )
+                              */
+                              // todo! conditional branch
+                              // todo! variant patterns.
 }
 
 impl Pattern {
@@ -853,7 +1047,7 @@ impl Pattern {
         match self {
             Self::Read(name, _) => [name.clone()].into(),
             Self::Destructure(d) => d.get_idents(),
-            Self::Or(lhs,rhs) => {
+            Self::Or(lhs, rhs) => {
                 let mut idents = lhs.get_idents();
                 idents.extend(rhs.get_idents());
                 idents
@@ -866,7 +1060,8 @@ impl Pattern {
 #[derive(Debug, PartialEq, Eq)]
 pub enum PatternDestructure {
     Struct {
-        fields : HashMap<String,Pattern>
+        base_ty: Option<String>,
+        fields: HashMap<String, Pattern>,
     },
     Tuple(Vec<Pattern>),
     Unit,
@@ -875,7 +1070,7 @@ impl PatternDestructure {
     fn get_idents(&self) -> HashSet<String> {
         match self {
             Self::Tuple(pats) => pats.iter().flat_map(Pattern::get_idents).collect(),
-            Self::Struct { fields } => todo!("struct destructuring"),
+            Self::Struct { .. } => todo!("struct destructuring"),
             Self::Unit => HashSet::new(),
         }
     }
