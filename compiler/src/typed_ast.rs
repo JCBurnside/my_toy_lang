@@ -73,14 +73,87 @@ impl TypedModuleDeclaration {
                 _ => None,
             })
             .collect();
-        let types: HashMap<String, ast::TypeDefinition> = decls
-            .iter()
-            .filter_map::<(String, ast::TypeDefinition), _>(|it| match it {
-                ast::TopLevelDeclaration::Type(def) => Some((def.get_ident(), def.clone())),
-                _ => None,
-            })
-            .collect();
+        let mut types: HashMap<String, ResolvedTypeDeclaration> = HashMap::new();
+        // decls
+        //     .iter()
+        //     .filter_map::<(String, ast::TypeDefinition), _>(|it| match it {
 
+        //         ast::TopLevelDeclaration::Type(def) => Some((def.get_ident(), def.clone())),
+        //         _ => None,
+        //     })
+        //     .collect();
+        for def in decls
+            .iter()
+            .filter(|it| matches!(it, ast::TopLevelDeclaration::Type(_)))
+        {
+            let ast::TopLevelDeclaration::Type(def) = def else {
+                unreachable!()
+            };
+            match def {
+                ast::TypeDefinition::Alias(_, _resolved_type) => unreachable!(), //should be resolved at cannonizing
+                ast::TypeDefinition::Enum(enum_declaration) => {
+                    let base =
+                        ResolvedTypeDeclaration::try_from(def.clone(), &fwd_declares).unwrap();
+                    let generics = if let ResolvedTypeDeclaration::Enum(e) = &base {
+                        e.generics.clone()
+                    } else {
+                        unreachable!()
+                    };
+                    for variant in &enum_declaration.values {
+                        match variant {
+                            crate::ast::EnumVariant::Unit { ident, loc } => {
+                                types.insert(
+                                    format!("{}::{}", &enum_declaration.ident, &ident),
+                                    ResolvedTypeDeclaration::Dependent {
+                                        base: base.clone().into(),
+                                        actual: ResolvedTypeDeclaration::Alias(
+                                            ident.clone(),
+                                            ResolvedType::Void,
+                                        )
+                                        .into(),
+                                    },
+                                );
+                            }
+                            crate::ast::EnumVariant::Tuple { ident, ty, loc } => {
+                                types.insert(
+                                    format!("{}::{}", &enum_declaration.ident, &ident),
+                                    ResolvedTypeDeclaration::Dependent {
+                                        base: base.clone().into(),
+                                        actual: ResolvedTypeDeclaration::Alias(
+                                            ident.clone(),
+                                            ty.clone(),
+                                        )
+                                        .into(),
+                                    },
+                                );
+                            }
+                            crate::ast::EnumVariant::Struct { ident, fields, loc } => {
+                                types.insert(
+                                    format!("{}::{}", &enum_declaration.ident, &ident),
+                                    ResolvedTypeDeclaration::Dependent {
+                                        base: base.clone().into(),
+                                        actual: ResolvedTypeDeclaration::Struct(StructDefinition {
+                                            ident: ident.clone(),
+                                            generics: generics.clone(),
+                                            fields: fields.clone(),
+                                            loc: *loc,
+                                        })
+                                        .into(),
+                                    },
+                                );
+                            }
+                        }
+                    }
+                    types.insert(enum_declaration.ident.clone(), base);
+                }
+                ast::TypeDefinition::Struct(struct_definition) => {
+                    types.insert(
+                        struct_definition.ident.clone(),
+                        ResolvedTypeDeclaration::try_from(def.clone(), &fwd_declares).unwrap(),
+                    );
+                }
+            }
+        }
         Self {
             loc,
             name,
@@ -89,7 +162,7 @@ impl TypedModuleDeclaration {
                 .map(|decl| {
                     TypedDeclaration::try_from(decl, &externs, &fwd_declares, operators, &types)
                 })
-                .filter_map(|decl| match decl {
+                .filter_map(|decl: Result<TypedDeclaration, TypingError>| match decl {
                     Ok(decl) => Some(decl),
                     Err(e) => {
                         println!("{:?}", e);
@@ -118,11 +191,8 @@ impl TypedModuleDeclaration {
             .iter_mut()
             .filter(|it| it.get_generics().is_empty())
             .for_each(|it| it.lower_generics(&mut context));
-        self.declarations.extend(
-            dbg!(context.generated_generics)
-                .into_iter()
-                .map(|(_, it)| it),
-        );
+        self.declarations
+            .extend(context.generated_generics.into_iter().map(|(_, it)| it));
         // println!("{:?}", self.declarations)
     }
 }
@@ -172,7 +242,7 @@ impl TypedDeclaration {
         known_externs: &HashMap<String, ResolvedType>,
         known_values: &HashMap<String, ResolvedType>,
         known_ops: &HashMap<String, Vec<ResolvedType>>,
-        known_types: &HashMap<String, ast::TypeDefinition>,
+        known_types: &HashMap<String, ResolvedTypeDeclaration>,
     ) -> Result<Self, TypingError> {
         match data {
             TopLevelDeclaration::Value(decl) => Ok(Self::Value(TypedTopLevelValue::try_from(
@@ -246,7 +316,7 @@ impl TypedTopLevelValue {
         known_externs: &HashMap<String, ResolvedType>,
         known_values: &HashMap<String, ResolvedType>,
         _known_ops: &HashMap<String, Vec<ResolvedType>>,
-        known_types: &HashMap<String, ast::TypeDefinition>,
+        known_types: &HashMap<String, ResolvedTypeDeclaration>,
     ) -> Result<Self, TypingError> {
         let ast::TopLevelValue {
             loc,
@@ -334,10 +404,40 @@ impl TypedTopLevelValue {
 #[derive(Debug, PartialEq, Clone)]
 #[non_exhaustive]
 pub enum ResolvedTypeDeclaration {
-    // Alias(String, ResolvedType),
+    Alias(String, ResolvedType),
     Enum(TypedEnumDeclaration),
     Struct(StructDefinition),
+    Dependent { base: Box<Self>, actual: Box<Self> },
 }
+
+impl Into<ResolvedType> for &ResolvedTypeDeclaration {
+    fn into(self) -> ResolvedType {
+        match self {
+            ResolvedTypeDeclaration::Alias(_, resolved_type) => resolved_type.clone(),
+            ResolvedTypeDeclaration::Enum(TypedEnumDeclaration {
+                ident,
+                loc,
+                generics,
+                ..
+            })
+            | ResolvedTypeDeclaration::Struct(StructDefinition {
+                ident,
+                loc,
+                generics,
+                ..
+            }) => ResolvedType::User {
+                name: ident.clone(),
+                generics: generics
+                    .as_ref()
+                    .map(|generics| generics.decls.iter().map(|(_, it)| it).cloned().collect())
+                    .unwrap_or_default(),
+                loc: *loc,
+            },
+            ResolvedTypeDeclaration::Dependent { base, actual } => actual.as_ref().into(),
+        }
+    }
+}
+
 impl ResolvedTypeDeclaration {
     fn try_from(
         origin: ast::TypeDefinition,
@@ -375,6 +475,13 @@ impl ResolvedTypeDeclaration {
             //     }
             //     _ => (),
             // },
+            ResolvedTypeDeclaration::Dependent { base, actual } => {
+                base.lower_generics(context); //gonna leave this here just in case.  should be covered by the other branches but better safe than sorry
+                actual.lower_generics(context);
+            }
+            ResolvedTypeDeclaration::Alias(_, ty) => {
+                ty.lower_generics(context);
+            }
             ResolvedTypeDeclaration::Enum(enum_) => enum_.lower_generics(context),
             ResolvedTypeDeclaration::Struct(stct) => stct.lower_generics(context),
         }
@@ -382,6 +489,8 @@ impl ResolvedTypeDeclaration {
 
     fn get_ident(&self) -> String {
         match self {
+            ResolvedTypeDeclaration::Alias(ident, _) => ident.clone(),
+            ResolvedTypeDeclaration::Dependent { actual, .. } => actual.get_ident(),
             ResolvedTypeDeclaration::Enum(enum_) => enum_.ident.clone(),
             ResolvedTypeDeclaration::Struct(strct) => strct.ident.clone(),
         }
@@ -389,6 +498,9 @@ impl ResolvedTypeDeclaration {
 
     fn get_generics(&self) -> Vec<String> {
         match self {
+            //todo! generic aliases
+            ResolvedTypeDeclaration::Alias(_, _) => Vec::new(),
+            ResolvedTypeDeclaration::Dependent { actual, .. } => actual.get_generics(),
             ResolvedTypeDeclaration::Enum(enum_) => enum_
                 .generics
                 .as_ref()
@@ -424,6 +536,11 @@ impl ResolvedTypeDeclaration {
 
     fn replace_types(&mut self, types: &[(String, ResolvedType)], context: &mut LoweringContext) {
         match self {
+            ResolvedTypeDeclaration::Alias(_, _ty) => (), // do i need to do something here?
+            ResolvedTypeDeclaration::Dependent { base, actual } => {
+                base.replace_types(types, context);
+                actual.replace_types(types, context);
+            }
             ResolvedTypeDeclaration::Enum(enum_) => enum_.replace_types(types, context),
             ResolvedTypeDeclaration::Struct(strct) => strct.replace_types(types, context),
         }
@@ -431,6 +548,8 @@ impl ResolvedTypeDeclaration {
 
     fn is_generic(&self) -> bool {
         match self {
+            Self::Alias(_, _) => false, //todo! generic aliases
+            Self::Dependent { base, .. } => base.is_generic(),
             Self::Enum(enum_) => enum_.generics.is_some(),
             Self::Struct(strct) => strct.generics.is_some(),
         }
@@ -667,7 +786,7 @@ impl TypedValueDeclaration {
         data: ast::ValueDeclaration,
         known_externs: &HashMap<String, ResolvedType>,
         known_values: &HashMap<String, ResolvedType>,
-        known_types: &HashMap<String, ast::TypeDefinition>,
+        known_types: &HashMap<String, ResolvedTypeDeclaration>,
     ) -> Result<Self, TypingError> {
         let ast::ValueDeclaration {
             loc,
@@ -697,7 +816,7 @@ impl TypedValueDeclaration {
                 TypedValueType::Err
             }
         };
-        let target = TypedPattern::from(target, &ty);
+        let target = TypedPattern::from(target, &ty, known_types);
         if let Some(abi) = &abi {
             if abi.identifier.as_str() == "C" {
                 if let ResolvedType::Function {
@@ -812,9 +931,10 @@ impl TypedArgDeclaration {
 
     fn get_idents_with_types(
         &self,
-        known_types: &HashMap<String, ast::TypeDefinition>,
+        known_types: &HashMap<String, ResolvedTypeDeclaration>,
     ) -> HashMap<String, ResolvedType> {
         match self {
+            // TODO! enum destructure.
             Self::Unit { .. } | Self::Discard { .. } => HashMap::new(),
             Self::DestructureTuple(contents, _, _) => contents
                 .iter()
@@ -826,14 +946,14 @@ impl TypedArgDeclaration {
                 fields,
                 renamed_fields,
             } => {
-                let error_struct = crate::ast::StructDefinition {
+                let error_struct = StructDefinition {
                     ident: "<error>".to_string(),
                     generics: None,
-                    values: Vec::new(),
+                    fields: Vec::new(),
                     loc: (0, 0),
                 };
                 let struct_ty = if let Some(typ) = known_types.get(struct_ident) {
-                    if let ast::TypeDefinition::Struct(typ) = typ {
+                    if let ResolvedTypeDeclaration::Struct(typ) = typ {
                         typ
                     } else {
                         &error_struct
@@ -847,7 +967,7 @@ impl TypedArgDeclaration {
                         (
                             ident.clone(),
                             struct_ty
-                                .values
+                                .fields
                                 .iter()
                                 .find_map(|field| {
                                     if &field.name == ident {
@@ -865,7 +985,7 @@ impl TypedArgDeclaration {
                         out.insert(
                             new.clone(),
                             struct_ty
-                                .values
+                                .fields
                                 .iter()
                                 .find_map(|field| {
                                     if &field.name == old {
@@ -918,7 +1038,7 @@ impl TypedValueType {
         data: ast::ValueType,
         known_externs: &HashMap<String, ResolvedType>,
         known_values: &HashMap<String, ResolvedType>,
-        known_types: &HashMap<String, ast::TypeDefinition>,
+        known_types: &HashMap<String, ResolvedTypeDeclaration>,
     ) -> Result<Self, TypingError> {
         match data {
             ast::ValueType::Expr(expr) => {
@@ -1013,7 +1133,7 @@ impl TypedStatement {
         statement: ast::Statement,
         known_externs: &HashMap<String, ResolvedType>,
         known_values: &HashMap<String, ResolvedType>,
-        known_types: &HashMap<String, ast::TypeDefinition>,
+        known_types: &HashMap<String, ResolvedTypeDeclaration>,
     ) -> Result<Self, TypingError> {
         match statement {
             ast::Statement::Declaration(data) => Ok(
@@ -1113,7 +1233,7 @@ impl TypedIfBranching {
         value: ast::IfBranching,
         known_externs: &HashMap<String, ResolvedType>,
         known_values: &HashMap<String, ResolvedType>,
-        known_types: &HashMap<String, ast::TypeDefinition>,
+        known_types: &HashMap<String, ResolvedTypeDeclaration>,
     ) -> Self {
         let ast::IfBranching {
             cond,
@@ -1311,7 +1431,7 @@ impl TypedFnCall {
         data: ast::FnCall,
         known_externs: &HashMap<String, ResolvedType>,
         known_values: &HashMap<String, ResolvedType>,
-        known_types: &HashMap<String, ast::TypeDefinition>,
+        known_types: &HashMap<String, ResolvedTypeDeclaration>,
     ) -> Result<Self, TypingError> {
         let ast::FnCall {
             loc,
@@ -1419,7 +1539,7 @@ impl TypedStructConstruction {
         data: ast::StructConstruction,
         known_externs: &HashMap<String, ResolvedType>,
         known_values: &HashMap<String, ResolvedType>,
-        known_types: &HashMap<String, ast::TypeDefinition>,
+        known_types: &HashMap<String, ResolvedTypeDeclaration>,
     ) -> Result<Self, TypingError> {
         let ast::StructConstruction {
             loc,
@@ -1431,7 +1551,15 @@ impl TypedStructConstruction {
         } = data;
         let mut new_fields = HashMap::new();
         let declaration = match known_types.get(&ident) {
-            Some(ast::TypeDefinition::Struct(decl)) => decl,
+            Some(ResolvedTypeDeclaration::Struct(decl)) => decl,
+            Some(ResolvedTypeDeclaration::Dependent { actual, .. }) => {
+                if let ResolvedTypeDeclaration::Struct(decl) = actual.as_ref() {
+                    decl
+                } else {
+                    println!("not a struct declaration");
+                    return Err(TypingError::UnknownType);
+                }
+            }
             Some(_) => {
                 println!("not a struct declaration");
                 return Err(TypingError::UnknownType);
@@ -1461,7 +1589,7 @@ impl TypedStructConstruction {
                 }
             };
             if field.get_ty() != ResolvedType::Error {
-                if let Some(old_field) = declaration.values.iter().find(|it| it.name == name) {
+                if let Some(old_field) = declaration.fields.iter().find(|it| it.name == name) {
                     if old_field.ty == field.get_ty() || old_field.ty.is_generic() {
                         new_fields.insert(name, (field, loc));
                     } else {
@@ -1570,7 +1698,7 @@ impl TypedExpr {
         value: ast::Expr,
         known_externs: &HashMap<String, ResolvedType>,
         known_values: &HashMap<String, ResolvedType>,
-        known_types: &HashMap<String, ast::TypeDefinition>,
+        known_types: &HashMap<String, ResolvedTypeDeclaration>,
         already_processed_args: Vec<ResolvedType>,
     ) -> Result<Self, TypingError> {
         match value {
@@ -1930,7 +2058,7 @@ impl TypedIfExpr {
         value: ast::IfExpr,
         known_externs: &HashMap<String, ResolvedType>,
         known_values: &HashMap<String, ResolvedType>,
-        known_types: &HashMap<String, ast::TypeDefinition>,
+        known_types: &HashMap<String, ResolvedTypeDeclaration>,
     ) -> Self {
         let ast::IfExpr {
             cond,
@@ -2178,7 +2306,7 @@ impl TypedMemberRead {
         value: ast::BinaryOpCall,
         known_externs: &HashMap<String, ResolvedType>,
         known_values: &HashMap<String, ResolvedType>,
-        known_types: &HashMap<String, ast::TypeDefinition>,
+        known_types: &HashMap<String, ResolvedTypeDeclaration>,
         already_processed_args: Vec<ResolvedType>,
     ) -> Result<Self, TypingError> {
         let ast::BinaryOpCall { loc, lhs, rhs, .. } = value;
@@ -2210,12 +2338,24 @@ impl TypedMemberRead {
                 loc,
             })
         } else if let Some(strct) = known_types.get(&ty.to_string()) {
-            let ast::TypeDefinition::Struct(def) = strct else {
-                unreachable!("how are you accessing a member not on a struct")
+            let def = match strct {
+                ResolvedTypeDeclaration::Struct(def) => def,
+                ResolvedTypeDeclaration::Dependent { actual, .. } => {
+                    if let ResolvedTypeDeclaration::Struct(def) = actual.as_ref() {
+                        def
+                    } else {
+                        println!("not a struct declaration");
+                        return Err(TypingError::UnknownType);
+                    }
+                }
+                _ => {
+                    println!("not a struct declaration");
+                    return Err(TypingError::UnknownType);
+                }
             };
-            let offset = def.values.iter().position(|it| it.name == member);
+            let offset = def.fields.iter().position(|it| it.name == member);
             let ty = def
-                .values
+                .fields
                 .iter()
                 .find_map(|it| {
                     if it.name == member {
@@ -2564,7 +2704,7 @@ impl TypedBinaryOpCall {
         value: ast::BinaryOpCall,
         known_externs: &HashMap<String, ResolvedType>,
         known_values: &HashMap<String, ResolvedType>,
-        known_types: &HashMap<String, ast::TypeDefinition>,
+        known_types: &HashMap<String, ResolvedTypeDeclaration>,
     ) -> Result<Self, TypingError> {
         let ast::BinaryOpCall {
             loc,
@@ -2852,7 +2992,7 @@ impl TypedMatch {
         value: ast::Match,
         known_externs: &HashMap<String, ResolvedType>,
         known_values: &HashMap<String, ResolvedType>,
-        known_types: &HashMap<String, ast::TypeDefinition>,
+        known_types: &HashMap<String, ResolvedTypeDeclaration>,
     ) -> Self {
         let ast::Match {
             loc,
@@ -2886,7 +3026,7 @@ impl TypedMatch {
         value: ast::Match,
         known_externs: &HashMap<String, ResolvedType>,
         known_values: &HashMap<String, ResolvedType>,
-        known_types: &HashMap<String, ast::TypeDefinition>,
+        known_types: &HashMap<String, ResolvedTypeDeclaration>,
     ) -> Self {
         let ast::Match {
             loc,
@@ -2922,7 +3062,7 @@ impl TypedMatch {
     }
 
     pub fn get_ty(&self) -> ResolvedType {
-        if dbg!(self)
+        if self
             .arms
             .iter()
             .map(|it| it.ret.as_ref().map(|it| it.get_ty()))
@@ -2939,7 +3079,7 @@ impl TypedMatch {
                 .map(|it| it.ret.as_ref().map(|it| it.get_ty()).unwrap_or(types::UNIT))
                 .filter(ResolvedType::is_error)
                 .counts();
-            let most_common = dbg!(types)
+            let most_common = types
                 .iter()
                 .max_by_key(|(_, it)| *it)
                 .map(|(it, _)| it)
@@ -2993,7 +3133,7 @@ impl TypedMatchArm {
         value: ast::MatchArm,
         known_externs: &HashMap<String, ResolvedType>,
         known_values: &HashMap<String, ResolvedType>,
-        known_types: &HashMap<String, ast::TypeDefinition>,
+        known_types: &HashMap<String, ResolvedTypeDeclaration>,
         expected_comp: &ResolvedType,
     ) -> Self {
         let ast::MatchArm {
@@ -3004,7 +3144,7 @@ impl TypedMatchArm {
         } = value;
         let mut known_values = known_values.clone();
         let mut new_block = Vec::with_capacity(block.len());
-        let cond = TypedPattern::from(cond, expected_comp);
+        let cond = TypedPattern::from(cond, expected_comp, known_types);
         known_values.extend(cond.get_idents_with_types());
         for stmnt in block {
             match TypedStatement::try_from(stmnt, known_externs, &known_values, known_types) {
@@ -3052,21 +3192,19 @@ impl TypedMatchArm {
         arm: ast::MatchArm,
         known_externs: &HashMap<String, ResolvedType>,
         known_values: &HashMap<String, ResolvedType>,
-        known_types: &HashMap<String, ast::TypeDefinition>,
+        known_types: &HashMap<String, ResolvedTypeDeclaration>,
         expected_comp: &ResolvedType,
     ) -> TypedMatchArm {
         let ast::MatchArm {
             block,
             ret,
-            cond: cond,
+            cond,
             loc,
         } = arm;
         let mut known_values = known_values.clone();
         let mut new_block = Vec::with_capacity(block.len());
-        let cond = TypedPattern::from(cond, expected_comp);
-        if let TypedPattern::Read(name, ty, _) = &cond {
-            known_values.insert(name.clone(), ty.clone());
-        }
+        let cond = TypedPattern::from(cond, expected_comp, known_types);
+        known_values.extend(cond.get_idents_with_types());
         for stmnt in block {
             match TypedStatement::try_from(stmnt, known_externs, &known_values, known_types) {
                 Ok(stmnt) => {
@@ -3118,17 +3256,47 @@ pub enum TypedPattern {
     Default,
     Or(Box<Self>, Box<Self>),
     Destructure(TypedDestructure),
+    EnumVariant {
+        ty: ResolvedType,
+        variant: String,
+        pattern: Option<Box<Self>>,
+        loc: crate::Location,
+    },
 }
 
 impl TypedPattern {
-    fn from(value: ast::Pattern, expected_type: &ResolvedType) -> Self {
-        match value {
+    fn from(
+        value: ast::Pattern,
+        expected_type: &ResolvedType,
+        known_types: &HashMap<String, ResolvedTypeDeclaration>,
+    ) -> Self {
+        match dbg!(value) {
             ast::Pattern::EnumVariant {
                 ty,
                 variant,
                 pattern,
                 loc,
-            } => todo!(),
+            } => {
+                if let Some(ResolvedTypeDeclaration::Dependent { base, actual }) =
+                    known_types.get(&variant)
+                {
+                    let base: ResolvedType = base.as_ref().into();
+                    if &base != expected_type {
+                        println!("Err incorrect enum matched");
+                        return Self::Err;
+                    }
+                    Self::EnumVariant {
+                        ty,
+                        variant,
+                        pattern: pattern.map(|pat| {
+                            Self::from(*pat, &actual.as_ref().into(), known_types).into()
+                        }),
+                        loc,
+                    }
+                } else {
+                    Self::Err
+                }
+            }
             ast::Pattern::Default => Self::Default,
             ast::Pattern::ConstNumber(n, ty) if &ty == expected_type => {
                 Self::Const(n, expected_type.clone())
@@ -3174,7 +3342,7 @@ impl TypedPattern {
                 ty,
                 id: _,
             } => {
-                if dbg!(&ty) != dbg!(expected_type) {
+                if &ty != expected_type {
                     println!("this should report a diagnostic");
                     Self::Err
                 } else {
@@ -3182,14 +3350,14 @@ impl TypedPattern {
                 }
             }
             ast::Pattern::Destructure(destruct) => {
-                Self::Destructure(TypedDestructure::from(destruct, expected_type))
+                Self::Destructure(TypedDestructure::from(destruct, expected_type, known_types))
             }
             ast::Pattern::Or(lhs, rhs) =>
             //TODO! diagnostics if not all binds are in both patterns.
             {
                 Self::Or(
-                    Self::from(*lhs, expected_type).into(),
-                    Self::from(*rhs, expected_type).into(),
+                    Self::from(*lhs, expected_type, known_types).into(),
+                    Self::from(*rhs, expected_type, known_types).into(),
                 )
             }
             ast::Pattern::Err => Self::Err,
@@ -3205,6 +3373,11 @@ impl TypedPattern {
                 let lhs = lhs.get_binds();
                 lhs
             }
+            Self::EnumVariant { pattern, .. } => pattern
+                .as_ref()
+                .map(Box::as_ref)
+                .map(Self::get_binds)
+                .unwrap_or_default(),
         }
     }
 
@@ -3223,6 +3396,11 @@ impl TypedPattern {
                 }
             }
             Self::Read(ident, ty, _) => [(ident.clone(), ty.clone())].into(),
+            Self::EnumVariant { pattern, .. } => pattern
+                .as_ref()
+                .map(Box::as_ref)
+                .map(Self::get_idents_with_types)
+                .unwrap_or_default(),
         }
     }
     pub fn is_simple(&self) -> bool {
@@ -3232,6 +3410,11 @@ impl TypedPattern {
             Self::Or(lhs, rhs) => lhs.is_simple() && rhs.is_simple(),
             Self::Destructure(d) => d.is_simple(),
             Self::Read(_, _, _) | Self::Err => false,
+            Self::EnumVariant { pattern, .. } => pattern
+                .as_ref()
+                .map(Box::as_ref)
+                .map(|it| matches!(it,Self::Default))
+                .unwrap_or(true),
         }
     }
 }
@@ -3259,7 +3442,11 @@ impl TypedDestructure {
         }
     }
 
-    fn from(destructure: ast::DestructurePattern, expected_ty: &ResolvedType) -> Self {
+    fn from(
+        destructure: ast::DestructurePattern,
+        expected_ty: &ResolvedType,
+        known_types: &HashMap<String, ResolvedTypeDeclaration>,
+    ) -> Self {
         match destructure {
             ast::DestructurePattern::Struct { base_ty, fields } => todo!(
                 "need to expand structure destructuring
@@ -3270,12 +3457,12 @@ impl TypedDestructure {
                     patterns
                         .into_iter()
                         .zip(underlining)
-                        .map(|(pat, ty)| TypedPattern::from(pat, ty))
+                        .map(|(pat, ty)| TypedPattern::from(pat, ty, known_types))
                         .collect()
                 } else {
                     patterns
                         .into_iter()
-                        .map(|pat| TypedPattern::from(pat, &types::ERROR))
+                        .map(|pat| TypedPattern::from(pat, &types::ERROR, known_types))
                         .collect()
                 };
                 if &ty != expected_ty {
@@ -5163,5 +5350,197 @@ let a (v:(int32,int32)) =
             }),
             a
         )
+    }
+    #[test]
+    fn enum_variants() {
+        const SRC: &'static str = r#"
+enum Test = | A (int8,int8) | B
+let fun a = match a where
+| Test::A ((a,0) | (0,a)) -> a,
+| Test::A (a,b) -> 1,
+| Test::B -> 0,
+"#;
+        let ast = Parser::from_source(SRC).module("".to_string()).ast;
+        let dtree = ast.get_dependencies();
+        let dtree = dtree
+            .into_iter()
+            .map(|(key, value)| (key, value.into_iter().collect()))
+            .collect();
+        let mut inference_ctx = crate::inference::Context::new(
+            dtree,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+        );
+        let ast = inference_ctx.inference(ast);
+
+        println!("{:#?}", ast.decls[1]);
+        let ast = TypedModuleDeclaration::from(ast, &HashMap::new(), &HashMap::new());
+        let [ty, fun] = &ast.declarations[..] else {
+            unreachable!()
+        };
+
+        assert_eq!(
+            ty,
+            &super::TypedDeclaration::TypeDefinition(super::ResolvedTypeDeclaration::Enum(
+                super::TypedEnumDeclaration {
+                    ident: "Test".into(),
+                    generics: None,
+                    values: vec![
+                        crate::ast::EnumVariant::Tuple {
+                            ident: "A".into(),
+                            ty: ResolvedType::Tuple {
+                                underlining: vec![types::INT8; 2],
+                                loc: (0, 0)
+                            },
+                            loc: (1, 14)
+                        },
+                        crate::ast::EnumVariant::Unit {
+                            ident: "B".into(),
+                            loc: (1, 30)
+                        }
+                    ],
+                    loc: (1, 5),
+                }
+            ))
+        );
+
+        assert_eq!(
+            fun,
+            &super::TypedDeclaration::Value(super::TypedTopLevelValue {
+                loc: (2, 4),
+                is_op: false,
+                ident: "fun".into(),
+                args: vec![TypedArgDeclaration::Simple {
+                    loc: (2, 8),
+                    ident: "a".into(),
+                    ty: ResolvedType::User {
+                        name: "Test".into(),
+                        generics: Vec::new(),
+                        loc: (1, 5)
+                    },
+                }],
+                ty: ResolvedType::User {
+                    name: "Test".into(),
+                    generics: Vec::new(),
+                    loc: (1, 5)
+                }
+                .fn_ty(&types::INT8),
+                value: TypedValueType::Expr(super::TypedExpr::Match(super::TypedMatch {
+                    loc: (2, 12),
+                    on: super::TypedExpr::ValueRead(
+                        "a".into(),
+                        ResolvedType::User {
+                            name: "Test".into(),
+                            generics: Vec::new(),
+                            loc: (1, 5)
+                        },
+                        (2, 18)
+                    )
+                    .into(),
+                    arms: vec![
+                        super::TypedMatchArm {
+                            loc: (3, 2),
+                            cond: TypedPattern::EnumVariant {
+                                ty: ResolvedType::Dependent {
+                                    base: ResolvedType::User {
+                                        name: "Test".into(),
+                                        generics: Vec::new(),
+                                        loc: (1, 5)
+                                    }
+                                    .into(),
+                                    actual: ResolvedType::Tuple {
+                                        underlining: vec![types::INT8, types::INT8],
+                                        loc: (0, 0)
+                                    }
+                                    .into(),
+                                    generics: Vec::new(),
+                                    ident: "Test::A".into(),
+                                    loc: (0, 0)
+                                },
+                                variant: "Test::A".into(),
+                                pattern: Some(
+                                    TypedPattern::Or(
+                                        TypedPattern::Destructure(TypedDestructure::Tuple(vec![
+                                            TypedPattern::Read("a".into(), types::INT8, (3, 12)),
+                                            TypedPattern::Const("0".into(), types::INT8),
+                                        ]))
+                                        .into(),
+                                        TypedPattern::Destructure(TypedDestructure::Tuple(vec![
+                                            TypedPattern::Const("0".into(), types::INT8),
+                                            TypedPattern::Read("a".into(), types::INT8, (3, 22)),
+                                        ]))
+                                        .into()
+                                    )
+                                    .into()
+                                ),
+                                loc: (3, 2)
+                            },
+                            block: Vec::new(),
+                            ret: Some(
+                                super::TypedExpr::ValueRead("a".into(), types::INT8, (3, 29))
+                                    .into()
+                            )
+                        },
+                        super::TypedMatchArm {
+                            loc: (4, 2),
+                            cond: TypedPattern::EnumVariant {
+                                ty: ResolvedType::Dependent {
+                                    base: ResolvedType::User {
+                                        name: "Test".into(),
+                                        generics: Vec::new(),
+                                        loc: (1, 5)
+                                    }
+                                    .into(),
+                                    actual: ResolvedType::Tuple {
+                                        underlining: vec![types::INT8, types::INT8],
+                                        loc: (0, 0)
+                                    }
+                                    .into(),
+                                    generics: Vec::new(),
+                                    ident: "Test::A".into(),
+                                    loc: (0, 0)
+                                },
+                                variant: "Test::A".into(),
+                                pattern: Some(
+                                    super::TypedPattern::Destructure(TypedDestructure::Tuple(vec![
+                                        TypedPattern::Read("a".into(), types::INT8, (4, 11)),
+                                        TypedPattern::Read("b".into(), types::INT8, (4, 13)),
+                                    ])).into()
+                                ),
+                                loc: (4, 2)
+                            },
+                            block: Vec::new(),
+                            ret: Some(super::TypedExpr::IntegerLiteral { value: "1".into(), size: types::IntWidth::Eight }.into())
+                        },
+                        super::TypedMatchArm {
+                            loc:(5,2),
+                            cond: TypedPattern::EnumVariant { 
+                                ty: ResolvedType::Dependent {
+                                    base: ResolvedType::User {
+                                        name: "Test".into(),
+                                        generics: Vec::new(),
+                                        loc: (1, 5)
+                                    }
+                                    .into(),
+                                    actual: ResolvedType::Void.into(),
+                                    generics: Vec::new(),
+                                    ident: "Test::B".into(),
+                                    loc: (0, 0)
+                                }, variant: "Test::B".into(), 
+                                pattern: None, 
+                                loc: (5,2) 
+                                
+                            },
+                            block:Vec::new(),
+                            ret: Some(super::TypedExpr::IntegerLiteral { value: "0".into(), size: types::IntWidth::Eight }.into())
+                        }
+                    ]
+                })),
+                generics: None,
+                abi: None
+            })
+        );
     }
 }

@@ -97,80 +97,103 @@ impl ModuleDeclaration {
                     s.ident.clone(),
                     ResolvedType::User {
                         name: s.ident.clone(),
-                        generics: s.generics
-                        .as_ref()
-                        .map(|generics| 
-                            generics.decls.iter().map(|(loc,name)|
-                                ResolvedType::Generic { name:name.clone(), loc:*loc }
-                        ).collect())
-                        .unwrap_or_default(),
+                        generics: s
+                            .generics
+                            .as_ref()
+                            .map(|generics| {
+                                generics
+                                    .decls
+                                    .iter()
+                                    .map(|(loc, name)| ResolvedType::Generic {
+                                        name: name.clone(),
+                                        loc: *loc,
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
                         loc: s.loc,
-                    }
-                )].into(),
+                    },
+                )]
+                .into(),
                 TopLevelDeclaration::TypeDefinition(TypeDefinition::Enum(e)) => {
                     let base_ty = ResolvedType::User {
                         name: e.ident.clone(),
-                        generics: e.generics
-                        .as_ref()
-                        .map(|generics| 
-                            generics.decls.iter().map(|(loc,name)|
-                                ResolvedType::Generic { name:name.clone(), loc:*loc }
-                        ).collect())
-                        .unwrap_or_default(),
+                        generics: e
+                            .generics
+                            .as_ref()
+                            .map(|generics| {
+                                generics
+                                    .decls
+                                    .iter()
+                                    .map(|(loc, name)| ResolvedType::Generic {
+                                        name: name.clone(),
+                                        loc: *loc,
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
                         loc: e.loc,
                     };
-                    let mut out = vec![
-                        (e.ident.clone(),base_ty.clone())
-                    ];
+                    let mut out = vec![(e.ident.clone(), base_ty.clone())];
 
                     for variant in &e.values {
+                        let ident = variant.get_ident();
+                        let new_ident = format!("{}::{}", &e.ident, ident);
+                        let generics = e
+                        .generics
+                        .as_ref()
+                        .map(|generics| {
+                            generics
+                                .decls
+                                .iter()
+                                .map(|(loc, name)| ResolvedType::Generic {
+                                    name: name.clone(),
+                                    loc: *loc,
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
                         match variant {
-                            EnumVariant::Unit { ident, loc } => (),
-                            EnumVariant::Tuple { ident, ty, loc, } =>
-                                out.push(
-                                    (
-                                        format!("{}::{}",&e.ident,ident),
-                                        ResolvedType::Dependent { 
-                                            base: base_ty.clone().into(), 
-                                            ident: ident.clone(),
-                                            actual : ty.clone().into(),
-                                            generics:e.generics
-                                            .as_ref()
-                                            .map(|generics| 
-                                                generics.decls.iter().map(|(loc,name)|
-                                                    ResolvedType::Generic { name:name.clone(), loc:*loc }
-                                            ).collect())
-                                            .unwrap_or_default(), 
-                                            loc: *loc
+                            EnumVariant::Unit { ident:_, loc } => out.push((
+                                new_ident.clone(),
+                                ResolvedType::Dependent {
+                                    base: base_ty.clone().into(),
+                                    ident: new_ident.clone(),
+                                    actual: ResolvedType::Void.into(),
+                                    generics,
+                                    loc: *loc,
+                                },
+                            )),
+                            EnumVariant::Tuple { ident:_, ty, loc } => out.push((
+                                new_ident.clone(),
+                                ResolvedType::Dependent {
+                                    base: base_ty.clone().into(),
+                                    ident: new_ident,
+                                    actual: ty.clone().into(),
+                                    generics,
+                                    loc: *loc,
+                                },
+                            )),
+                            EnumVariant::Struct {
+                                ident:_, loc, ..
+                            } => {
+                                
+                                out.push((
+                                    new_ident.clone(),
+                                    ResolvedType::Dependent {
+                                        base: base_ty.clone().into(),
+                                        ident: new_ident.clone(),
+                                        actual: ResolvedType::User {
+                                            name: new_ident,
+                                            generics:generics.clone(),
+                                            loc: *loc,
                                         }
-                                    )
-                                ),
-                            EnumVariant::Struct { ident, fields,  loc, .. } => {
-                                let new_ident = format!("{}::{}",&e.ident,ident);
-                                let generics : Vec<_> = e.generics
-                                .as_ref()
-                                .map(|generics| 
-                                    generics.decls.iter().map(|(loc,name)|
-                                        ResolvedType::Generic { name:name.clone(), loc:*loc }
-                                ).collect())
-                                .unwrap_or_default();
-                                out.push(
-                                    (
-                                        new_ident.clone(),
-                                        ResolvedType::Dependent { 
-                                            base: base_ty.clone().into(), 
-                                            ident: ident.clone(),
-                                            actual : ResolvedType::User { 
-                                                name: new_ident, 
-                                                generics: generics.clone(), 
-                                                loc: *loc 
-                                            }.into(),
-                                            generics, 
-                                            loc: *loc
-                                        }
-                                    )
-                                )
-                            },
+                                        .into(),
+                                        generics,
+                                        loc: *loc,
+                                    },
+                                ))
+                            }
                         }
                     }
                     HashMap::from_iter(out)
@@ -997,6 +1020,7 @@ pub struct MatchArm {
 }
 impl MatchArm {
     fn replace(&mut self, nice_name: &str, actual: &str) {
+        self.cond.replace(nice_name,actual);
         let names = self.cond.get_idents();
         if names.contains(nice_name) {
             return;
@@ -1053,6 +1077,47 @@ impl Pattern {
                 idents
             }
             _ => HashSet::new(),
+        }
+    }
+    
+    fn replace(&mut self, nice_name: &str, actual: &str) {
+        match self {
+            
+            Self::Destructure(destructure) => match destructure {
+                PatternDestructure::Struct { base_ty, .. } => {
+                    if let Some(ty) = base_ty {
+                        if ty == nice_name {
+                            *ty = actual.into();
+                        }
+                    }
+                },
+                PatternDestructure::Tuple(pats) => {
+                    for pat in pats {
+                        pat.replace(nice_name,actual)
+                    }
+                },
+                PatternDestructure::Unit => (),
+            },
+            Self::EnumVariant { ty, variant, pattern, .. } => {
+                if let Some(ty) = ty {
+                    if ty == nice_name {
+                        *ty = actual.into();
+                    }
+                } else {
+                    if variant == nice_name {
+                        *variant = actual.into();
+                    }
+                }
+                if let Some(pat) = pattern {
+                    pat.replace(nice_name,actual);
+                }
+            },
+            
+            Self::Or(lhs, rhs) => {
+                lhs.replace(nice_name,actual);
+                rhs.replace(nice_name,actual);
+            }
+            _=>()
         }
     }
 }

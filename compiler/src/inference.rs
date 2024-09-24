@@ -30,9 +30,10 @@ impl Context {
         &mut self,
         ast: untyped_ast::ModuleDeclaration,
     ) -> ast::ModuleDeclaration {
+        self.known_types.extend(ast.get_types());
         let mut ast = self.assign_ids_module(ast);
-        self.try_to_infer(dbg!(&mut ast));
-        self.apply_equations(dbg!(&mut ast));
+        self.try_to_infer(&mut ast);
+        self.apply_equations(&mut ast);
         ast
     }
 
@@ -440,7 +441,11 @@ impl Context {
                 pattern,
                 loc,
             } => {
-                let variant = if let Some(base) = ty { format!("{base}::{variant}") } else { variant};
+                let variant = if let Some(base) = ty {
+                    format!("{base}::{variant}")
+                } else {
+                    variant
+                };
                 let ty = self.get_next_type_id();
                 let pattern = pattern.map(|pat| self.assign_ids_pattern(*pat, &ty).into());
                 ast::Pattern::EnumVariant {
@@ -639,7 +644,7 @@ impl Context {
         } = module;
         let items = self.dependency_tree.keys().cloned().collect();
         let order = sort_on_tree(items, &self.dependency_tree);
-        let order = dbg!(order);
+        
         decls.sort_by_key(|decl| order.iter().position(|name| name == &decl.get_ident()));
         for decl in decls {
             self.known_locals.clear();
@@ -1102,16 +1107,18 @@ impl Context {
         } = match_;
         let on_ty = self.get_actual_type(on, None, fun_ret_ty);
         let mut ety = e_ty.unwrap_or(types::ERROR);
-        for (idx, ast::MatchArm {
-            block,
-            ret,
-            cond,
-            loc: _,
-        }) in arms.iter_mut().enumerate()
+        for (
+            idx,
+            ast::MatchArm {
+                block,
+                ret,
+                cond,
+                loc: _,
+            },
+        ) in arms.iter_mut().enumerate()
         {
             println!("doing equations of arm {idx}");
-            self.
-            add_equation_of_pattern(cond, &on_ty);
+            self.add_equation_of_pattern(cond, &on_ty);
             for stmnt in block {
                 self.infer_stmnt(stmnt, fun_ret_ty);
             }
@@ -1122,7 +1129,7 @@ impl Context {
                     self.get_actual_type(ret, Some(ety.clone()), fun_ret_ty);
                 }
             }
-            if let ast::Pattern::EnumVariant { ty,..} =cond {
+            if let ast::Pattern::EnumVariant { ty, .. } = cond {
                 println!("end type {ty:#?}");
             }
         }
@@ -1151,23 +1158,18 @@ impl Context {
 
             ast::Pattern::Destructure(d) => {
                 println!("destructure");
-                let unwrapped = if let ResolvedType::Dependent { actual, .. } = dbg!(on_ty) { actual } else { on_ty };
+                
                 match d {
                     ast::DestructurePattern::Tuple(contents, ty, id) => {
-                        
                         if let ResolvedType::Tuple {
                             underlining,
                             loc: _,
-                        } = dbg!(unwrapped)
+                        } = on_ty
                         {
-                
                             self.expr_ty.insert(*id, on_ty.clone());
-                            let ty = dbg!(ty);
                             if let ResolvedType::Unknown(idx) = ty {
-                                println!("setting id {idx} to {on_ty:?}");
-                                self.equations.insert(*idx,on_ty.clone());
-                            } else if ty != unwrapped {
-                                println!("Error after finding tuple {ty:?} {unwrapped:?}");
+                                self.equations.insert(*idx, on_ty.clone());
+                            } else if ty != on_ty {
                                 // TODO! error reporting
                                 *ty = types::ERROR;
                             }
@@ -1191,42 +1193,45 @@ impl Context {
                 self.add_equation_of_pattern(rhs.as_mut(), on_ty);
             }
             ast::Pattern::EnumVariant {
-                ty:v_ty,
+                ty: v_ty,
                 variant,
                 pattern,
                 loc,
             } => {
-                println!("variant");
 
                 let variant = if let ResolvedType::User { name, .. } = v_ty {
-                    
                     format!("{}::{}", name, variant)
                 } else {
                     // TODO! handle dependent types.
                     // TODO! Fall back to on_ty
                     variant.clone()
                 };
-                
-                
 
-                let sub_ty = self.known_types.get(dbg!(&variant)).cloned();
-                if let Some(ResolvedType::Dependent{ base, ..}) = &sub_ty {
+                let sub_ty = self.known_types.get(&variant).cloned();
+                if let Some(ResolvedType::Dependent { base, .. }) = &sub_ty {
                     if let ResolvedType::Unknown(id) = on_ty {
-                        self.equations.insert(*id,base.as_ref().clone());
+                        self.equations.insert(*id, base.as_ref().clone());
                     }
                 }
-                match (pattern, dbg!(sub_ty)) {
-                    (Some(pat),Some(ty @ ResolvedType::Dependent { .. })) => {
-                    
+                match (pattern, sub_ty) {
+                    (Some(pat), Some(ty @ ResolvedType::Dependent { .. })) => {
+                        
+                        let unwrapped = if let ResolvedType::Dependent { actual, .. } = &ty {
+                            actual
+                        } else {
+                            unreachable!()
+                        };
+                        self.add_equation_of_pattern(pat, unwrapped.as_ref());
                         if let ResolvedType::Unknown(idx) = v_ty {
-                            println!("variant setting ty {idx} to {ty:?}");
-                            self.equations.insert(*idx,ty.clone());
+                            self.equations.insert(*idx, ty.clone());
                         }
-                    
-                        self.add_equation_of_pattern(pat, dbg!(&ty));
-                    },
-                    (None,None) => (),
-                    _ => (),//TODO! handle error reporting
+                    }
+                    (None, Some(ref ty @ ResolvedType::Dependent { ref actual, ..})) if matches!(actual.as_ref(), ResolvedType::Void) =>{
+                        if let ResolvedType::Unknown(idx) = v_ty {
+                            self.equations.insert(*idx, ty.clone());
+                        }
+                    }
+                    _ => (), //TODO! handle error reporting
                 }
             }
             _ => (),
@@ -1322,7 +1327,10 @@ impl Context {
     }
 
     fn apply_equations(&mut self, module: &mut ast::ModuleDeclaration) {
-        println!("equations {:#?}\nexpr_ty {:#?}",&self.equations,&self.expr_ty);
+        println!(
+            "equations {:#?}\nexpr_ty {:#?}",
+            &self.equations, &self.expr_ty
+        );
         self.apply_substutions(module);
         println!("post subs\n{module:#?}");
         let ast::ModuleDeclaration {
@@ -1744,33 +1752,30 @@ impl Context {
             ast::Pattern::Read { ty, .. } | ast::Pattern::ConstNumber(_, ty) => {
                 ty.replace_unknown_with(id, new_ty)
             }
-            ast::Pattern::Destructure(d) => {   
-                
-                match d {
-                    ast::DestructurePattern::Struct { base_ty, fields } => {
-                        for field in fields.values_mut() {
-                            self.apply_equation_pattern(field, id, new_ty.clone());
-                        }
+            ast::Pattern::Destructure(d) => match d {
+                ast::DestructurePattern::Struct { base_ty, fields } => {
+                    for field in fields.values_mut() {
+                        self.apply_equation_pattern(field, id, new_ty.clone());
                     }
-                    ast::DestructurePattern::Tuple(patterns, ty, _) => {
-                        ty.replace_unknown_with(dbg!(id), dbg!(new_ty.clone()));
-                        for pat in patterns {
-                            self.apply_equation_pattern(pat, id, new_ty.clone());
-                        }
+                }
+                ast::DestructurePattern::Tuple(patterns, ty, _) => {
+                    ty.replace_unknown_with(id, new_ty.clone());
+                    for pat in patterns {
+                        self.apply_equation_pattern(pat, id, new_ty.clone());
                     }
-                    ast::DestructurePattern::Unit => (),
-            }
+                }
+                ast::DestructurePattern::Unit => (),
             },
             ast::Pattern::Or(lhs, rhs) => {
                 self.apply_equation_pattern(lhs.as_mut(), id, new_ty.clone());
                 self.apply_equation_pattern(rhs.as_mut(), id, new_ty);
             }
             ast::Pattern::EnumVariant { ty, pattern, .. } => {
-                ty.replace_unknown_with(id,new_ty.clone());
+                ty.replace_unknown_with(id, new_ty.clone());
                 if let Some(pat) = pattern {
                     self.apply_equation_pattern(pat.as_mut(), id, new_ty);
                 }
-            },
+            }
             _ => (),
         }
     }
@@ -2002,10 +2007,11 @@ impl Context {
                 self.apply_substution_pattern(lhs.as_mut(), (eid, new_ty));
                 self.apply_substution_pattern(rhs.as_mut(), (eid, new_ty));
             }
-            ast::Pattern::EnumVariant { ty, pattern, loc, .. } => {
+            ast::Pattern::EnumVariant {
+                ty, pattern, loc, ..
+            } => {
                 if let Some(pat) = pattern {
-                
-                    self.apply_substution_pattern(pat.as_mut(),(eid,new_ty));
+                    self.apply_substution_pattern(pat.as_mut(), (eid, new_ty));
                 }
             }
             _ => (),
@@ -3413,7 +3419,13 @@ let do_something a = match a where
         let ast = parser.module("".to_string());
         assert_eq!(ast.errors.len(), 0, "no errors");
 
-        let mut ctx = super::Context::new([].into(), ast.ast.get_types(), [].into(), [].into(), [].into());
+        let mut ctx = super::Context::new(
+            [].into(),
+            HashMap::new(),
+            [].into(),
+            [].into(),
+            [].into(),
+        );
         let ast = ctx.inference(ast.ast);
         let [_enum_, func] = &ast.decls[..] else {
             panic!("too much? too little?")
@@ -3449,25 +3461,23 @@ let do_something a = match a where
                             ret: Some(super::ast::Expr::UnitLiteral.into()),
                             cond: super::ast::Pattern::EnumVariant {
                                 ty: ResolvedType::Dependent {
-                                    base: ResolvedType::User { 
-                                        name: "IP".into(), 
-                                        generics: Vec::new(), 
-                                        loc: (0,0)
-                                    }.into(),
-                                    ident:"V4".into(),
-                                    generics:Vec::new(),
-                                    actual:ResolvedType::Tuple {
+                                    base: ResolvedType::User {
+                                        name: "IP".into(),
+                                        generics: Vec::new(),
+                                        loc: (0, 0)
+                                    }
+                                    .into(),
+                                    ident: "IP::V4".into(),
+                                    generics: Vec::new(),
+                                    actual: ResolvedType::Tuple {
                                         underlining: vec![
-                                            types::INT8,
-                                            types::INT8,
-                                            types::INT8,
-                                            types::INT8,
+                                            types::INT8;4
                                         ],
                                         loc: (0, 0)
-                                    }.into(),
-                                    loc:(0,0)
-                                }
-                                ,
+                                    }
+                                    .into(),
+                                    loc: (0, 0)
+                                },
                                 variant: "IP::V4".to_string(),
                                 // (127, 0, 0, 1)
                                 pattern: Some(
@@ -3490,26 +3500,12 @@ let do_something a = match a where
                                                     "1".to_string(),
                                                     types::INT8
                                                 ),
-                                            ],
-                                            ResolvedType::Dependent {
-                                                base: ResolvedType::User { 
-                                                    name: "IP".into(), 
-                                                    generics: Vec::new(), 
-                                                    loc: (0,0)
-                                                }.into(),
-                                                ident:"V4".into(),
-                                                generics:Vec::new(),
-                                                actual:ResolvedType::Tuple {
+                                            ], ResolvedType::Tuple {
                                                     underlining: vec![
-                                                        types::INT8,
-                                                        types::INT8,
-                                                        types::INT8,
-                                                        types::INT8,
+                                                        types::INT8;4
                                                     ],
                                                     loc: (0, 0)
-                                                }.into(),
-                                                loc:(0,0)
-                                            },
+                                                },
                                             4
                                         )
                                     )
@@ -3523,15 +3519,16 @@ let do_something a = match a where
                             block: Vec::new(),
                             ret: Some(super::ast::Expr::UnitLiteral.into()),
                             cond: super::ast::Pattern::EnumVariant {
-                                ty:ResolvedType::Dependent {
-                                    base: ResolvedType::User { 
-                                        name: "IP".into(), 
-                                        generics: Vec::new(), 
-                                        loc: (0,0)
-                                    }.into(),
-                                    ident:"V4".into(),
-                                    generics:Vec::new(),
-                                    actual:ResolvedType::Tuple {
+                                ty: ResolvedType::Dependent {
+                                    base: ResolvedType::User {
+                                        name: "IP".into(),
+                                        generics: Vec::new(),
+                                        loc: (0, 0)
+                                    }
+                                    .into(),
+                                    ident: "IP::V4".into(),
+                                    generics: Vec::new(),
+                                    actual: ResolvedType::Tuple {
                                         underlining: vec![
                                             types::INT8,
                                             types::INT8,
@@ -3539,34 +3536,21 @@ let do_something a = match a where
                                             types::INT8,
                                         ],
                                         loc: (0, 0)
-                                    }.into(),
-                                    loc:(0,0)
-                                }
-                                ,
+                                    }
+                                    .into(),
+                                    loc: (0, 0)
+                                },
                                 variant: "IP::V4".into(),
                                 pattern: Some(
                                     super::ast::Pattern::Read {
                                         ident: "a".into(),
                                         loc: (5, 9),
-                                        ty: ResolvedType::Dependent {
-                                            base: ResolvedType::User { 
-                                                name: "IP".into(), 
-                                                generics: Vec::new(), 
-                                                loc: (0,0)
-                                            }.into(),
-                                            ident:"V4".into(),
-                                            generics:Vec::new(),
-                                            actual:ResolvedType::Tuple {
+                                        ty:  ResolvedType::Tuple {
                                                 underlining: vec![
-                                                    types::INT8,
-                                                    types::INT8,
-                                                    types::INT8,
-                                                    types::INT8,
+                                                    types::INT8;4
                                                 ],
                                                 loc: (0, 0)
-                                            }.into(),
-                                            loc:(0,0)
-                                        },
+                                            },
                                         id: 5
                                     }
                                     .into()
@@ -3580,14 +3564,15 @@ let do_something a = match a where
                             ret: Some(super::ast::Expr::UnitLiteral.into()),
                             cond: super::ast::Pattern::EnumVariant {
                                 ty: ResolvedType::Dependent {
-                                    base: ResolvedType::User { 
-                                        name: "IP".into(), 
-                                        generics: Vec::new(), 
-                                        loc: (0,0)
-                                    }.into(),
-                                    ident:"V6".into(),
-                                    generics:Vec::new(),
-                                    actual:ResolvedType::Tuple {
+                                    base: ResolvedType::User {
+                                        name: "IP".into(),
+                                        generics: Vec::new(),
+                                        loc: (0, 0)
+                                    }
+                                    .into(),
+                                    ident: "IP::V6".into(),
+                                    generics: Vec::new(),
+                                    actual: ResolvedType::Tuple {
                                         underlining: vec![
                                             types::INT8,
                                             types::INT8,
@@ -3597,10 +3582,10 @@ let do_something a = match a where
                                             types::INT8,
                                         ],
                                         loc: (0, 0)
-                                    }.into(),
-                                    loc:(0,0)
-                                }
-                                ,
+                                    }
+                                    .into(),
+                                    loc: (0, 0)
+                                },
                                 variant: "IP::V6".into(),
                                 pattern: Some(super::ast::Pattern::Default.into()),
                                 loc: (6, 2)
@@ -3614,35 +3599,356 @@ let do_something a = match a where
                 abi: None,
                 id: 0,
             }),
-        )
+        );
+
     }
 
     #[test]
     #[ignore = "for debugging only"]
     fn debug() {
-        let parser = Parser::from_source(
-            "
-let b value : (int32,(int32,int32)) -> int32 = match value where
-    | (0, (0,b) | (b,0) ) | (b,_) -> b,
-    | _ -> 0,
-",
-        );
-        let ast = parser.module("".to_string()).ast;
+
+        const SRC: &'static str = r#"
+enum Testing = | One (int8,int8) | Two;
+let fun test = match test where
+| Testing::One (0,1) -> 0,
+| Testing::One (1|0,a) -> a,
+| Testing::One _ -> 1,
+| Testing::Two -> 2,
+"#; 
+        let mut ast = Parser::from_source(SRC).module("".to_string()).ast;
+        ast.canonialize(vec!["v".into()]);
         let dtree = ast.get_dependencies();
         let dtree = dtree
             .into_iter()
             .map(|(key, value)| (key, value.into_iter().collect()))
             .collect();
-        let mut inference_ctx = super::Context::new(
+        let mut inference_ctx = crate::inference::Context::new(
             dtree,
             HashMap::new(),
             HashMap::new(),
             HashMap::new(),
             HashMap::new(),
         );
-        let mut ast = inference_ctx.inference(ast);
-        ast.decls.sort_by_key(|decl| decl.get_ident());
-        let [a] = &ast.decls[..] else { unreachable!() };
-        println!("{a:#?}");
+        let ast = inference_ctx.inference(ast);
+        let [_ty, fun] = &ast.decls[..] else {
+            unreachable!()
+        };
+        let expected = super::ast::TopLevelDeclaration::Value(
+            super::ast::TopLevelValue {
+                loc: (
+                    2,
+                    4,
+                ),
+                is_op: false,
+                ident: "fun".into(),
+                args: vec![
+                    super::ast::ArgDeclaration::Simple {
+                        loc: (
+                            2,
+                            8,
+                        ),
+                        ident: "test".into(),
+                        ty: ResolvedType::User {
+                            name: "Testing".into(),
+                            generics: Vec::new(),
+                            loc: (
+                                1,
+                                5,
+                            ),
+                        },
+                        id: 1,
+                    },
+                ],
+                ty: ResolvedType::Function {
+                    arg: ResolvedType::User {
+                        name: "Testing".into(),
+                        generics: Vec::new(),
+                        loc: (
+                            1,
+                            5,
+                        ),
+                    }.into(),
+                    returns: types::INT8.into(),
+                    loc: (
+                        0,
+                        0,
+                    ),
+                },
+                value: super::ast::ValueType::Expr(
+                    super::ast::Expr::Match(
+                        super::ast::Match {
+                            loc: (
+                                2,
+                                15,
+                            ),
+                            on: super::ast::Expr::ValueRead(
+                                "test".into(),
+                                (
+                                    2,
+                                    21,
+                                ),
+                                3,
+                            ).into(),
+                            arms: vec![
+                                super::ast::MatchArm {
+                                    block: Vec::new(),
+                                    ret: Some(
+                                        super::ast::Expr::NumericLiteral {
+                                            value: "0".into(),
+                                            id: 5,
+                                            ty: types::INT8,
+                                        }.into(),
+                                    ),
+                                    cond: super::ast::Pattern::EnumVariant {
+                                        ty: ResolvedType::Dependent {
+                                            base: ResolvedType::User {
+                                                name: "Testing".into(),
+                                                generics: Vec::new(),
+                                                loc: (
+                                                    1,
+                                                    5,
+                                                ),
+                                            }.into(),
+                                            ident: "Testing::One".into(),
+                                            actual: ResolvedType::Tuple {
+                                                underlining: vec![
+                                                    types::INT8;2
+                                                ],
+                                                loc: (
+                                                    1,
+                                                    21,
+                                                ),
+                                            }.into(),
+                                            generics: Vec::new(),
+                                            loc: (
+                                                1,
+                                                17,
+                                            ),
+                                        },
+                                        variant: "Testing::One".into(),
+                                        pattern: Some(
+                                            super::ast::Pattern::Destructure(
+                                                super::ast::DestructurePattern::Tuple(
+                                                    vec![
+                                                        super::ast::Pattern::ConstNumber(
+                                                            "0".into(),
+                                                            types::INT8,
+                                                        ),
+                                                        super::ast::Pattern::ConstNumber(
+                                                            "1".into(),
+                                                            types::INT8,
+                                                        ),
+                                                    ],
+                                                    ResolvedType::Tuple {
+                                                        underlining: vec![
+                                                            types::INT8;2
+                                                        ],
+                                                        loc: (
+                                                            1,
+                                                            21,
+                                                        ),
+                                                    },
+                                                    4,
+                                                ),
+                                            ).into(),
+                                        ),
+                                        loc: (
+                                            3,
+                                            2,
+                                        ),
+                                    },
+                                    loc: (
+                                        3,
+                                        2,
+                                    ),
+                                },
+                                super::ast::MatchArm {
+                                    block: Vec::new(),
+                                    ret: Some(
+                                        super::ast::Expr::ValueRead(
+                                            "a".into(),
+                                            (
+                                                4,
+                                                26,
+                                            ),
+                                            8,
+                                        ).into(),
+                                    ),
+                                    cond: super::ast::Pattern::EnumVariant {
+                                        ty: ResolvedType::Dependent {
+                                            base: ResolvedType::User {
+                                                name: "Testing".into(),
+                                                generics: Vec::new(),
+                                                loc: (
+                                                    1,
+                                                    5,
+                                                ),
+                                            }.into(),
+                                            ident: "Testing::One".into(),
+                                            actual: ResolvedType::Tuple {
+                                                underlining: vec![
+                                                    types::INT8;2
+                                                ],
+                                                loc: (
+                                                    1,
+                                                    21,
+                                                ),
+                                            }.into(),
+                                            generics: Vec::new(),
+                                            loc: (
+                                                1,
+                                                17,
+                                            ),
+                                        },
+                                        variant: "Testing::One".into(),
+                                        pattern: Some(
+                                            super::ast::Pattern::Destructure(
+                                                super::ast::DestructurePattern::Tuple(
+                                                    vec![
+                                                        super::ast::Pattern::Or(
+                                                            super::ast::Pattern::ConstNumber(
+                                                                "1".into(),
+                                                                types::INT8,
+                                                            ).into(),
+                                                            super::ast::Pattern::ConstNumber(
+                                                                "0".into(),
+                                                                types::INT8,
+                                                            ).into(),
+                                                        ),
+                                                        super::ast::Pattern::Read {
+                                                            ident: "a".into(),
+                                                            loc: (
+                                                                4,
+                                                                20,
+                                                            ),
+                                                            ty: types::INT8,
+                                                            id: 7,
+                                                        },
+                                                    ],
+                                                    ResolvedType::Tuple {
+                                                        underlining: vec![
+                                                            types::INT8;2
+                                                        ],
+                                                        loc: (
+                                                            1,
+                                                            21,
+                                                        ),
+                                                    },
+                                                    6,
+                                                ),
+                                            ).into(),
+                                        ),
+                                        loc: (
+                                            4,
+                                            2,
+                                        ),
+                                    },
+                                    loc: (
+                                        4,
+                                        2,
+                                    ),
+                                },
+                                super::ast::MatchArm {
+                                    block: Vec::new(),
+                                    ret: Some(
+                                        super::ast::Expr::NumericLiteral {
+                                            value: "1".into(),
+                                            id: 9,
+                                            ty: types::INT8,
+                                        }.into(),
+                                    ),
+                                    cond: super::ast::Pattern::EnumVariant {
+                                        ty: ResolvedType::Dependent {
+                                            base: ResolvedType::User {
+                                                name: "Testing".into(),
+                                                generics: Vec::new(),
+                                                loc: (
+                                                    1,
+                                                    5,
+                                                ),
+                                            }.into(),
+                                            ident: "Testing::One".into(),
+                                            actual: ResolvedType::Tuple {
+                                                underlining: vec![
+                                                    types::INT8;2
+                                                ],
+                                                loc: (
+                                                    1,
+                                                    21,
+                                                ),
+                                            }.into(),
+                                            generics: Vec::new(),
+                                            loc: (
+                                                1,
+                                                17,
+                                            ),
+                                        },
+                                        variant: "Testing::One".into(),
+                                        pattern: Some(
+                                            super::ast::Pattern::Default.into(),
+                                        ),
+                                        loc: (
+                                            5,
+                                            2,
+                                        ),
+                                    },
+                                    loc: (
+                                        5,
+                                        2,
+                                    ),
+                                },
+                                super::ast::MatchArm {
+                                    block: Vec::new(),
+                                    ret: Some(
+                                        super::ast::Expr::NumericLiteral {
+                                            value: "2".into(),
+                                            id: 10,
+                                            ty: types::INT8,
+                                        }.into(),
+                                    ),
+                                    cond: super::ast::Pattern::EnumVariant {
+                                        ty: ResolvedType::Dependent {
+                                            base: ResolvedType::User {
+                                                name: "Testing".into(),
+                                                generics: Vec::new(),
+                                                loc: (
+                                                    1,
+                                                    5,
+                                                ),
+                                            }.into(),
+                                            ident: "Testing::Two".into(),
+                                            actual: ResolvedType::Void.into(),
+                                            generics: Vec::new(),
+                                            loc: (
+                                                1,
+                                                35,
+                                            ),
+                                        },
+                                        variant: "Testing::Two".into(),
+                                        pattern: None,
+                                        loc: (
+                                            6,
+                                            2,
+                                        ),
+                                    },
+                                    loc: (
+                                        6,
+                                        2,
+                                    ),
+                                },
+                            ],
+                            id: 2,
+                        },
+                    ),
+                ),
+                generics: None,
+                abi: None,
+                id: 0,
+            },
+        );  
+        assert_eq!(
+            fun,
+            &expected
+        );
     }
 }

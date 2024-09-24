@@ -45,6 +45,7 @@ pub struct CodeGen<'ctx> {
     locals: HashMap<String, PointerValue<'ctx>>,
     current_module: String,
     target_info: TargetData,
+    enum_discrims:HashMap<String,Vec<String>>,
     curry_ty: StructType<'ctx>,
     ret_target: Option<PointerValue<'ctx>>,
     // debug info starts here
@@ -95,6 +96,7 @@ impl<'ctx> CodeGen<'ctx> {
             locals: HashMap::new(),
             ret_target: None,
             current_module: String::new(),
+            enum_discrims:HashMap::new(),
             dibuilder: None,
             compile_unit: None,
             difile: None,
@@ -410,6 +412,8 @@ impl<'ctx> CodeGen<'ctx> {
         pat: TypedPattern,
     ) {
         match pat {
+            TypedPattern::EnumVariant { .. } => todo!("enum variant destructure. should be type checked."),
+
             TypedPattern::Const(_, _) => {
                 println!("invalid code.");
             }
@@ -2104,16 +2108,18 @@ impl<'ctx> CodeGen<'ctx> {
                 compiler::typed_ast::ResolvedTypeDeclaration::Enum(enum_) => {
                     let i32_t = self.type_resolver.resolve_type_as_basic(types::INT32);
                     let i8_t = self.type_resolver.resolve_type_as_basic(types::INT8);
-                    dbg!(&enum_.ident);
+                    
                     if enum_.generics.is_some() {
                         return;
                     }
                     let enum_struct = self.ctx.opaque_struct_type(&enum_.ident);
+                    let mut enum_discrims = Vec::new();
                     for variant in &enum_.values {
                         match variant {
                             compiler::ast::EnumVariant::Unit { ident, .. }
                             | compiler::ast::EnumVariant::Tuple { ident, .. }
                             | compiler::ast::EnumVariant::Struct { ident, .. } => {
+                                enum_discrims.push(ident.clone());
                                 let _variant = self
                                     .ctx
                                     .opaque_struct_type(&format!("{}::{}", &enum_.ident, ident));
@@ -2124,6 +2130,7 @@ impl<'ctx> CodeGen<'ctx> {
                         enum_.ident.clone(),
                         ResolvedTypeDeclaration::Enum(enum_.clone()),
                     );
+                    self.enum_discrims.insert(enum_.ident.clone(),enum_discrims);
                     let mut max_size = 0;
                     for variant in &enum_.values {
                         let variant_struct = self
@@ -2153,7 +2160,7 @@ impl<'ctx> CodeGen<'ctx> {
                                 variant_struct.set_body(&[i8_t, sub_struct.into()], false)
                             }
                         };
-                        max_size = max_size.max(self.target_info.get_abi_size(&variant_struct) - 8);
+                        max_size = max_size.max(self.target_info.get_abi_size(&variant_struct));
                     }
                     enum_struct.set_body(
                         &[
@@ -2728,6 +2735,18 @@ impl<'ctx> CodeGen<'ctx> {
         cond_ty: &ResolvedType,
     ) -> IntValue<'ctx> {
         match pat {
+            TypedPattern::EnumVariant { variant, .. } if pat.is_simple() => {
+                let variant_short = if let Some((_,short)) = variant.rsplit_once("::") {
+                    dbg!(short)
+                } else {
+                    &variant
+                };
+                let ResolvedType::User { name, .. } = cond_ty else { unreachable!() };
+                let discrim = dbg!(dbg!(&self.enum_discrims).get(dbg!(name)).unwrap()).iter().position(|it| it==variant_short).unwrap();
+                let value = self.builder.build_struct_gep(self.ctx.struct_type(&[self.ctx.i8_type().into()], false), cond_v.into_pointer_value(), 0, "$discrim").unwrap();
+                let value = self.builder.build_load(self.ctx.i8_type(),value,"").unwrap();
+                self.builder.build_int_compare(IntPredicate::EQ, value.into_int_value(), self.ctx.i8_type().const_int(discrim as _, false), "").unwrap()
+            }
             TypedPattern::Default => self.ctx.bool_type().const_int(1, false),
             TypedPattern::Or(lhs, rhs) => {
                 let lhs = self.compile_pattern_simple(*lhs, cond_v, cond_ty);
@@ -2764,7 +2783,7 @@ impl<'ctx> CodeGen<'ctx> {
                 .unwrap()
             }
             TypedPattern::Destructure(TypedDestructure::Unit) => self.ctx.bool_type().const_int(1, false),
-            _ => panic!("non simple pattern trying to be evalulated as a simple pattern (eg could be a value read or a non-simple destructure)"),
+            _ => panic!("non simple pattern trying to be evalulated as a simple pattern (eg could be a value read or a non-simple destructure) {pat:#?}"),
         }
     }
 
@@ -2792,6 +2811,28 @@ impl<'ctx> CodeGen<'ctx> {
         }
 
         match pat {
+            TypedPattern::EnumVariant { variant, pattern:Some(pat), ty, .. } => {
+                let variant_short = if let Some((_,short)) = variant.rsplit_once("::") {
+                    dbg!(short)
+                } else {
+                    &variant
+                };
+                let success_block = self.ctx.append_basic_block(fun, dbg!(&variant));
+                let _ = success_block.move_after(curr_block);
+                let ResolvedType::User { name, .. } = cond_ty else { unreachable!() };
+                let discrim = dbg!(dbg!(&self.enum_discrims).get(dbg!(name)).unwrap()).iter().position(|it| it==variant_short).unwrap();
+                let value = self.builder.build_struct_gep(self.ctx.struct_type(&[self.ctx.i8_type().into()], false), cond_v.into_pointer_value(), 0, "$discrim").unwrap();
+                let value = self.builder.build_load(self.ctx.i8_type(),value,"").unwrap();
+                let right_variant = self.builder.build_int_compare(IntPredicate::EQ, value.into_int_value(), self.ctx.i8_type().const_int(discrim as _, false), "").unwrap();
+                let _ = self.builder.build_conditional_branch(right_variant, success_block, next_block);
+                self.builder.position_at_end(success_block);
+                let ResolvedType::Dependent { actual, ident, .. }= ty else { unreachable!() };
+                let variant_data_type = self.ctx.get_struct_type(&ident).unwrap();
+                let value = self.builder.build_struct_gep(variant_data_type,cond_v.into_pointer_value(),1,"").unwrap();
+                self.compile_complex_pattern(*pat, fun, &value.into(), &actual, success_block, next_block, bindings_block, bindings_phi, bindings_to_make)
+                
+            },
+            TypedPattern::EnumVariant { .. } => unreachable!(),
             TypedPattern::Destructure(TypedDestructure::Tuple(conds)) => {
                 let ResolvedType::Tuple { underlining, .. } = cond_ty else {
                     unreachable!()
@@ -2825,7 +2866,7 @@ impl<'ctx> CodeGen<'ctx> {
                 } else {
                     self.ctx.bool_type().const_int(1, false)
                 };
-                let new_block = self.ctx.append_basic_block(fun, "");
+                let new_block = self.ctx.append_basic_block(fun, "complex");
                 new_block.move_after(curr_block);
                 self.builder
                     .build_conditional_branch(simple, new_block, next_block);
@@ -2835,40 +2876,62 @@ impl<'ctx> CodeGen<'ctx> {
                     .remove_entry(&false)
                     .map(|(_, a)| a)
                     .unwrap_or_else(Vec::new);
-                complex.sort_by_key(|(pat, _, _)| {
-                    match pat {
-                        TypedPattern::Read(_, _, _) => 0,
-                        TypedPattern::Or(_, _) => 2,
-                        // not much should be here as most else will be classed as simple.
-                        _ => 1,
-                    }
-                });
-                for (pat, idx, ty) in complex {
+                complex.retain(|(pat,idx,ty)| {
+
                     let value = self
                         .builder
-                        .build_struct_gep(tuple_ty, cond_v.into_pointer_value(), idx as _, "")
+                        .build_struct_gep(tuple_ty, cond_v.into_pointer_value(), *idx as _, "")
                         .unwrap();
-                    if let TypedPattern::Read(name, _, _) = pat {
-                        bindings_to_make.insert(name, value.as_basic_value_enum());
+                    if let TypedPattern::Read(name,_,_)= pat {
+                        bindings_to_make.insert(name.clone(), value.as_basic_value_enum());
+                        false
                     } else {
-                        curr_block = self.compile_complex_pattern(
-                            pat,
-                            fun,
-                            &value.as_basic_value_enum(),
-                            ty,
-                            curr_block,
-                            next_block,
-                            bindings_block,
-                            bindings_phi,
-                            bindings_to_make,
-                        );
+                        true
+                    }
+                });
+                // complex.sort_by_key(|(pat, _, _)| {
+                //     match pat {
+                //         TypedPattern::Read(_, _, _) => 0,
+                //         TypedPattern::Or(_, _) => 2,
+                //         // not much should be here as most else will be classed as simple.
+                //         _ => 1,
+                //     }
+                // });
+                if complex.is_empty() {
+                    for (name, value) in bindings_to_make {
+                        let phi = bindings_phi[name];
+                        phi.add_incoming(&[(value, curr_block)]);
+                    }
+                    self.builder.build_unconditional_branch(bindings_block);
+                } else {
+                    for (pat, idx, ty) in complex {
+                        let value = self
+                            .builder
+                            .build_struct_gep(tuple_ty, cond_v.into_pointer_value(), idx as _, "")
+                            .unwrap();
+                        let pat = dbg!(pat);
+                        if let TypedPattern::Read(name, _, _) = pat {
+                            bindings_to_make.insert(name, value.as_basic_value_enum());
+                        } else {
+                            curr_block = self.compile_complex_pattern(
+                                pat,
+                                fun,
+                                &value.as_basic_value_enum(),
+                                ty,
+                                curr_block,
+                                next_block,
+                                bindings_block,
+                                bindings_phi,
+                                bindings_to_make,
+                            );
+                        }
                     }
                 }
                 curr_block
             }
             TypedPattern::Destructure(_) => todo!("other kinds of destructure"),
             TypedPattern::Or(lhs, rhs) => {
-                let rhs_block = self.ctx.append_basic_block(fun, "");
+                let rhs_block = self.ctx.append_basic_block(fun, "or");
                 rhs_block.move_after(curr_block);
                 let mut lhs_bindings = bindings_to_make.clone();
                 let curr_block = self.compile_complex_pattern(
@@ -2960,7 +3023,7 @@ impl<'ctx> CodeGen<'ctx> {
             }
             TypedPattern::Err => unreachable!(),
             TypedPattern::Or(lhs, rhs) => {
-                let rhs_block = self.ctx.append_basic_block(fun, "");
+                let rhs_block = self.ctx.append_basic_block(fun, "or");
                 rhs_block.move_after(curr_block);
                 self.compile_pattern(
                     *lhs,
@@ -3071,7 +3134,7 @@ impl<'ctx> CodeGen<'ctx> {
             ret,
         } = arm;
 
-        let arm_block = self.ctx.append_basic_block(fun, "");
+        let arm_block = self.ctx.append_basic_block(fun, "arm");
         arm_block.move_after(cond_block);
         self.builder.position_at_end(cond_block);
         if cond.is_simple() && cond != TypedPattern::Default {
@@ -3096,7 +3159,7 @@ impl<'ctx> CodeGen<'ctx> {
                     (name, phi)
                 })
                 .collect();
-            self.builder.build_unconditional_branch(arm_block);
+            self.builder.build_unconditional_branch(arm_block).unwrap();
             self.builder.position_at_end(cond_block);
             self.compile_pattern(
                 cond,

@@ -244,7 +244,7 @@ pub fn from_file<'ctx>(
 
     known_types.extend(ast.get_types());
     let mut inference_context = inference::Context::new(
-        dbg!(dependency_tree.clone()),
+        dependency_tree.clone(),
         known_types,
         HashMap::new(),
         fwd_ops.clone(),
@@ -253,7 +253,7 @@ pub fn from_file<'ctx>(
     let ast = inference_context.inference(ast);
     let mut ast = TypedModuleDeclaration::from(ast, &fwd_declarations, &fwd_ops); //TODO: foward declare std lib
     ast.lower_generics(&HashMap::new());
-    let ast = unfold_global_curries(dbg!(ast), HashMap::new(), dependency_tree);
+    let ast = unfold_global_curries(ast, HashMap::new(), dependency_tree);
     (
         if errors.is_empty() {
             Ok(ast)

@@ -2355,7 +2355,7 @@ where
         #[allow(unused_mut)]
         let mut warnings = Vec::new();
         let mut errors = Vec::new();
-        match dbg!(self.stream.clone().next()) {
+        match self.stream.clone().next() {
             Some((Token::GroupOpen, _)) => {
                 //(
                 let Some((Token::GroupOpen, open_loc)) = self.stream.next() else {
@@ -2438,7 +2438,7 @@ where
                                         ty: None,
                                     }
                                 }];
-                                let _ = dbg!(self.stream.next()); //,
+                                let _ = self.stream.next(); //,
                                 while let Some((Token::Ident(_) | Token::GroupOpen, _)) =
                                     self.stream.clone().next()
                                 {
@@ -3366,7 +3366,7 @@ where
             warnings.extend(pattern.warnings);
             errors.extend(pattern.errors);
             let loc = pattern.loc;
-            let cond = dbg!(pattern.ast);
+            let cond = pattern.ast;
             if let Some((Token::Arrow, _)) = self.stream.peek() {
                 self.stream.next();
             } else {
@@ -3439,7 +3439,7 @@ where
                             peeked, loc.0, loc.1
                         )
                     }
-                    (Vec::new(), Some(dbg!(expr).into()))
+                    (Vec::new(), Some(expr.into()))
                 }
             };
             arms.push(ast::MatchArm {
@@ -4058,14 +4058,15 @@ mod tests {
     #[ignore = "This is for singled out tests"]
     fn for_debugging_only() {
         let mut parser = Parser::from_source(
-            "
-let a (v:(int32,int32)) =
-    let (x,y) = v;
-    return ();
-
-let b ((x,y):(int32,int32)) = (); ",
+            "enum Testing = | One (int8,int8) | Two
+let fun test = match test where
+| Testing::One (0,1) -> 0,
+| Testing::One ((1|0),a) -> a,
+| Testing::One _ -> -1,
+| Testing::Two -> -2, ",
         );
-        dbg!(parser.module("".to_string()));
+        let module = parser.module("".to_string());
+        println!("{module:#?}")
     }
     #[test]
     fn individual_simple_expressions() {

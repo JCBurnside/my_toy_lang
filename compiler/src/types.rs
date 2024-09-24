@@ -350,7 +350,7 @@ impl ResolvedType {
 
     pub fn as_c_function(&self) -> (Vec<Self>, Self) {
         // (args, return type)
-        match dbg!(self) {
+        match self {
             Self::Function { arg, returns, .. } => {
                 let (mut args, rt) = returns.as_c_function();
                 args.push(arg.as_ref().clone());

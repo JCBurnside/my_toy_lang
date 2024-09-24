@@ -58,12 +58,7 @@ impl<'ctx> TypeResolver<'ctx> {
             _target_data: target_data,
         }
     }
-    #[allow(unused)]
-    // TO BE USED IN DU'S TO DETERMINE OVERALL SIZE OF A ENUM TO PROPERLY CREATE THE TYPE.
-    pub fn get_size_in_bits(&mut self, ty: &ResolvedType) -> u64 {
-        let ty = self.resolve_type_as_any(ty.clone());
-        self._target_data.get_store_size(&ty)
-    }
+
 
     pub fn has_type(&self, ty: &ResolvedType) -> bool {
         self.known.contains_key(ty)
@@ -191,7 +186,7 @@ impl<'ctx> TypeResolver<'ctx> {
             {
                 ()
             }
-
+            ResolvedType::Dependent { actual, .. } => self.resolve_type(actual.as_ref().clone()),
             _ => unimplemented!(),
         }
     }

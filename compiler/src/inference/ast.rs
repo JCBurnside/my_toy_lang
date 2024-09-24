@@ -106,6 +106,7 @@ impl ArgDeclaration {
         match self {
             Self::Unit { .. } | Self::DestructureStruct { .. } => (),
             Self::Simple { ty, .. } | Self::Discard { ty, .. } => {
+                println!("chaging {id} to {new_ty:#?}");
                 ty.replace_unknown_with(id, new_ty)
             }
             Self::DestructureTuple(contents, ty, _) => {
