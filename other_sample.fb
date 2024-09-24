@@ -1,0 +1,9 @@
+enum Testing = | One (int8,int8) | Two
+let fun test = match test where
+| Testing::One (0,1) -> 0,
+| Testing::One (1|0,a) -> a,
+| Testing::One _ -> 1,
+| Testing::Two -> 2,
+| _ -> 3
+
+let main () = ()

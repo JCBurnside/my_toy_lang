@@ -44,7 +44,7 @@ let show_something_else _ : () -> bool =
 let test (a:(int32,int32)) = 
     let x : int32 = 0;
     return x;
-
+for<T,E> enum Result<T,E> = | Ok T | Err E
 let main _ : () -> () =
     // let a : bool = true;
     // let x : int32 = 0;
