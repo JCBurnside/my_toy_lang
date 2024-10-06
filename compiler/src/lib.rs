@@ -4,7 +4,7 @@ use std::{cmp::Ordering, collections::HashMap};
 pub mod ast;
 // mod langstd;
 mod inference;
-// mod lexer;
+mod lexer;
 mod parser;
 mod tokens;
 pub mod typed_ast;
@@ -22,14 +22,14 @@ use typed_ast::{
 #[derive(Error, Debug)]
 #[error(transparent)]
 pub enum Error {
-    ParseError(#[from] parser::ParseError),
+    // ParseError(#[from] parser::ParseError),
     Io(#[from] std::io::Error),
 }
 
 #[derive(Error, Debug)]
 #[error(transparent)]
 pub enum Warning {
-    Parsing(#[from] parser::Warning),
+    // Parsing(#[from] parser::Warning),
 }
 
 #[derive(Error, Debug)]
@@ -39,8 +39,8 @@ pub enum WarningAndError {
     Warning(#[from] Warning),
 }
 
-use lexer::TokenStream;
-use parser::{Parser, ParserReturns};
+// use lexer::TokenStream;
+// use parser::{Parser, ParserReturns};
 use types::ResolvedType;
 type Location = (usize, usize);
 
@@ -48,50 +48,52 @@ pub fn get_untyped_ast(
     input: &str,
     file_name: &str,
 ) -> (ast::ModuleDeclaration, Vec<WarningAndError>) {
-    let ts = TokenStream::from_source(input);
-    let ParserReturns {
-        ast,
-        loc: _,
-        warnings,
-        errors,
-    } = Parser::from_stream(ts).module(file_name.to_string());
-    let warningsanderrors = warnings
-        .into_iter()
-        .map(|w| Warning::from(w).into())
-        .chain(errors.into_iter().map(|e| Error::from(e).into()))
-        .collect();
-    (ast, warningsanderrors)
+    // let ts = TokenStream::from_source(input);
+    // let ParserReturns {
+    //     ast,
+    //     loc: _,
+    //     warnings,
+    //     errors,
+    // } = Parser::from_stream(ts).module(file_name.to_string());
+    // let warningsanderrors = warnings
+    //     .into_iter()
+    //     .map(|w| Warning::from(w).into())
+    //     .chain(errors.into_iter().map(|e| Error::from(e).into()))
+    //     .collect();
+    // (ast, warningsanderrors)
+    todo!("fix parsing.")
 }
 
 pub fn get_ast(input: &str, file_name: &str) -> typed_ast::TypedModuleDeclaration {
-    let ts = TokenStream::from_source(input);
-    let ParserReturns {
-        ast: module,
-        loc: _,
-        warnings: _,
-        errors: _,
-    } = Parser::from_stream(ts).module(file_name.to_string());
-    // TODO! better report errors.
-    // TODO! get prelude.
-    let dep_tree = module
-        .get_dependencies()
-        .into_iter()
-        .map(|(k, v)| (k, v.into_iter().collect()))
-        .collect();
-    let ops: HashMap<_, _> = [(
-        "+".to_string(),
-        vec![types::INT32.fn_ty(&types::INT32.fn_ty(&types::INT32))],
-    )]
-    .into();
-    let mut infer_context = inference::Context::new(
-        dep_tree,
-        HashMap::new(),
-        HashMap::new(),
-        ops.clone(),
-        HashMap::new(),
-    );
-    let ast = infer_context.inference(module);
-    TypedModuleDeclaration::from(ast, &HashMap::new(), &ops)
+    todo!("fix parsing.")
+    // let ts = TokenStream::from_source(input);
+    // let ParserReturns {
+    //     ast: module,
+    //     loc: _,
+    //     warnings: _,
+    //     errors: _,
+    // } = Parser::from_stream(ts).module(file_name.to_string());
+    // // TODO! better report errors.
+    // // TODO! get prelude.
+    // let dep_tree = module
+    //     .get_dependencies()
+    //     .into_iter()
+    //     .map(|(k, v)| (k, v.into_iter().collect()))
+    //     .collect();
+    // let ops: HashMap<_, _> = [(
+    //     "+".to_string(),
+    //     vec![types::INT32.fn_ty(&types::INT32.fn_ty(&types::INT32))],
+    // )]
+    // .into();
+    // let mut infer_context = inference::Context::new(
+    //     dep_tree,
+    //     HashMap::new(),
+    //     HashMap::new(),
+    //     ops.clone(),
+    //     HashMap::new(),
+    // );
+    // let ast = infer_context.inference(module);
+    // TypedModuleDeclaration::from(ast, &HashMap::new(), &ops)
 }
 fn unfold_global_curries(
     mut ast: TypedModuleDeclaration,
@@ -199,6 +201,7 @@ pub fn from_file<'ctx>(
     fwd_ops: HashMap<String, Vec<ResolvedType>>,
     project_name: String,
 ) -> (Result<TypedModuleDeclaration, Vec<Error>>, Vec<Warning>) {
+    /* 
     // TODO: I would like to make this work for now I will read the whole file to a string then
     // let file = File::open(file).map_err(Box::new).map_err(|err| vec![err as Box<dyn Display>])?;
     // let file = BufReader::new(file);
@@ -262,4 +265,6 @@ pub fn from_file<'ctx>(
         },
         warnings,
     )
+    */
+    todo!("fix parsing.")
 }

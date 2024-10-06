@@ -1,3 +1,4 @@
+
 use std::collections::HashSet;
 
 use crate::typed_ast;
@@ -624,6 +625,28 @@ impl ResolvedType {
                 loc: _,
             } => arg.contains_unknown(id) || returns.contains_unknown(id),
             _ => false,
+        }
+    }
+    
+    pub(crate) fn replace_generic_inplace(&mut self, generic: &str) {
+        match self {
+            Self::Function {arg,returns,..} => {
+                arg.replace_generic_inplace(generic);
+                returns.replace_generic_inplace(generic);
+            }
+            Self::Pointer { underlining, .. }
+            |Self::Array { underlining, .. }
+            | Self::Ref { underlining }
+            | Self::Slice { underlining }
+            => underlining.replace_generic_inplace(generic),
+            Self::User {name, generics, loc, .. } if name == generic => {
+                if !generics.is_empty() {
+                    //TODO! generate error if there are generics.
+                
+                }
+                *self = Self::Generic { name: generic.into(), loc: *loc };
+            }
+            _ => (),
         }
     }
 }
