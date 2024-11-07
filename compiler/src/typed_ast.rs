@@ -3519,7 +3519,7 @@ pub enum TypingError {
     #[error("Abi constraint violated.")]
     AbiError,
 }
-/* TODO! FIX TESTS
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -3527,7 +3527,7 @@ mod tests {
     use super::TypedArgDeclaration;
     use super::TypedExpr;
     use crate::inference::ast;
-    use crate::parser::Parser;
+    use crate::parser::file;
     use crate::typed_ast::TypedDestructure;
     use crate::typed_ast::TypedPattern;
     use crate::typed_ast::TypedTopLevelValue;
@@ -3555,8 +3555,7 @@ let b value : (int32,(int32,int32)) -> int32 = match value where
     | (0, (0,b) | (b,0) ) | (b,_) -> b,
     | _ -> 0,
 "#;
-        let parser = Parser::from_source(SRC);
-        let mut module = parser.module("foo".to_string()).ast;
+        let mut module = file("", SRC);
         module.canonialize(vec!["P".to_string()]);
         let dependency_graph = module.get_dependencies();
         let dependency_tree = dependency_graph
@@ -3974,8 +3973,7 @@ let b value : (int32,(int32,int32)) -> int32 = match value where
 
     #[test]
     fn generic_use() {
-        use crate::parser::Parser;
-        let parser = Parser::from_source(
+        let module = file( "",
             r#"
 for<T> let test a : T -> T = a
 
@@ -3985,7 +3983,6 @@ let main _ : () -> () =
 "#,
             // test 3; this will be an inference error of "Unable to determine type of a NumericLiteral"
         );
-        let module = parser.module("test".to_string()).ast;
         // module.canonialize(vec!["test".to_string()]);
         let dtree = module.get_dependencies();
         let dependency_tree = dtree
@@ -4127,8 +4124,7 @@ let main _ : () -> () =
 
     #[test]
     fn structs() {
-        use crate::Parser;
-        let parser = Parser::from_source(
+        let module = file("test",
             r"
 for<T,U> type Tuple = {
     first : T,
@@ -4140,7 +4136,6 @@ let first a : Tuple<int32,float64> -> int32 =
 ",
         );
 
-        let module = parser.module("test".to_string()).ast;
         // module.canonialize(vec!["test".to_string()]);
         let dtree = module.get_dependencies();
 
@@ -4277,9 +4272,7 @@ let first a : Tuple<int32,float64> -> int32 =
 
     #[test]
     fn generic_lowering() {
-        use crate::parser::Parser;
-        use crate::TokenStream;
-        let parser = Parser::from_stream(TokenStream::from_source(
+        let module = file("test",
             r#"
 for<T> let test a : T -> T =
     return a;
@@ -4288,8 +4281,7 @@ let main x : int32 -> int32 =
     test x;
     return 0;
 "#,
-        ));
-        let module = parser.module("test.fb".to_string()).ast;
+        );
         // module.canonialize(vec!["test".to_string()]);
         let dtree = module.get_dependencies();
 
@@ -4442,7 +4434,7 @@ let main x : int32 -> int32 =
 
     #[test]
     fn control_flow_if() {
-        let parser = Parser::from_source(
+        let module = file("test",
             r#"
 let expr_with_statement a : bool -> int32 = if a then
         foo 3;
@@ -4460,7 +4452,6 @@ let statement_with_else_if a b : bool -> bool -> int32 =
         return 2;
 "#,
         );
-        let module = parser.module("test.fb".to_string()).ast;
         // module.canonialize(vec!["test".to_string()]);//don't really need to do this for tests.
         let dtree = module.get_dependencies();
         let dependency_tree = dtree
@@ -4635,7 +4626,7 @@ let statement_with_else_if a b : bool -> bool -> int32 =
     }
     #[test]
     fn control_flow_match() {
-        let module = Parser::from_source(
+        let module = file("test",
             "
 let simple_expr a fun : int32 -> (int32 -> int32) -> int32 = match fun a where
 | 1 -> 0,
@@ -4658,9 +4649,7 @@ let as_statement a b : int32 -> int32 -> () =
         | 3 -> (),
     | 2 -> (),
 ",
-        )
-        .module("test".to_string())
-        .ast;
+        );
 
         // module.canonialize(vec!["test".to_string()]);
         let dtree = module.get_dependencies();
@@ -5069,7 +5058,7 @@ let as_statement a b : int32 -> int32 -> () =
     }
     #[test]
     fn arrays() {
-        let module = Parser::from_source(
+        let module = file("test",
             "
 let simple _ : () -> [int32;5] = [5,4,3,2,1]
 
@@ -5083,9 +5072,7 @@ let not_so_simple a : int32 -> [int32;4] =
         foo a
     ];
 ",
-        )
-        .module("foo".to_string())
-        .ast;
+        );
         let dtree = module.get_dependencies();
         let dependency_tree = dtree
             .into_iter()
@@ -5167,7 +5154,7 @@ let main _ : () -> () =
     return ();
 ";
 
-        let ast = crate::Parser::from_source(USAGE).module(String::new()).ast;
+        let ast = file("",USAGE);
         let dtree = ast.get_dependencies();
         let dtree = dtree
             .into_iter()
@@ -5280,14 +5267,12 @@ let main _ : () -> () =
     }
     #[test]
     fn destructuring_statement() {
-        let ast = Parser::from_source(
+        let ast =file("",
             "
 let a (v:(int32,int32)) =
     let (x,y) = v;
     return ();",
-        )
-        .module("".to_string())
-        .ast;
+        );
         let dtree = ast.get_dependencies();
         let dtree = dtree
             .into_iter()
@@ -5365,7 +5350,7 @@ let fun a = match a where
 | Test::A (a,b) -> 1,
 | Test::B -> 0,
 "#;
-        let ast = Parser::from_source(SRC).module("".to_string()).ast;
+        let ast = file("",SRC);
         let dtree = ast.get_dependencies();
         let dtree = dtree
             .into_iter()
@@ -5549,4 +5534,3 @@ let fun a = match a where
         );
     }
 }
-*/
