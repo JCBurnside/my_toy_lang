@@ -635,8 +635,8 @@ impl ValueType {
     fn get_dependencies(&self, known_values: Vec<String>) -> HashSet<String> {
         match self {
             Self::Expr(expr) => expr.get_dependencies(known_values),
-            Self::Function(stmnts) => {
-                stmnts
+            Self::Function(block) => {
+                let (values,mut deps) = block
                     .statements //todo! add the implicit ret
                     .iter()
                     .fold(
@@ -649,7 +649,11 @@ impl ValueType {
                             (known_values, dependencies)
                         },
                     )
-                    .1
+                    ;
+                if let Some(ret) = &block.implicit_ret {
+                    deps.extend(ret.get_dependencies(values));
+                }
+                deps
             }
             Self::External => HashSet::new(),
         }

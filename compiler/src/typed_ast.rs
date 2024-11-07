@@ -1136,6 +1136,7 @@ impl TypedStatement {
         known_types: &HashMap<String, ResolvedTypeDeclaration>,
     ) -> Result<Self, TypingError> {
         match statement {
+            ast::Statement::Expr(expr)=>todo!(),
             ast::Statement::Declaration(data) => Ok(
                 match TypedValueDeclaration::try_from(
                     data,
@@ -1161,7 +1162,8 @@ impl TypedStatement {
                 known_types,
             )?)),
             ast::Statement::IfStatement(ifstmnt) => Ok(Self::IfBranching(
-                TypedIfBranching::try_from(ifstmnt, known_externs, known_values, known_types),
+                /*TypedIfBranching::try_from(ifstmnt, known_externs, known_values, known_types),*/
+                todo!()
             )),
             ast::Statement::Match(match_) => Ok(Self::Match(TypedMatch::as_statement(
                 match_,
@@ -1230,18 +1232,19 @@ pub struct TypedIfBranching {
 
 impl TypedIfBranching {
     fn try_from(
-        value: ast::IfBranching,
+        value: ast::If,
         known_externs: &HashMap<String, ResolvedType>,
         known_values: &HashMap<String, ResolvedType>,
         known_types: &HashMap<String, ResolvedTypeDeclaration>,
     ) -> Self {
-        let ast::IfBranching {
+        let ast::If {
             cond,
             true_branch,
-            else_ifs,
             else_branch,
             loc,
-        } = value;
+            id:_,
+            result:_,
+        } = value;/*
         let cond = match TypedExpr::try_from(
             *cond,
             known_externs,
@@ -1371,6 +1374,8 @@ impl TypedIfBranching {
             else_branch,
             loc,
         }
+        */
+        todo!()
     }
 
     fn lower_generics(&mut self, context: &mut LoweringContext) {
@@ -1816,12 +1821,12 @@ impl TypedExpr {
             Expr::StructConstruction(strct) => Ok(Self::StructConstruction(
                 TypedStructConstruction::from(strct, known_externs, known_values, known_types)?,
             )),
-            Expr::If(ifexpr) => Ok(Self::IfExpr(TypedIfExpr::from(
+            Expr::If(ifexpr) => Ok(Self::IfExpr(/*TypedIfExpr::from(
                 ifexpr,
                 known_externs,
                 known_values,
                 known_types,
-            ))),
+            )*/todo!())),
             Expr::BoolLiteral(value, loc, _) => Ok(Self::BoolLiteral(value, loc)),
             Expr::Match(match_) => Ok(Self::Match(TypedMatch::from(
                 match_,

@@ -23,6 +23,8 @@ struct State {
 struct OuterState<'input> {
 
     prefix: Cow<'input, str>,
+    just_consumed_line:bool,
+    multi_line_expr:bool,
 }
 
 #[derive(Clone)]
@@ -98,23 +100,23 @@ impl<'a> WStream for StrippedParser<'a> {
                 self.state.in_line_comment = false;
                 Some('\n')
             },
-            '"' if !self.state.in_str_lit => {
+            '"' if !self.state.in_str_lit && !(self.state.in_line_comment || self.state.multiline_comment_depth>0) => {
                 self.state.in_str_lit = true;
                 Some('"')
             },
-            '"' if !self.state.escaping => {
+            '"' if !self.state.escaping && !(self.state.in_line_comment || self.state.multiline_comment_depth>0) => {
                 self.state.in_str_lit = false;
                 Some('"')
             },
-            '\'' if !self.state.in_char_lit =>{
+            '\'' if !self.state.in_char_lit && !(self.state.in_line_comment || self.state.multiline_comment_depth>0) =>{
                 self.state.in_char_lit = true;
                 Some('\'')
             },
-            '\'' if !self.state.escaping => {
+            '\'' if !self.state.escaping && !(self.state.in_line_comment || self.state.multiline_comment_depth>0) => {
                 self.state.in_char_lit = false;
                 Some('\'')
             },
-            '\\' if (self.state.in_char_lit || self.state.in_str_lit)=> {
+            '\\' if (self.state.in_char_lit || self.state.in_str_lit) && !(self.state.in_line_comment || self.state.multiline_comment_depth>0)=> {
                 self.state.escaping = !self.state.escaping;
                 Some('\\')
             }
@@ -233,6 +235,20 @@ impl winnow::stream::AsBStr for StrippedParser<'_> {
     }
 }
 
+pub(crate) fn file(file_name:&str, src :&str) ->ast::ModuleDeclaration{
+    let src = Stream {
+        input: Located::new(StrippedParser{
+            src,
+            state:Default::default(),
+        }),
+        state: Default::default(),
+    };
+
+    let decls = combinator::delimited(ignore_blank_lines, top_level_block,(ascii::space0,ignore_blank_lines)).parse(src).unwrap();
+
+    ast::ModuleDeclaration{ loc: None, name: file_name.into(), declarations: decls }
+}
+
 fn parens< I, O, E>(
     parser: impl Parser<I, O, E>
 ) -> impl Parser<I, O, E> 
@@ -267,15 +283,38 @@ enum ShuntingYardOptions {
     Op((String, crate::Location)),
 }
 
+fn expect_line(input : &mut Stream<'_>) -> PResult<()> {
+    combinator::trace("expect line",|input : &mut Stream<'_>| {
+
+        if input.state.just_consumed_line {
+            return Ok(());
+        }
+        let _ = ascii::space0(input)?;
+        let _ = ascii::line_ending(input)?;
+        input.state.just_consumed_line = true;
+        Ok(())
+    }).parse_next(input)
+}
+
+fn reset_line(input:&mut Stream<'_>) -> PResult<()> {
+    combinator::trace("reset line",|input : &mut Stream<'_>| {
+        input.state.just_consumed_line=false;
+        Ok(())
+    }).parse_next(input)
+}
+
 fn ignore_blank_lines(input: &mut Stream<'_>) -> PResult<()> {
-    let mut checkpoint = input.checkpoint();
-    let _ = ascii::space0(input)?;
-    while let Some(_) = combinator::opt(ascii::line_ending).parse_next(input)? {
-        checkpoint = input.checkpoint();
-        ascii::space0(input)?;
-    }
-    input.reset(&checkpoint);
-    Ok(())
+    combinator::trace("blank lines",|input : &mut Stream<'_>| {
+
+        let mut checkpoint = input.checkpoint();
+        let _ = ascii::space0(input)?;
+        while let Some(_) = combinator::opt(ascii::line_ending).parse_next(input)? {
+            checkpoint = input.checkpoint();
+            ascii::space0(input)?;
+        }
+        input.reset(&checkpoint);
+        Ok(())
+    }).parse_next(input)
 }
 
 
@@ -354,7 +393,7 @@ fn top_level_block(input: &mut Stream<'_>) -> PResult<Vec<ast::TopLevelDeclarati
     } else {
     
         input.state.prefix = new_prefix.into();
-        let result = combinator::repeat(0..,combinator::preceded(ascii::space0.verify(|it:&str| it == new_prefix), top_level_decl)).parse_next(input);
+        let result = combinator::repeat(0..,combinator::preceded((ignore_blank_lines,ascii::space0.verify(|it:&str| it == new_prefix)), top_level_decl)).parse_next(input);
         input.state.prefix = old_prefix;
         result
     }
@@ -375,6 +414,7 @@ fn top_level_decl(input: &mut Stream<'_>) -> PResult<ast::TopLevelDeclaration> {
     
     Ok(result)
 }
+
 
 fn type_decl(input: &mut Stream<'_>) -> PResult<ast::TypeDefinition> {
     combinator::trace("type declaration", |input: &mut Stream<'_>| {
@@ -540,25 +580,27 @@ combinator::trace("block", |input: &mut Stream<'_>|{
             return Err(ErrMode::Cut(ContextError::new().add_context(input, &checkpoint, StrContext::Expected(winnow::error::StrContextValue::Description("expected the body to be an ident deeper")))))
         }
         input.reset(&checkpoint);
-            
-        (
+        input.state.prefix=new_prefix.into();
+        let result = (
             combinator::repeat(
                 0..,
                 combinator::preceded(
                     ignore_blank_lines,
                     combinator::delimited(
-                        new_prefix,
-                        combinator::repeat(1..,statement),
-                        (ascii::space0,combinator::alt((ascii::line_ending.void(),combinator::eof.void())))
+                        combinator::trace("prefix",(new_prefix,reset_line)),
+                        combinator::trace(format!("block statement prefix {:?}",new_prefix),combinator::repeat(1..,statement)),
+                        combinator::trace("ending",combinator::alt((expect_line,(ascii::space0,combinator::eof).void())))
                      )
                 )
             ).map(|statements : Vec<Vec<_>>| {
                     statements.into_iter().flat_map(Vec::into_iter).collect()
             })
             ,
-            combinator::opt(combinator::preceded((ignore_blank_lines,new_prefix),expr).map(Into::into))
+            combinator::opt(combinator::preceded((ignore_blank_lines,new_prefix,reset_line),expr).map(Into::into))
         ).map(|(statements,implicit_ret)| ast::Block { statements, implicit_ret })
-        .parse_next(input)
+        .parse_next(input);
+        input.state.prefix=old_prefix;
+        result
     }
 ).parse_next(input)
 }
@@ -760,8 +802,15 @@ fn top_level_value(input: &mut Stream<'_>) -> PResult<ast::TopLevelValue> {
                 combinator::alt((
                     combinator::preceded((ascii::space0, ascii::line_ending), block)
                         .map(ast::ValueType::Function),
-                    combinator::delimited(ascii::space0, expr, (ascii::space0, ';'))
-                        .map(ast::ValueType::Expr),
+                    combinator::delimited(ascii::space0, expr, |input:&mut Stream<'_>| {
+                        if input.state.multi_line_expr {
+                            input.state.multi_line_expr=false;
+                            Ok(())
+                        } else {
+                            (ascii::space0,';').void().parse_next(input)
+                        }
+                    })
+                    .map(ast::ValueType::Expr),
                 )),
             )
             .parse_next(input)?,
@@ -812,6 +861,23 @@ fn generics<'input>(input: &mut Stream<'input>) -> PResult<ast::GenericsDecl> {
     })
 }
 
+fn if_statement(input :&mut Stream<'_>) -> PResult<ast::If> {
+    combinator::trace("if",winnow::combinator::seq! { ast::If{
+        loc:"if".span().map(|loc| (loc.start,loc.end)),
+        cond : combinator::delimited(ascii::multispace1,combinator::cut_err(expr).map(Into::into),(ascii::multispace1,"then")),
+        true_branch : combinator::alt((
+            combinator::preceded((ascii::space0,ascii::line_ending),block),
+            expr.map(|expr| ast::Block { statements:Vec::new(), implicit_ret:Some(expr.into())})
+        )),
+        else_branch : combinator::opt(combinator::preceded("else",combinator::alt((
+            combinator::preceded(ascii::space1,if_statement).map(|if_|ast::Block { statements : vec![ast::Statement::IfStatement(if_)], implicit_ret:None}),
+            combinator::preceded((ascii::space0,ascii::line_ending),block),
+            expr.map(|expr| ast::Block { statements:Vec::new(), implicit_ret:Some(expr.into())})
+        )))),
+    }
+    }).parse_next(input)
+}
+
 fn statement(input: &mut Stream<'_>) -> PResult<ast::Statement> {
     let declaration = combinator::preceded(
         ("let", ascii::space1),
@@ -840,7 +906,7 @@ fn statement(input: &mut Stream<'_>) -> PResult<ast::Statement> {
                 combinator::alt((
                     combinator::preceded((ascii::space0, ascii::line_ending), block)
                         .map(ast::ValueType::Function),
-                    expr.map(ast::ValueType::Expr),
+                    combinator::terminated(expr,(ascii::space0,';')).map(ast::ValueType::Expr),
                 )),
             ),
         )),
@@ -855,40 +921,34 @@ fn statement(input: &mut Stream<'_>) -> PResult<ast::Statement> {
         generictypes: None,
         abi: None,
     });
-    let if_ = winnow::combinator::seq! { ast::If{
-        loc:"if".span().map(|loc| (loc.start,loc.end)),
-        cond : combinator::delimited(ascii::multispace1,expr.map(Into::into),(ascii::multispace1,"then")),
-        true_branch : combinator::alt((
-            block,
-            expr.map(|expr| ast::Block { statements:Vec::new(), implicit_ret:Some(expr.into())})
-        )),
-        else_branch : combinator::opt(combinator::alt((
-            block,
-            expr.map(|expr| ast::Block { statements:Vec::new(), implicit_ret:Some(expr.into())})
-        ))),
-    }
-    };
-    combinator::trace(
+    let multiline_context = input.state.multi_line_expr;
+    let result = combinator::trace(
         "statement",
-        combinator::terminated(
             combinator::alt((
-                (
-                    "return".span(),
-                    combinator::cut_err(combinator::preceded(ascii::space1, expr)),
-                )
-                    .map(|(loc, expr)| ast::Statement::Return(expr.into(), (loc.start, loc.end))),
+                
                 declaration.map(ast::Statement::Declaration),
                 match_.map(ast::Statement::Match),
-                if_.map(ast::Statement::IfStatement),
-                expr.map(ast::Statement::Expr),
-                combinator::empty.map(|_| ast::Statement::Error)
-                // todo! expr as statement.
+                if_statement.map(ast::Statement::IfStatement),
+                combinator::terminated(combinator::alt((
+
+                    ("return".span(),
+                    combinator::cut_err(combinator::preceded(ascii::space1, expr)),
+                
+                    ).map(|(loc, expr)| ast::Statement::Return(expr.into(), (loc.start, loc.end))),
+                    expr.map(ast::Statement::Expr),
+                
+                    )),
+                    (ascii::multispace0,';')
+                ),
+                combinator::fail.context(StrContext::Label("Invalid statement"))//this should never be reached???
             )),
-            (ascii::multispace0, ';'),
-        ),
     )
-    .parse_next(input)
+    .parse_next(input);
+    input.state.multi_line_expr=multiline_context;
+    // ignore_blank_lines(input)?;
+    result
 }
+
 
 
 fn simple_expr(input:&mut Stream<'_>) -> PResult<ast::Expr> {
@@ -898,19 +958,26 @@ fn simple_expr(input:&mut Stream<'_>) -> PResult<ast::Expr> {
         return Err(ErrMode::Backtrack(ContextError::new()));
     }
 
-    let if_ = winnow::combinator::seq! { ast::If{
+    let if_ = combinator::trace("if",winnow::combinator::seq! { ast::If{
         loc:"if".span().map(|loc| (loc.start,loc.end)),
         cond : combinator::delimited(ascii::multispace1,expr.map(Into::into),(ascii::multispace1,"then")),
         true_branch : combinator::alt((
-            block,
+            combinator::preceded((ascii::space0,ascii::line_ending,|input:&mut Stream<'_>| {
+                input.state.multi_line_expr=true;
+                Ok(())
+            }),block),
             expr.map(|expr| ast::Block { statements:Vec::new(), implicit_ret:Some(expr.into())})
         )),
+        _:(ascii::multispace0,"else"),//TODO! need to check indent level or if inline then space preceded.
         else_branch : combinator::alt((
-            block,
+            combinator::preceded((ascii::space0,ascii::line_ending,|input:&mut Stream<'_>| {
+                input.state.multi_line_expr=true;
+                Ok(())
+            }),block),
             expr.map(|expr| ast::Block { statements:Vec::new(), implicit_ret:Some(expr.into())})
         )).map(Into::into),
     }
-    };
+    });
     let struct_con = (
         type_.with_span(),
         combinator::delimited(
@@ -957,6 +1024,8 @@ fn simple_expr(input:&mut Stream<'_>) -> PResult<ast::Expr> {
                 ast::Expr::Error
             }
         });
+
+        ascii::space0(input)?;
         combinator::trace(
             "simple expr",
             combinator::alt((
@@ -969,9 +1038,6 @@ fn simple_expr(input:&mut Stream<'_>) -> PResult<ast::Expr> {
                     .span()
                     .map(|loc| ast::Expr::BoolLiteral(false, (loc.start, loc.end))),
                 combinator::trace("struct construction",struct_con),
-                ident
-                    .with_span()
-                    .map(|(name, loc)| ast::Expr::ValueRead(name.into(), (loc.start, loc.end))),
                 ascii::dec_int.map(|it: i128| ast::Expr::NumericLiteral {
                     value: it.to_string(),
                 }),
@@ -985,11 +1051,11 @@ fn simple_expr(input:&mut Stream<'_>) -> PResult<ast::Expr> {
                 //dependents.
                 parens(expr),
                 //tuple
-                parens(combinator::separated(
+                combinator::trace("tuple",parens(combinator::separated(
                     1..,
                     expr,
                     (ascii::multispace0, ',', ascii::multispace0),
-                ))
+                )))
                 .with_span()
                 .map(|(contents, loc)| ast::Expr::TupleLiteral {
                     contents,
@@ -1011,6 +1077,10 @@ fn simple_expr(input:&mut Stream<'_>) -> PResult<ast::Expr> {
                 }),
                 if_.map(ast::Expr::If),
                 match_.map(ast::Expr::Match),
+                ident
+                    .with_span()
+                    .map(|(name, loc)| ast::Expr::ValueRead(name.into(), (loc.start, loc.end))),
+                
                 // combinator::separated(expr,combinator::delimited(ascii::multispace0,op,ascii::multispace0))
             )),
         ).parse_next(input)
@@ -1028,12 +1098,12 @@ fn expr(input: &mut Stream<'_>) -> PResult<ast::Expr> {
     .parse_next(input)?
     {
         std::iter::once(out)
-            .chain(dbg!(args))
+            .chain(args)
             .reduce(|value, arg| {
                 let loc = value.get_loc();
                 ast::Expr::FnCall(ast::FnCall {
-                    value: dbg!(value).into(),
-                    arg: Some(dbg!(arg).into()),
+                    value: value.into(),
+                    arg: Some(arg.into()),
                     loc,
                 })
             })
@@ -1151,6 +1221,7 @@ fn match_(input: &mut Stream<'_>) -> PResult<ast::Match> {
         .parse_next(input)?;
     let _spaces = ascii::space0(input)?;
     let arms = if ascii::line_ending::<_, ErrMode<ContextError>>(input).is_ok() {
+        input.state.multi_line_expr=true;
         // on another line.
         let prefix = input.state.prefix.clone();
         let checkpoint = input.checkpoint();
@@ -1173,6 +1244,8 @@ fn match_(input: &mut Stream<'_>) -> PResult<ast::Match> {
 }
 
 fn arm(input: &mut Stream<'_>) -> PResult<ast::MatchArm> {
+    combinator::trace("match arm",|input: &mut Stream<'_>| {
+    
     let (loc, _, pat) = ("|".span(), ascii::space0.void(), pattern).parse_next(input)?;
     let block = combinator::preceded(
         (ascii::space0, "->", ascii::space0),
@@ -1194,6 +1267,7 @@ fn arm(input: &mut Stream<'_>) -> PResult<ast::MatchArm> {
         cond: pat,
         loc: (loc.start, loc.end),
     })
+    }).parse_next(input)
 }
 
 fn pattern(input: &mut Stream<'_>) -> PResult<ast::Pattern> {
@@ -1292,6 +1366,9 @@ const KEYWORDS: &[&'static str] = &[
     "enum",
     "return",
     "where",
+    "if",
+    "then",
+    "else",
 ];
 #[cfg(test)]
 mod tests {
@@ -1314,32 +1391,39 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "for debuging small test cases"]
-    fn debugging() {
-        let mut src = r#""a\b""#;
-        let (left, result) = ascii::escaped_transform::<_, _, _, _, String>(
-            token::take_till(1.., ['\\']).context(winnow::error::StrContext::Label("normals")),
-            '\\',
-            combinator::alt((
-                'n'.value("\n"),
-                'r'.value("\r"),
-                '\\'.value("\\"),
-                '\"'.value("\""),
-                '\''.value("'"),
-                'b'.value("beeeee"),
-                combinator::fail::<_, String, InputError<&str>>
-                    .context(winnow::error::StrContext::Expected("EscapeSequence".into()))
-                    .value(""),
-            )),
+    fn if_statements() {
+        let mut src = from_source(r#"
+if a then
+    return 0;"#);
+        ignore_blank_lines(&mut src).unwrap();
+        assert_eq!(
+            Ok(ast::If { 
+                loc: (1,3),
+                cond: ast::Expr::ValueRead("a".into(), (4,5)).into(), 
+                true_branch: ast::Block {
+                    statements:vec![
+                        ast::Statement::Return(ast::Expr::NumericLiteral { value: "0".into() }, (15,21)),
+                    ],
+                    implicit_ret:None,
+                }, 
+                else_branch: None,
+            }),
+            if_statement(&mut src),
         )
-        .parse_peek(src)
-        .unwrap();
-        // println!("{result}\n{left}");
-        let mut src = from_source(r#""merp\"\\""#);
-        assert_eq!(Ok("merp\"\\".into()), string_lit(&mut src));
     }
 
     #[test]
+    #[ignore = "for debuging small test cases"]
+    fn debugging() {
+        let mut src = from_source(r#"if a then 0 else 1;"#);
+        
+        let x = expr(&mut src);
+        println!("{x:#?}");
+        // println!("{src}");
+        assert!(false);
+    }
+
+    #[test] 
     fn type_parsing() {
         use types::ResolvedType;
         let mut src = from_source("int64");
@@ -2117,7 +2201,7 @@ let cons a : int32 -> (int32,int32) = (a,0);
 ";
         let mut src = from_source(SRC);
         let module = top_level_block(&mut src).unwrap();
-        let [ty, cons] = dbg!(&module[..]) else {
+        let [ty, cons] = &module[..] else {
             unreachable!()
         };
         assert_eq!(

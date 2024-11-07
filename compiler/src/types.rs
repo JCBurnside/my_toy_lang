@@ -654,7 +654,7 @@ impl ResolvedType {
 impl ToString for ResolvedType {
     fn to_string(&self) -> String {
         match self {
-            ResolvedType::Dependent { .. } => todo!(),
+            ResolvedType::Dependent { base, ident,.. } => format!("{}::{ident}",base.to_string()),
             ResolvedType::Number => "{number}".to_string(),
             ResolvedType::Bool => "bool".to_string(),
             ResolvedType::Alias { actual, .. } => actual.to_string(),

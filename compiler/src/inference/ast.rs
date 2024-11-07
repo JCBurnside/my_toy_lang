@@ -106,7 +106,7 @@ impl ArgDeclaration {
         match self {
             Self::Unit { .. } | Self::DestructureStruct { .. } => (),
             Self::Simple { ty, .. } | Self::Discard { ty, .. } => {
-                println!("chaging {id} to {new_ty:#?}");
+                
                 ty.replace_unknown_with(id, new_ty)
             }
             Self::DestructureTuple(contents, ty, _) => {
@@ -126,23 +126,35 @@ pub(crate) enum ValueType {
     External,
 }
 
+
+
+#[derive(PartialEq, Debug)]
+pub(crate) struct Block {
+    pub(crate) statements:Vec<Statement>,
+    pub(crate) implicit_ret:Option<Box<Expr>>,
+    pub(crate) id : usize,
+    pub(crate) ret_ty : Option<ResolvedType>,
+}
 #[derive(PartialEq, Debug)]
 pub(crate) enum Statement {
     Error,
     Declaration(ValueDeclaration),
     Return(Expr, crate::Location),
     FnCall(FnCall),
-    IfStatement(IfBranching),
+    IfStatement(If),
     Match(Match),
+    Expr(Expr),
 }
 
 #[derive(PartialEq, Debug)]
-pub(crate) struct IfBranching {
-    pub(crate) cond: Box<Expr>,
-    pub(crate) true_branch: Vec<Statement>,
-    pub(crate) else_ifs: Vec<(Box<Expr>, Vec<Statement>)>,
-    pub(crate) else_branch: Vec<Statement>,
-    pub(crate) loc: crate::Location,
+pub(crate) struct If {
+    pub(crate) loc : crate::Location,
+    pub(crate) cond : Box<Expr>,
+    pub(crate) true_branch : Block,
+    pub(crate) else_branch : Option<Block>,
+    pub(crate) id : usize,
+    pub(crate) result : ResolvedType,
+    
 }
 
 #[derive(PartialEq, Debug)]
@@ -267,7 +279,7 @@ pub(crate) enum Expr {
     #[allow(unused)] // TODO! why is this unused?
     StructConstruction(StructConstruction),
     BoolLiteral(bool, crate::Location, usize),
-    If(IfExpr),
+    If(If),
     Match(Match),
 }
 impl Expr {
@@ -278,7 +290,7 @@ impl Expr {
             | Self::ListLiteral { id, .. }
             | Self::NumericLiteral { id, .. }
             | Self::ValueRead(_, _, id)
-            | Self::If(IfExpr { id, .. })
+            | Self::If(If { id, .. })
             | Self::BinaryOpCall(BinaryOpCall { id, .. })
             | Self::FnCall(FnCall { id, .. })
             | Self::ArrayLiteral { id, .. }
