@@ -814,7 +814,7 @@ impl Context {
                 ty,
             } => {
                 if let Some(ety) = expected {
-                    let is_ety_valid = ety.is_float() || ety.is_int();
+                    let is_ety_valid = ety.is_float() || ety.is_int() || ety.is_unknown();
                     let is_replacable =
                         ty == &ResolvedType::Number || ty.is_error() || ty.is_unknown();
                     *ty = if is_ety_valid && is_replacable {
@@ -918,7 +918,7 @@ impl Context {
             }
             ast::Expr::FnCall(fncall) => self.infer_call(fncall, fun_ret_ty),
             ast::Expr::ValueRead(ident, _, _) => {
-                if let Some(ty) = self.known_locals.get_mut(ident) {
+                if let Some(ty) = dbg!(self.known_locals.get_mut(*dbg!(&ident))) {
                     if let Some(ety) = expected {
                         if let ResolvedType::Unknown(id) = ty {
                             if let Some(new_ty) = self.equations.get(id) {
@@ -974,7 +974,9 @@ impl Context {
                         out
                     })
                     .expect("no empty array literals");
-                if underlining != types::ERROR {
+
+
+                if dbg!(&underlining) != &types::ERROR {
                     for elem in contents.iter_mut() {
                         self.get_actual_type(elem, Some(underlining.clone()), fun_ret_ty);
                     }
@@ -1284,7 +1286,7 @@ impl Context {
             name: _,
             decls,
         } = module;
-        let mut equations = self.equations.clone().into_iter().collect_vec();
+        let mut equations = dbg!(self.equations.clone()).into_iter().collect_vec();
         for (id,ty) in &self.equations {
             for equation in &mut equations {
                 if id == &equation.0 {
@@ -1324,8 +1326,6 @@ impl Context {
                 ast::TopLevelDeclaration::Type(_) => (), //Nothing to do.
             }
         }
-
-    
     }
 
     fn apply_equation_decl(&self, decl: &mut ast::ValueDeclaration, id: usize, ty: ResolvedType) {
@@ -1973,18 +1973,20 @@ fn infer_block(&mut self, block: &mut ast::Block, fun_ret_ty:&mut Option<Resolve
         id:_,
         ret_ty,
     } = block;
-
+    let statements = dbg!(statements);
+    let implicit_ret = dbg!(implicit_ret);
     for stmnt in statements {
         self.infer_stmnt(stmnt, fun_ret_ty);
     }
     if let Some(ret) = implicit_ret.as_mut() {
-        let ty = dbg!(self.get_actual_type(dbg!(ret.as_mut()), expected, fun_ret_ty));
+        let ty = dbg!(self.get_actual_type(dbg!(ret.as_mut()), dbg!(expected), fun_ret_ty));
         if let Some(ret_ty) = ret_ty.as_mut() {
-            if let ResolvedType::Unknown(idx) = ret_ty {
-                println!("[line:1981]replacing ret_ty {} with {}", idx,ty.to_string());
-                self.equations.insert(*idx, dbg!(ty));
+            if let ResolvedType::Unknown(idx) = *ret_ty {
+                println!("[line:1987]replacing ret_ty {} with {}", idx,ty.to_string());
+                *ret_ty = ty.clone();
+                self.equations.insert(idx, dbg!(ty));
             } else if ret_ty == &types::ERROR {
-                println!("[line:1983]replacing ret_ty {} with {}", ret_ty.to_string(),ty.to_string());
+                println!("[line:1990]replacing ret_ty {} with {}", ret_ty.to_string(),ty.to_string());
             
                 *ret_ty = ty;
             }
@@ -2115,7 +2117,7 @@ mod tests {
         );
         ctx.reset();
         let ast =
-            file("foo", r"let foo a = if a then 0 else 1;");
+            file("foo", r"let foo a : bool -> int32 = if a then 0 else 1;");
         assert_eq!(
             super::ast::ModuleDeclaration {
                 loc: (0, 0),
@@ -2128,38 +2130,38 @@ mod tests {
                         args: vec![super::ast::ArgDeclaration::Simple {
                             loc: (8,9),
                             ident: "a".to_string(),
-                            ty: ResolvedType::Unknown(1),
+                            ty: types::BOOL,
                             id: 1
                         }],
-                        ty: ResolvedType::Unknown(0),
+                        ty: types::BOOL.fn_ty(&types::INT32),
                         value: super::ast::ValueType::Expr(super::ast::Expr::If(
                             super::ast::If {
-                                cond: super::ast::Expr::ValueRead("a".to_string(), (15,16), 3)
+                                cond: super::ast::Expr::ValueRead("a".to_string(), (31,32), 3)
                                     .into(),
                                 true_branch: super::ast::Block{
                                     statements:Vec::new(),
                                     implicit_ret:Some(super::ast::Expr::NumericLiteral {
                                         value: "0".to_string(),
                                         id: 5,
-                                        ty: types::NUMBER,
+                                        ty: ResolvedType::Unknown(2),
                                     }.into()),
                                     id:4,
-                                    ret_ty:None,
+                                    ret_ty:ResolvedType::Unknown(1).into(),
                                 }.into(),
                                 else_branch: super::ast::Block {
                                     statements:Vec::new(),
                                     implicit_ret:Some(super::ast::Expr::NumericLiteral {
                                         value: "1".to_string(),
                                         id:7,
-                                        ty: types::NUMBER,
+                                        ty: ResolvedType::Unknown(3),
                                     }.into()),
                                     id:6,
-                                    ret_ty:None,
+                                    ret_ty:ResolvedType::Unknown(1).into(),
                                 }
                                 .into(),
-                                loc: (12,14),
+                                loc: (28,30),
                                 id: 2,
-                                result: ResolvedType::Unknown(2),
+                                result: ResolvedType::Unknown(0),
                             }
                         )),
                         generics: None,
@@ -2211,7 +2213,7 @@ let foo a = match a   where
                                             "0".to_string(),
                                             ResolvedType::Unknown(2),
                                         ),
-                                        loc: (31,32)
+                                        loc: (33,34)
                                     },
                                     super::ast::MatchArm {
                                         block: Vec::new(),
@@ -2222,7 +2224,7 @@ let foo a = match a   where
                                             "1".to_string(),
                                             ResolvedType::Unknown(2),
                                         ),
-                                        loc: (47,48)
+                                        loc: (49,50)
                                     },
                                     super::ast::MatchArm {
                                         block: Vec::new(),
@@ -2233,7 +2235,7 @@ let foo a = match a   where
                                             "2".to_string(),
                                             ResolvedType::Unknown(2),
                                         ),
-                                        loc: (63,64)
+                                        loc: (65,66)
                                     },
                                     super::ast::MatchArm {
                                         block: Vec::new(),
@@ -2241,7 +2243,7 @@ let foo a = match a   where
                                             super::ast::Expr::CharLiteral("d".to_string()).into()
                                         ),
                                         cond: super::ast::Pattern::Default,
-                                        loc: (79,80)
+                                        loc: (81,82)
                                     },
                                 ],
                                 id: 2

@@ -4,7 +4,6 @@ use std::{cmp::Ordering, collections::HashMap};
 pub mod ast;
 // mod langstd;
 mod inference;
-mod lexer;
 mod parser;
 mod tokens;
 pub mod typed_ast;

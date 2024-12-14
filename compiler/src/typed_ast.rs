@@ -216,6 +216,55 @@ impl ResolvedGenericsDecl {
     }
 }
 
+#[derive(PartialEq, Clone, Debug)]
+pub struct TypedBlock {
+    pub statements: Vec<TypedStatement>,
+    pub implicit_ret: Option<Box<TypedExpr>>,
+    pub ret_ty: Option<ResolvedType>,
+}
+
+impl TypedBlock {
+    fn try_from(
+        value: ast::Block,
+        known_externs: &HashMap<String, ResolvedType>,
+        known_values: &HashMap<String, ResolvedType>,
+        known_types: &HashMap<String, ResolvedTypeDeclaration>,
+    ) -> Result<Self, TypingError> {
+        let ast::Block {
+            statements: untyped_statements,
+            implicit_ret,
+            id: _,
+            ret_ty,
+        } = value;
+        let mut known_values = known_values.clone();
+        let mut statements = Vec::with_capacity(untyped_statements.len());
+        for stmnt in untyped_statements {
+            match TypedStatement::try_from(stmnt, known_externs, &known_values, known_types) {
+                Ok(stmnt) => {
+                    if let TypedStatement::Declaration(decl) = &stmnt {
+                        known_values.extend(decl.get_names_with_types());
+                    }
+                    statements.push(stmnt);
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        let implicit_ret = if let Some(ret) = implicit_ret {
+            Some(
+                TypedExpr::try_from(*ret, known_externs, &known_values, known_types, Vec::new())?
+                    .into(),
+            )
+        } else {
+            None
+        };
+        Ok(Self {
+            statements,
+            implicit_ret,
+            ret_ty,
+        })
+    }
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum TypedDeclaration {
     Value(TypedTopLevelValue),
@@ -643,7 +692,7 @@ impl From<crate::ast::EnumDeclaration> for TypedEnumDeclaration {
                 values.iter_mut().for_each(|variant| match variant {
                     crate::ast::EnumVariant::Unit { .. } => (),
                     crate::ast::EnumVariant::Tuple { ty, .. } => {
-                        take_mut::take(ty,|ty| ty.replace_user_with_generic(generic))
+                        take_mut::take(ty, |ty| ty.replace_user_with_generic(generic))
                     }
                     crate::ast::EnumVariant::Struct { fields, .. } => {
                         for field in fields {
@@ -853,6 +902,20 @@ impl TypedValueDeclaration {
             }
             TypedValueType::Err => (),
             TypedValueType::External => (),
+        }
+    }
+
+    fn get_names_with_types(&self) -> HashMap<String, ResolvedType> {
+        match &self.target {
+            TypedPattern::Read(ident, ty, _) => [(ident.clone(), ty.clone())].into(),
+            TypedPattern::Destructure(typed_destructure) => {
+                typed_destructure.get_idents_with_types()
+            }
+            TypedPattern::EnumVariant { .. } => {
+                todo!("not yet supported (`let enum` destructure) ")
+            }
+            TypedPattern::Const(_, _) | TypedPattern::Err | TypedPattern::Default => HashMap::new(),
+            TypedPattern::Or(typed_pattern, typed_pattern1) => todo!("or patterns not supported"),
         }
     }
 }
@@ -1120,9 +1183,11 @@ impl TypedValueType {
 pub enum TypedStatement {
     Declaration(TypedValueDeclaration),
     Return(TypedExpr, crate::Location),
+    #[deprecated(note = "use expr instead")]
     FnCall(TypedFnCall),
+    Expr(TypedExpr),
     Pipe(TypedPipe),
-    IfBranching(TypedIfBranching),
+    IfBranching(TypedIf),
     Discard(TypedExpr, crate::Location),
     Match(TypedMatch),
     Error,
@@ -1136,7 +1201,13 @@ impl TypedStatement {
         known_types: &HashMap<String, ResolvedTypeDeclaration>,
     ) -> Result<Self, TypingError> {
         match statement {
-            ast::Statement::Expr(expr)=>todo!(),
+            ast::Statement::Expr(expr) => Ok(Self::Expr(TypedExpr::try_from(
+                expr,
+                known_externs,
+                known_values,
+                known_types,
+                Vec::new(),
+            )?)),
             ast::Statement::Declaration(data) => Ok(
                 match TypedValueDeclaration::try_from(
                     data,
@@ -1161,10 +1232,12 @@ impl TypedStatement {
                 known_values,
                 known_types,
             )?)),
-            ast::Statement::IfStatement(ifstmnt) => Ok(Self::IfBranching(
-                /*TypedIfBranching::try_from(ifstmnt, known_externs, known_values, known_types),*/
-                todo!()
-            )),
+            ast::Statement::IfStatement(ifstmnt) => Ok(Self::IfBranching(TypedIf::try_from(
+                ifstmnt,
+                known_externs,
+                known_values,
+                known_types,
+            )?)),
             ast::Statement::Match(match_) => Ok(Self::Match(TypedMatch::as_statement(
                 match_,
                 known_externs,
@@ -1190,6 +1263,7 @@ impl TypedStatement {
 
     fn lower_generics(&mut self, context: &mut LoweringContext) {
         match self {
+            Self::Expr(expr) => expr.lower_generics(context),
             Self::Declaration(decl) => match &mut decl.value {
                 TypedValueType::Expr(expr) => {
                     expr.lower_generics(context);
@@ -1211,6 +1285,7 @@ impl TypedStatement {
 
     fn get_ty(&self) -> ResolvedType {
         match self {
+            Self::Expr(expr) => expr.get_ty(),
             Self::Declaration(decl) => decl.ty.clone(),
             Self::Return(expr, _) => expr.get_ty(),
             Self::FnCall(call) => call.rt.clone(),
@@ -1242,139 +1317,139 @@ impl TypedIfBranching {
             true_branch,
             else_branch,
             loc,
-            id:_,
-            result:_,
-        } = value;/*
-        let cond = match TypedExpr::try_from(
-            *cond,
-            known_externs,
-            known_values,
-            known_types,
-            Vec::new(),
-        ) {
-            Ok(cond) if cond.get_ty() == ResolvedType::Bool => cond,
-            Ok(cond) => {
-                let loc = cond.get_loc().unwrap_or_default();
-                println!(
-                    "condition must be a boolean expresion but got:{} at line:{}, col:{}",
-                    cond.get_ty().to_string(),
-                    loc.0,
-                    loc.1
-                );
-                TypedExpr::ErrorNode
-            }
-            Err(e) => {
-                println!("{e:?}");
-                TypedExpr::ErrorNode
-            }
-        }
-        .into();
+            id: _,
+            result: _,
+        } = value; /*
+                   let cond = match TypedExpr::try_from(
+                       *cond,
+                       known_externs,
+                       known_values,
+                       known_types,
+                       Vec::new(),
+                   ) {
+                       Ok(cond) if cond.get_ty() == ResolvedType::Bool => cond,
+                       Ok(cond) => {
+                           let loc = cond.get_loc().unwrap_or_default();
+                           println!(
+                               "condition must be a boolean expresion but got:{} at line:{}, col:{}",
+                               cond.get_ty().to_string(),
+                               loc.0,
+                               loc.1
+                           );
+                           TypedExpr::ErrorNode
+                       }
+                       Err(e) => {
+                           println!("{e:?}");
+                           TypedExpr::ErrorNode
+                       }
+                   }
+                   .into();
 
-        let true_branch = {
-            let mut output = Vec::with_capacity(true_branch.len());
-            let mut known_values = known_values.clone();
-            for stmnt in true_branch {
-                match TypedStatement::try_from(stmnt, known_externs, &known_values, known_types) {
-                    Ok(stmnt) => {
-                        if let TypedStatement::Declaration(data) = &stmnt {
-                            known_values.extend(data.target.get_idents_with_types());
-                        }
-                        output.push(stmnt);
-                    }
-                    Err(e) => {
-                        println!("{:?}", e);
-                        output.push(TypedStatement::Error);
-                    }
-                }
-            }
-            output
-        };
+                   let true_branch = {
+                       let mut output = Vec::with_capacity(true_branch.len());
+                       let mut known_values = known_values.clone();
+                       for stmnt in true_branch {
+                           match TypedStatement::try_from(stmnt, known_externs, &known_values, known_types) {
+                               Ok(stmnt) => {
+                                   if let TypedStatement::Declaration(data) = &stmnt {
+                                       known_values.extend(data.target.get_idents_with_types());
+                                   }
+                                   output.push(stmnt);
+                               }
+                               Err(e) => {
+                                   println!("{:?}", e);
+                                   output.push(TypedStatement::Error);
+                               }
+                           }
+                       }
+                       output
+                   };
 
-        let else_ifs = else_ifs
-            .into_iter()
-            .map(|(cond, stmnts)| {
-                let cond = match TypedExpr::try_from(
-                    *cond,
-                    known_externs,
-                    known_values,
-                    known_types,
-                    Vec::new(),
-                ) {
-                    Ok(cond) if cond.get_ty() == ResolvedType::Bool => cond,
-                    Ok(cond) => {
-                        let loc = cond.get_loc().unwrap_or_default();
-                        println!(
-                            "condition must be a boolean expresion at line:{}, col:{}",
-                            loc.0, loc.1
-                        );
-                        TypedExpr::ErrorNode
-                    }
-                    Err(e) => {
-                        println!("{e:?}");
-                        TypedExpr::ErrorNode
-                    }
-                };
-                let mut block_known_values = known_values.clone();
-                let block = {
-                    let mut block = Vec::new();
-                    for stmnt in stmnts {
-                        match TypedStatement::try_from(
-                            stmnt,
-                            known_externs,
-                            &block_known_values,
-                            known_types,
-                        ) {
-                            Ok(stmnt) => {
-                                if let TypedStatement::Declaration(data) = &stmnt {
-                                    block_known_values.extend(data.target.get_idents_with_types());
-                                }
-                                block.push(stmnt);
-                            }
-                            Err(e) => {
-                                println!("{:?}", e);
-                                block.push(TypedStatement::Error);
-                            }
-                        }
-                    }
-                    block
-                };
-                (cond.into(), block)
-            })
-            .collect();
+                   let else_ifs = else_ifs
+                       .into_iter()
+                       .map(|(cond, stmnts)| {
+                           let cond = match TypedExpr::try_from(
+                               *cond,
+                               known_externs,
+                               known_values,
+                               known_types,
+                               Vec::new(),
+                           ) {
+                               Ok(cond) if cond.get_ty() == ResolvedType::Bool => cond,
+                               Ok(cond) => {
+                                   let loc = cond.get_loc().unwrap_or_default();
+                                   println!(
+                                       "condition must be a boolean expresion at line:{}, col:{}",
+                                       loc.0, loc.1
+                                   );
+                                   TypedExpr::ErrorNode
+                               }
+                               Err(e) => {
+                                   println!("{e:?}");
+                                   TypedExpr::ErrorNode
+                               }
+                           };
+                           let mut block_known_values = known_values.clone();
+                           let block = {
+                               let mut block = Vec::new();
+                               for stmnt in stmnts {
+                                   match TypedStatement::try_from(
+                                       stmnt,
+                                       known_externs,
+                                       &block_known_values,
+                                       known_types,
+                                   ) {
+                                       Ok(stmnt) => {
+                                           if let TypedStatement::Declaration(data) = &stmnt {
+                                               block_known_values.extend(data.target.get_idents_with_types());
+                                           }
+                                           block.push(stmnt);
+                                       }
+                                       Err(e) => {
+                                           println!("{:?}", e);
+                                           block.push(TypedStatement::Error);
+                                       }
+                                   }
+                               }
+                               block
+                           };
+                           (cond.into(), block)
+                       })
+                       .collect();
 
-        let else_branch = {
-            let mut else_block_known_values = known_values.clone();
-            let mut block = Vec::new();
-            for stmnt in else_branch {
-                match TypedStatement::try_from(
-                    stmnt,
-                    known_externs,
-                    &else_block_known_values,
-                    known_types,
-                ) {
-                    Ok(stmnt) => {
-                        if let TypedStatement::Declaration(data) = &stmnt {
-                            else_block_known_values.extend(data.target.get_idents_with_types());
-                        }
-                        block.push(stmnt);
-                    }
-                    Err(e) => {
-                        println!("{:?}", e);
-                        block.push(TypedStatement::Error);
-                    }
-                }
-            }
-            block
-        };
+                   let else_branch = {
+                       let mut else_block_known_values = known_values.clone();
+                       let mut block = Vec::new();
+                       for stmnt in else_branch {
+                           match TypedStatement::try_from(
+                               stmnt,
+                               known_externs,
+                               &else_block_known_values,
+                               known_types,
+                           ) {
+                               Ok(stmnt) => {
+                                   if let TypedStatement::Declaration(data) = &stmnt {
+                                       else_block_known_values.extend(data.target.get_idents_with_types());
+                                   }
+                                   block.push(stmnt);
+                               }
+                               Err(e) => {
+                                   println!("{:?}", e);
+                                   block.push(TypedStatement::Error);
+                               }
+                           }
+                       }
+                       block
+                   };
 
-        Self {
-            cond,
-            true_branch,
-            else_ifs,
-            else_branch,
-            loc,
-        }
-        */
+                   Self {
+                       cond,
+                       true_branch,
+                       else_ifs,
+                       else_branch,
+                       loc,
+                   }
+                   */
         todo!()
     }
 
@@ -1690,7 +1765,7 @@ pub enum TypedExpr {
 
     StructConstruction(TypedStructConstruction),
 
-    IfExpr(TypedIfExpr),
+    IfExpr(TypedIf),
 
     BoolLiteral(bool, crate::Location),
 
@@ -1821,12 +1896,12 @@ impl TypedExpr {
             Expr::StructConstruction(strct) => Ok(Self::StructConstruction(
                 TypedStructConstruction::from(strct, known_externs, known_values, known_types)?,
             )),
-            Expr::If(ifexpr) => Ok(Self::IfExpr(/*TypedIfExpr::from(
+            Expr::If(ifexpr) => Ok(Self::IfExpr(TypedIf::try_from(
                 ifexpr,
                 known_externs,
                 known_values,
                 known_types,
-            )*/todo!())),
+            )?)),
             Expr::BoolLiteral(value, loc, _) => Ok(Self::BoolLiteral(value, loc)),
             Expr::Match(match_) => Ok(Self::Match(TypedMatch::from(
                 match_,
@@ -1897,19 +1972,7 @@ impl TypedExpr {
                 generics: strct.generics.clone(),
                 loc: strct.loc,
             },
-            Self::IfExpr(ifexpr) => {
-                let expected_ty = ifexpr.true_branch.1.get_ty();
-                for (_, _, returned) in &ifexpr.else_ifs {
-                    if expected_ty != returned.get_ty() {
-                        return ResolvedType::Error;
-                    }
-                }
-                if ifexpr.else_branch.1.get_ty() != expected_ty {
-                    ResolvedType::Error
-                } else {
-                    expected_ty
-                }
-            }
+            Self::IfExpr(ifexpr) => ifexpr.result_ty.clone(),
             Self::MemeberRead(member_read) => member_read.get_ty(),
             Self::Match(match_) => match_.get_ty(),
             Self::ErrorNode => types::ERROR,
@@ -2045,6 +2108,108 @@ impl TypedExpr {
             Self::IfExpr(data) => data.lower_generics(context),
             Self::Match(match_) => match_.lower_generics(context),
             Self::ErrorNode => (),
+        }
+    }
+}
+
+#[derive(PartialEq, Debug, Clone)]
+pub struct TypedIf {
+    pub cond: Box<TypedExpr>,
+    pub true_branch: TypedBlock,
+    pub else_branch: Option<TypedBlock>,
+    pub loc: crate::Location,
+    pub result_ty: ResolvedType,
+}
+
+impl TypedIf {
+    pub fn try_from(
+        value: ast::If,
+        known_externs: &HashMap<String, ResolvedType>,
+        known_values: &HashMap<String, ResolvedType>,
+        known_types: &HashMap<String, ResolvedTypeDeclaration>,
+    ) -> Result<Self, TypingError> {
+        let ast::If {
+            loc,
+            cond,
+            true_branch,
+            else_branch,
+            result,
+            ..
+        } = value;
+        let cond =
+            TypedExpr::try_from(*cond, known_externs, known_values, known_types, Vec::new())?
+                .into();
+        let true_branch =
+            TypedBlock::try_from(true_branch, known_externs, known_values, known_types)?;
+        let else_branch = else_branch
+            .map(|else_branch| {
+                TypedBlock::try_from(else_branch, known_externs, known_values, known_types)
+            })
+            .transpose()?;
+        Ok(Self {
+            cond,
+            loc,
+            true_branch,
+            else_branch,
+            result_ty: result,
+        })
+    }
+
+    fn replace_type(&mut self, name: &str, new_ty: &ResolvedType) {
+        self.cond.replace_type(name, new_ty);
+        for stmnt in &mut self.true_branch.statements {
+            stmnt.replace_type(name, new_ty);
+        }
+        if let Some(ret) = &mut self.true_branch.implicit_ret {
+            ret.replace_type(name, new_ty);
+        }
+        if let Some(ty) = &mut self.true_branch.ret_ty {
+            take_mut::take(ty, |ty| ty.replace_generic(name, new_ty.clone()));
+        }
+        if let Some(branch) = &mut self.else_branch {
+            for stmnt in &mut branch.statements {
+                stmnt.replace_type(name, new_ty);
+            }
+            if let Some(ret) = &mut branch.implicit_ret {
+                ret.replace_type(name, new_ty);
+            }
+            if let Some(ty) = &mut branch.ret_ty {
+                take_mut::take(ty, |ty| ty.replace_generic(name, new_ty.clone()));
+            }
+        }
+        take_mut::take(&mut self.result_ty, |ty| {
+            ty.replace_generic(name, new_ty.clone())
+        });
+    }
+
+    fn lower_generics(&mut self, context: &mut LoweringContext) {
+        self.cond.lower_generics(context);
+        for stmnt in &mut self.true_branch.statements {
+            stmnt.lower_generics(context);
+        }
+        if let Some(ret) = &mut self.true_branch.implicit_ret {
+            ret.lower_generics(context);
+        }
+        if let Some(ty) = &mut self.true_branch.ret_ty {
+            ty.lower_generics(context);
+        }
+        if let Some(branch) = &mut self.else_branch {
+            for stmnt in &mut branch.statements {
+                stmnt.lower_generics(context);
+            }
+            if let Some(ret) = &mut branch.implicit_ret {
+                ret.lower_generics(context);
+            }
+            if let Some(ty) = &mut branch.ret_ty {
+                ty.lower_generics(context);
+            }
+        }
+        self.result_ty.lower_generics(context)
+    }
+
+    fn replace_types(&mut self, replaced: &[(String, ResolvedType)]) {
+        for (name, new_ty) in replaced {
+            self.replace_type(name, new_ty);
         }
     }
 }
@@ -3418,7 +3583,7 @@ impl TypedPattern {
             Self::EnumVariant { pattern, .. } => pattern
                 .as_ref()
                 .map(Box::as_ref)
-                .map(|it| matches!(it,Self::Default))
+                .map(|it| matches!(it, Self::Default))
                 .unwrap_or(true),
         }
     }
@@ -3973,9 +4138,10 @@ let b value : (int32,(int32,int32)) -> int32 = match value where
 
     #[test]
     fn generic_use() {
-        let module = file( "",
+        let module = file(
+            "",
             r#"
-for<T> let test a : T -> T = a
+for<T> let test a : T -> T = a;
 
 let main _ : () -> () =
     let x : int32 = 3;
@@ -4007,11 +4173,11 @@ let main _ : () -> () =
         };
         assert_eq!(
             &TypedDeclaration::Value(TypedTopLevelValue {
-                loc: (1, 11),
+                loc: (12, 16),
                 is_op: false,
                 ident: "test".to_string(),
                 args: vec![TypedArgDeclaration::Simple {
-                    loc: (1, 16),
+                    loc: (17, 18),
                     ident: "a".to_string(),
                     ty: ResolvedType::Generic {
                         name: "T".to_string(),
@@ -4022,9 +4188,9 @@ let main _ : () -> () =
                     "a".to_string(),
                     ResolvedType::Generic {
                         name: "T".to_string(),
-                        loc: (1, 20)
+                        loc: (21, 22)
                     },
-                    (1, 29)
+                    (30, 31)
                 )),
                 ty: ResolvedType::Function {
                     arg: ResolvedType::Generic {
@@ -4040,9 +4206,9 @@ let main _ : () -> () =
                     loc: (0, 0)
                 },
                 generics: Some(ResolvedGenericsDecl {
-                    for_loc: (1, 0),
+                    for_loc: (1, 4),
                     decls: vec![(
-                        (1, 4),
+                        (5, 6),
                         ResolvedType::Generic {
                             name: "T".to_string(),
                             loc: (1, 4)
@@ -4056,18 +4222,18 @@ let main _ : () -> () =
         );
         assert_eq!(
             &TypedDeclaration::Value(TypedTopLevelValue {
-                loc: (3, 4),
+                loc: (38, 42),
                 is_op: false,
                 ident: "main".to_string(),
                 args: vec![TypedArgDeclaration::Discard {
-                    loc: (3, 9),
+                    loc: (43, 44),
                     ty: types::UNIT,
                 }],
                 value: TypedValueType::Function(vec![
                     TypedStatement::Declaration(TypedValueDeclaration {
-                        loc: (4, 8),
+                        loc: (66, 67),
                         is_op: false,
-                        target: TypedPattern::Read("x".to_string(), types::INT32, (4, 8)),
+                        target: TypedPattern::Read("x".to_string(), types::INT32, (66, 67)),
                         args: Vec::new(),
                         value: TypedValueType::Expr(TypedExpr::IntegerLiteral {
                             value: "3".to_string(),
@@ -4078,8 +4244,8 @@ let main _ : () -> () =
                         abi: None,
                         is_curried: false,
                     }),
-                    TypedStatement::FnCall(TypedFnCall {
-                        loc: (5, 4),
+                    TypedStatement::Expr(TypedExpr::FnCall(TypedFnCall {
+                        loc: (85, 89),
                         value: TypedExpr::ValueRead(
                             "test".to_string(),
                             ResolvedType::Function {
@@ -4095,11 +4261,11 @@ let main _ : () -> () =
                                 .into(),
                                 loc: (0, 0),
                             },
-                            (5, 4)
+                            (85, 89)
                         )
                         .into(),
                         arg: Some(
-                            TypedExpr::ValueRead("x".to_string(), types::INT32, (5, 9)).into()
+                            TypedExpr::ValueRead("x".to_string(), types::INT32, (90, 91)).into()
                         ),
                         rt: ResolvedType::Generic {
                             name: "T".to_string(),
@@ -4107,7 +4273,7 @@ let main _ : () -> () =
                         },
                         arg_t: types::INT32,
                         is_extern: false,
-                    })
+                    }))
                 ]),
                 ty: ResolvedType::Function {
                     arg: types::UNIT.into(),
@@ -4124,15 +4290,15 @@ let main _ : () -> () =
 
     #[test]
     fn structs() {
-        let module = file("test",
+        let module = file(
+            "test",
             r"
 for<T,U> type Tuple = {
     first : T,
     second : U,
 }
 
-let first a : Tuple<int32,float64> -> int32 =
-    return 0
+let first a : Tuple<int32,float64> -> int32 = 0;
 ",
         );
 
@@ -4161,20 +4327,20 @@ let first a : Tuple<int32,float64> -> int32 =
                 StructDefinition {
                     ident: "Tuple".to_string(),
                     generics: Some(ResolvedGenericsDecl {
-                        for_loc: (1, 0),
+                        for_loc: (1, 4),
                         decls: vec![
                             (
-                                (1, 4),
+                                (5, 6),
                                 ResolvedType::Generic {
                                     name: "T".to_string(),
-                                    loc: (1, 4),
+                                    loc: (5, 6),
                                 },
                             ),
                             (
-                                (1, 6),
+                                (7, 8),
                                 ResolvedType::Generic {
                                     name: "U".to_string(),
-                                    loc: (1, 6)
+                                    loc: (7, 8)
                                 }
                             )
                         ]
@@ -4184,9 +4350,9 @@ let first a : Tuple<int32,float64> -> int32 =
                             name: "first".to_string(),
                             ty: ResolvedType::Generic {
                                 name: "T".to_string(),
-                                loc: (2, 12),
+                                loc: (37, 38),
                             },
-                            loc: (2, 4)
+                            loc: (29, 34)
                         },
                         crate::ast::FieldDecl {
                             name: "second".to_string(),
@@ -4194,10 +4360,10 @@ let first a : Tuple<int32,float64> -> int32 =
                                 name: "U".to_string(),
                                 loc: (3, 13)
                             },
-                            loc: (3, 4)
+                            loc: (44, 50)
                         }
                     ],
-                    loc: (1, 14)
+                    loc: (15, 20)
                 }
             )),
             strct,
@@ -4210,13 +4376,12 @@ let first a : Tuple<int32,float64> -> int32 =
             unreachable!()
         };
         assert_eq!(
-            fun,
             &TypedDeclaration::Value(TypedTopLevelValue {
-                loc: (6, 4),
+                loc: (63, 68),
                 is_op: false,
                 ident: "first".to_string(),
                 args: vec![TypedArgDeclaration::Simple {
-                    loc: (6, 10),
+                    loc: (69, 70),
                     ident: "a".to_string(),
                     ty: ResolvedType::User {
                         name: "Tuple".to_string(),
@@ -4224,13 +4389,10 @@ let first a : Tuple<int32,float64> -> int32 =
                         loc: (0, 0)
                     },
                 }],
-                value: TypedValueType::Function(vec![TypedStatement::Return(
-                    TypedExpr::IntegerLiteral {
-                        value: "0".to_string(),
-                        size: types::IntWidth::ThirtyTwo
-                    },
-                    (7, 4)
-                )]),
+                value: TypedValueType::Expr(TypedExpr::IntegerLiteral {
+                    value: "0".to_string(),
+                    size: types::IntWidth::ThirtyTwo
+                },),
                 ty: ResolvedType::Function {
                     arg: ResolvedType::User {
                         name: "Tuple<int32,float64>".to_string(),
@@ -4244,6 +4406,7 @@ let first a : Tuple<int32,float64> -> int32 =
                 generics: None,
                 abi: None,
             }),
+            fun,
             "post lowering function"
         );
 
@@ -4255,15 +4418,15 @@ let first a : Tuple<int32,float64> -> int32 =
                     crate::ast::FieldDecl {
                         name: "first".to_string(),
                         ty: types::INT32,
-                        loc: (2, 4)
+                        loc: (29, 34)
                     },
                     crate::ast::FieldDecl {
                         name: "second".to_string(),
                         ty: types::FLOAT64,
-                        loc: (3, 4)
+                        loc: (44, 50)
                     }
                 ],
-                loc: (1, 14)
+                loc: (15, 20)
             })),
             generated_strct,
             "generated"
@@ -4272,7 +4435,8 @@ let first a : Tuple<int32,float64> -> int32 =
 
     #[test]
     fn generic_lowering() {
-        let module = file("test",
+        let module = file(
+            "test",
             r#"
 for<T> let test a : T -> T =
     return a;
@@ -4306,15 +4470,15 @@ let main x : int32 -> int32 =
         };
         assert_eq!(
             &TypedDeclaration::Value(TypedTopLevelValue {
-                loc: (1, 11),
+                loc: (12, 16),
                 is_op: false,
                 ident: "test".to_string(),
                 args: vec![TypedArgDeclaration::Simple {
                     ident: "a".to_string(),
-                    loc: (1, 16),
+                    loc: (17, 18),
                     ty: ResolvedType::Generic {
                         name: "T".to_string(),
-                        loc: (1, 20)
+                        loc: (0, 0)
                     },
                 }],
                 value: TypedValueType::Function(vec![TypedStatement::Return(
@@ -4322,16 +4486,16 @@ let main x : int32 -> int32 =
                         "a".to_string(),
                         ResolvedType::Generic {
                             name: "T".to_string(),
-                            loc: (1, 20)
+                            loc: (0, 0)
                         },
-                        (2, 11)
+                        (41, 42)
                     ),
-                    (2, 4)
+                    (34, 40)
                 )]),
                 ty: ResolvedType::Function {
                     arg: ResolvedType::Generic {
                         name: "T".to_string(),
-                        loc: (1, 20),
+                        loc: (0, 0),
                     }
                     .into(),
                     returns: ResolvedType::Generic {
@@ -4342,12 +4506,12 @@ let main x : int32 -> int32 =
                     loc: (1, 23),
                 },
                 generics: Some(ResolvedGenericsDecl {
-                    for_loc: (1, 0),
+                    for_loc: (1, 4),
                     decls: vec![(
-                        (1, 4),
+                        (5, 6),
                         ResolvedType::Generic {
                             name: "T".to_string(),
-                            loc: (1, 4)
+                            loc: (0, 0)
                         }
                     )],
                 }),
@@ -4358,46 +4522,46 @@ let main x : int32 -> int32 =
         );
         assert_eq!(
             &TypedDeclaration::Value(TypedTopLevelValue {
-                loc: (4, 4),
+                loc: (49, 53),
                 is_op: false,
                 ident: "main".to_string(),
                 args: vec![TypedArgDeclaration::Simple {
                     ident: "x".to_string(),
-                    loc: (4, 9),
+                    loc: (54, 55),
                     ty: types::INT32,
                 }],
                 value: TypedValueType::Function(vec![
-                    TypedStatement::FnCall(TypedFnCall {
-                        loc: (5, 4),
+                    TypedStatement::Expr(TypedExpr::FnCall(TypedFnCall {
+                        loc: (79, 83),
                         value: TypedExpr::ValueRead(
                             "test<int32>".to_string(),
                             ResolvedType::Function {
                                 arg: types::INT32.into(),
                                 returns: types::INT32.into(),
-                                loc: (5, 4)
+                                loc: (0, 0)
                             },
-                            (5, 4)
+                            (79, 83)
                         )
                         .into(),
                         arg: Some(
-                            TypedExpr::ValueRead("x".to_string(), types::INT32, (5, 9)).into()
+                            TypedExpr::ValueRead("x".to_string(), types::INT32, (84, 85)).into()
                         ),
                         rt: types::INT32,
                         arg_t: types::INT32,
                         is_extern: false,
-                    }),
+                    })),
                     TypedStatement::Return(
                         TypedExpr::IntegerLiteral {
                             value: "0".to_string(),
                             size: types::IntWidth::ThirtyTwo
                         },
-                        (6, 4)
+                        (91, 97)
                     )
                 ]),
                 ty: ResolvedType::Function {
                     arg: types::INT32.into(),
                     returns: types::INT32.into(),
-                    loc: (6, 20)
+                    loc: (0, 0)
                 },
                 generics: None,
                 abi: None,
@@ -4407,17 +4571,17 @@ let main x : int32 -> int32 =
         );
         assert_eq!(
             &TypedDeclaration::Value(TypedTopLevelValue {
-                loc: (1, 11),
+                loc: (12, 16),
                 is_op: false,
                 ident: "test<int32>".to_string(),
                 args: vec![TypedArgDeclaration::Simple {
                     ident: "a".to_string(),
-                    loc: (1, 16),
+                    loc: (17, 18),
                     ty: types::INT32,
                 }],
                 value: crate::typed_ast::TypedValueType::Function(vec![TypedStatement::Return(
-                    TypedExpr::ValueRead("a".to_string(), types::INT32, (2, 11)),
-                    (2, 4)
+                    TypedExpr::ValueRead("a".to_string(), types::INT32, (41, 42)),
+                    (34, 40)
                 )]),
                 ty: ResolvedType::Function {
                     arg: types::INT32.into(),
@@ -4434,7 +4598,8 @@ let main x : int32 -> int32 =
 
     #[test]
     fn control_flow_if() {
-        let module = file("test",
+        let module = file(
+            "test",
             r#"
 let expr_with_statement a : bool -> int32 = if a then
         foo 3;
@@ -4476,19 +4641,21 @@ let statement_with_else_if a b : bool -> bool -> int32 =
         };
         assert_eq!(
             &TypedDeclaration::Value(TypedTopLevelValue {
-                loc: (1, 4),
+                loc: (5,24),
                 is_op: false,
                 ident: "expr_with_statement".to_string(),
                 args: vec![TypedArgDeclaration::Simple {
-                    loc: (1, 24),
+                    loc: (25,26),
                     ident: "a".to_string(),
                     ty: types::BOOL,
                 }],
-                value: TypedValueType::Expr(TypedExpr::IfExpr(TypedIfExpr {
-                    cond: TypedExpr::ValueRead("a".to_string(), types::BOOL, (1, 47)).into(),
-                    true_branch: (
-                        vec![TypedStatement::FnCall(TypedFnCall {
-                            loc: (2, 8),
+                value: TypedValueType::Expr(TypedExpr::IfExpr(super::TypedIf {
+                    cond: TypedExpr::ValueRead("a".to_string(), types::BOOL, (48,49)).into(),
+                    result_ty: types::INT32,
+                    true_branch: super::TypedBlock {
+                        ret_ty: types::INT32.into(),
+                        statements: vec![TypedStatement::Expr(TypedExpr::FnCall(TypedFnCall {
+                            loc: (63,66),
                             value: TypedExpr::ValueRead(
                                 "foo".to_string(),
                                 ResolvedType::Function {
@@ -4496,7 +4663,7 @@ let statement_with_else_if a b : bool -> bool -> int32 =
                                     returns: types::INT32.into(),
                                     loc: (0, 0)
                                 },
-                                (2, 8)
+                                (63,66)
                             )
                             .into(),
                             arg: Some(
@@ -4509,17 +4676,19 @@ let statement_with_else_if a b : bool -> bool -> int32 =
                             rt: types::INT32,
                             arg_t: types::INT32,
                             is_extern: false,
-                        })],
-                        TypedExpr::IntegerLiteral {
-                            value: "0".to_string(),
-                            size: types::IntWidth::ThirtyTwo
-                        }
-                        .into()
-                    ),
-                    else_ifs: Vec::new(),
-                    else_branch: (
-                        vec![TypedStatement::FnCall(TypedFnCall {
-                            loc: (5, 8),
+                        }))],
+                        implicit_ret: Some(
+                            TypedExpr::IntegerLiteral {
+                                value: "0".to_string(),
+                                size: types::IntWidth::ThirtyTwo
+                            }
+                            .into()
+                        )
+                    },
+                    else_branch: super::TypedBlock {
+                        ret_ty: types::INT32.into(),
+                        statements: vec![TypedStatement::Expr(TypedExpr::FnCall(TypedFnCall {
+                            loc: (97,100),
                             value: TypedExpr::ValueRead(
                                 "foo".to_string(),
                                 ResolvedType::Function {
@@ -4527,7 +4696,7 @@ let statement_with_else_if a b : bool -> bool -> int32 =
                                     returns: types::INT32.into(),
                                     loc: (0, 0)
                                 },
-                                (5, 8)
+                                (97,100)
                             )
                             .into(),
                             arg: Some(
@@ -4540,14 +4709,17 @@ let statement_with_else_if a b : bool -> bool -> int32 =
                             rt: types::INT32,
                             arg_t: types::INT32,
                             is_extern: false,
-                        })],
-                        TypedExpr::IntegerLiteral {
-                            value: "1".to_string(),
-                            size: types::IntWidth::ThirtyTwo
-                        }
-                        .into()
-                    ),
-                    loc: (1, 44)
+                        }))],
+                        implicit_ret: Some(
+                            TypedExpr::IntegerLiteral {
+                                value: "1".to_string(),
+                                size: types::IntWidth::ThirtyTwo
+                            }
+                            .into()
+                        )
+                    }
+                    .into(),
+                    loc: (45,47)
                 })),
                 ty: ResolvedType::Function {
                     arg: types::BOOL.into(),
@@ -4562,17 +4734,17 @@ let statement_with_else_if a b : bool -> bool -> int32 =
         );
         assert_eq!(
             &TypedDeclaration::Value(TypedTopLevelValue {
-                loc: (8, 4),
+                loc: (119,141),
                 is_op: false,
                 ident: "statement_with_else_if".to_string(),
                 args: vec![
                     TypedArgDeclaration::Simple {
-                        loc: (8, 27),
+                        loc: (142,143),
                         ident: "a".to_string(),
                         ty: types::BOOL,
                     },
                     TypedArgDeclaration::Simple {
-                        loc: (8, 29),
+                        loc: (144,145),
                         ident: "b".to_string(),
                         ty: types::BOOL,
                     },
@@ -4587,36 +4759,53 @@ let statement_with_else_if a b : bool -> bool -> int32 =
                     .into(),
                     loc: (0, 0)
                 },
-                value: TypedValueType::Function(vec![TypedStatement::IfBranching(
-                    TypedIfBranching {
-                        cond: TypedExpr::ValueRead("a".to_string(), types::BOOL, (9, 7)).into(),
-                        true_branch: vec![TypedStatement::Return(
+                value: TypedValueType::Function(vec![TypedStatement::IfBranching(super::TypedIf {
+                    cond: TypedExpr::ValueRead("a".to_string(), types::BOOL, (179,180)).into(),
+                    true_branch: super::TypedBlock {
+                        statements: vec![TypedStatement::Return(
                             TypedExpr::IntegerLiteral {
                                 value: "0".to_string(),
                                 size: types::IntWidth::ThirtyTwo
                             },
-                            (10, 8)
+                            (194,200)
                         )],
-                        else_ifs: vec![(
-                            TypedExpr::ValueRead("b".to_string(), types::BOOL, (11, 12)).into(),
-                            vec![TypedStatement::Return(
-                                TypedExpr::IntegerLiteral {
-                                    value: "1".to_string(),
-                                    size: types::IntWidth::ThirtyTwo
-                                },
-                                (12, 8)
-                            )]
-                        )],
-                        else_branch: vec![TypedStatement::Return(
-                            TypedExpr::IntegerLiteral {
-                                value: "2".to_string(),
-                                size: types::IntWidth::ThirtyTwo
+                        implicit_ret: None,
+                        ret_ty: Some(types::UNIT),
+                    },
+                    else_branch: Some(super::TypedBlock {
+                        statements: vec![TypedStatement::IfBranching(super::TypedIf {
+                            cond: TypedExpr::ValueRead("b".into(), types::BOOL, (216,217),).into(),
+                            true_branch: super::TypedBlock {
+                                statements: vec![TypedStatement::Return(
+                                    TypedExpr::IntegerLiteral {
+                                        value: "1".to_string(),
+                                        size: types::IntWidth::ThirtyTwo,
+                                    },
+                                    (231,237)
+                                )],
+                                implicit_ret: None,
+                                ret_ty: Some(types::UNIT),
                             },
-                            (14, 8)
-                        )],
-                        loc: (9, 4)
-                    }
-                )]),
+                            else_branch:super::TypedBlock {
+                                statements: vec![TypedStatement::Return(
+                                    TypedExpr::IntegerLiteral {
+                                        value: "2".to_string(),
+                                        size: types::IntWidth::ThirtyTwo,
+                                    },
+                                    (258,264)
+                                )],
+                                implicit_ret: None,
+                                ret_ty: Some(types::UNIT),
+                            }.into(),
+                            loc:(213,215),
+                            result_ty:types::UNIT,
+                        })],
+                        implicit_ret: None,
+                        ret_ty:Some(types::UNIT),
+                    }),
+                    loc:(176,178),
+                    result_ty:types::UNIT,
+                })]),
                 generics: None,
                 abi: None,
             }),
@@ -4626,17 +4815,18 @@ let statement_with_else_if a b : bool -> bool -> int32 =
     }
     #[test]
     fn control_flow_match() {
-        let module = file("test",
+        let module = file(
+            "test",
             "
 let simple_expr a fun : int32 -> (int32 -> int32) -> int32 = match fun a where
-| 1 -> 0,
-| 2 -> 3,
-| a -> a*3,
+    | 1 -> 0,
+    | 2 -> 3,
+    | a -> a*3,
 
 let nest_in_call a fun : int32 -> (int32 -> int32) -> int32 = fun (match a where
-| 1 -> 0,
-| 2 -> 3,
-| _ -> a*3,
+    | 1 -> 0,
+    | 2 -> 3,
+    | _ -> a*3,
 )
 
 let as_statement a b : int32 -> int32 -> () =
@@ -4680,25 +4870,25 @@ let as_statement a b : int32 -> int32 -> () =
         };
         assert_eq!(
             &TypedDeclaration::Value(TypedTopLevelValue {
-                loc: (1, 4),
+                loc: (5,16),
                 is_op: false,
                 ident: "simple_expr".to_string(),
                 args: vec![
                     TypedArgDeclaration::Simple {
-                        loc: (1, 16),
+                        loc: (17,18),
                         ident: "a".to_string(),
                         ty: types::INT32,
                     },
                     TypedArgDeclaration::Simple {
-                        loc: (1, 18),
+                        loc: (19,22),
                         ident: "fun".to_string(),
                         ty: types::INT32.fn_ty(&types::INT32),
                     },
                 ],
                 value: TypedValueType::Expr(TypedExpr::Match(TypedMatch {
-                    loc: (1, 61),
+                    loc: (62,67),
                     on: TypedExpr::FnCall(TypedFnCall {
-                        loc: (1, 67),
+                        loc: (68,71),
                         value: TypedExpr::ValueRead(
                             "fun".to_string(),
                             ResolvedType::Function {
@@ -4706,11 +4896,11 @@ let as_statement a b : int32 -> int32 -> () =
                                 returns: types::INT32.into(),
                                 loc: (0, 0)
                             },
-                            (1, 67)
+                            (68,71)
                         )
                         .into(),
                         arg: Some(
-                            TypedExpr::ValueRead("a".to_string(), types::INT32, (1, 71)).into()
+                            TypedExpr::ValueRead("a".to_string(), types::INT32, (72,73)).into()
                         ),
                         rt: types::INT32,
                         arg_t: types::INT32,
@@ -4719,7 +4909,7 @@ let as_statement a b : int32 -> int32 -> () =
                     .into(),
                     arms: vec![
                         TypedMatchArm {
-                            loc: (2, 2),
+                            loc: (84,85),
                             cond: crate::typed_ast::TypedPattern::Const(
                                 "1".to_string(),
                                 types::INT32
@@ -4734,7 +4924,7 @@ let as_statement a b : int32 -> int32 -> () =
                             )
                         },
                         TypedMatchArm {
-                            loc: (3, 2),
+                            loc: (98,99),
                             cond: crate::typed_ast::TypedPattern::Const(
                                 "2".to_string(),
                                 types::INT32
@@ -4749,20 +4939,20 @@ let as_statement a b : int32 -> int32 -> () =
                             )
                         },
                         TypedMatchArm {
-                            loc: (4, 2),
+                            loc: (112,113),
                             cond: crate::typed_ast::TypedPattern::Read(
                                 "a".to_string(),
                                 types::INT32,
-                                (4, 2)
+                                (114,115)
                             ),
                             block: Vec::new(),
                             ret: Some(
                                 TypedExpr::BinaryOpCall(TypedBinaryOpCall {
-                                    loc: (4, 8),
+                                    loc: (120,121),
                                     lhs: TypedExpr::ValueRead(
                                         "a".to_string(),
                                         types::INT32,
-                                        (4, 7)
+                                        (119,120)
                                     )
                                     .into(),
                                     rhs: TypedExpr::IntegerLiteral {
@@ -4802,23 +4992,23 @@ let as_statement a b : int32 -> int32 -> () =
 
         assert_eq!(
             &TypedDeclaration::Value(TypedTopLevelValue {
-                loc: (6, 4),
+                loc: (129,141),
                 is_op: false,
                 ident: "nest_in_call".to_string(),
                 args: vec![
                     TypedArgDeclaration::Simple {
-                        loc: (6, 17),
+                        loc: (142,143),
                         ident: "a".to_string(),
                         ty: types::INT32,
                     },
                     TypedArgDeclaration::Simple {
-                        loc: (6, 19),
+                        loc: (144, 147),
                         ident: "fun".to_string(),
                         ty: types::INT32.fn_ty(&types::INT32),
                     },
                 ],
                 value: TypedValueType::Expr(TypedExpr::FnCall(TypedFnCall {
-                    loc: (6, 62),
+                    loc: (187,190),
                     value: TypedExpr::ValueRead(
                         "fun".to_string(),
                         ResolvedType::Function {
@@ -4826,16 +5016,16 @@ let as_statement a b : int32 -> int32 -> () =
                             returns: types::INT32.into(),
                             loc: (0, 0)
                         },
-                        (6, 62)
+                        (187,190)
                     )
                     .into(),
                     arg: Some(
                         TypedExpr::Match(TypedMatch {
-                            loc: (6, 67),
-                            on: TypedExpr::ValueRead("a".to_string(), types::INT32, (6, 73)).into(),
+                            loc: (192,197),
+                            on: TypedExpr::ValueRead("a".to_string(), types::INT32, (198,199)).into(),
                             arms: vec![
                                 TypedMatchArm {
-                                    loc: (7, 2),
+                                    loc: (210,211),
                                     cond: crate::typed_ast::TypedPattern::Const(
                                         "1".to_string(),
                                         types::INT32
@@ -4850,7 +5040,7 @@ let as_statement a b : int32 -> int32 -> () =
                                     )
                                 },
                                 TypedMatchArm {
-                                    loc: (8, 2),
+                                    loc: (224,225),
                                     cond: crate::typed_ast::TypedPattern::Const(
                                         "2".to_string(),
                                         types::INT32
@@ -4865,16 +5055,16 @@ let as_statement a b : int32 -> int32 -> () =
                                     )
                                 },
                                 TypedMatchArm {
-                                    loc: (9, 2),
+                                    loc: (238,239),
                                     cond: crate::typed_ast::TypedPattern::Default,
                                     block: Vec::new(),
                                     ret: Some(
                                         TypedExpr::BinaryOpCall(TypedBinaryOpCall {
-                                            loc: (9, 8),
+                                            loc: (246,247),
                                             lhs: TypedExpr::ValueRead(
                                                 "a".to_string(),
                                                 types::INT32,
-                                                (9, 7)
+                                                (245,246)
                                             )
                                             .into(),
                                             rhs: TypedExpr::IntegerLiteral {
@@ -4920,45 +5110,45 @@ let as_statement a b : int32 -> int32 -> () =
 
         assert_eq!(
             &TypedDeclaration::Value(TypedTopLevelValue {
-                loc: (12, 4),
+                loc: (257,269),
                 is_op: false,
                 ident: "as_statement".to_string(),
                 args: vec![
                     TypedArgDeclaration::Simple {
-                        loc: (12, 17),
+                        loc: (270,271),
                         ident: "a".to_string(),
                         ty: types::INT32,
                     },
                     TypedArgDeclaration::Simple {
-                        loc: (12, 19),
+                        loc: (272,273),
                         ident: "b".to_string(),
                         ty: types::INT32,
                     },
                 ],
                 value: TypedValueType::Function(vec![TypedStatement::Match(TypedMatch {
-                    loc: (13, 4),
-                    on: TypedExpr::ValueRead("a".to_string(), types::INT32, (13, 10)).into(),
+                    loc: (303,308),
+                    on: TypedExpr::ValueRead("a".to_string(), types::INT32, (309,310)).into(),
                     arms: vec![
                         TypedMatchArm {
-                            loc: (14, 6),
+                            loc: (321,322),
                             cond: crate::typed_ast::TypedPattern::Const(
                                 "1".to_string(),
                                 types::INT32
                             ),
                             block: vec![TypedStatement::Match(TypedMatch {
-                                loc: (15, 8),
-                                on: TypedExpr::ValueRead("b".to_string(), types::INT32, (15, 14))
+                                loc: (337,342),
+                                on: TypedExpr::ValueRead("b".to_string(), types::INT32, (343,344))
                                     .into(),
                                 arms: vec![
                                     TypedMatchArm {
-                                        loc: (16, 10),
+                                        loc: (359,360),
                                         cond: crate::typed_ast::TypedPattern::Const(
                                             "1".to_string(),
                                             types::INT32
                                         ),
                                         block: vec![TypedStatement::Discard(
                                             TypedExpr::FnCall(TypedFnCall {
-                                                loc: (16, 15),
+                                                loc: (366,369),
                                                 value: TypedExpr::ValueRead(
                                                     "foo".to_string(),
                                                     ResolvedType::Function {
@@ -4966,7 +5156,7 @@ let as_statement a b : int32 -> int32 -> () =
                                                         returns: types::UNIT.into(),
                                                         loc: (0, 0)
                                                     },
-                                                    (16, 15)
+                                                    (366,369)
                                                 )
                                                 .into(),
                                                 arg: Some(
@@ -4980,18 +5170,18 @@ let as_statement a b : int32 -> int32 -> () =
                                                 arg_t: types::INT32,
                                                 is_extern: false,
                                             }),
-                                            (16, 15)
+                                            (366,369)
                                         )],
                                         ret: None
                                     },
                                     TypedMatchArm {
-                                        loc: (17, 10),
+                                        loc: (381,382),
                                         cond: crate::typed_ast::TypedPattern::Const(
                                             "2".to_string(),
                                             types::INT32
                                         ),
-                                        block: vec![TypedStatement::FnCall(TypedFnCall {
-                                            loc: (18, 12),
+                                        block: vec![TypedStatement::Expr(TypedExpr::FnCall(TypedFnCall {
+                                            loc: (401,404),
                                             value: TypedExpr::ValueRead(
                                                 "foo".to_string(),
                                                 ResolvedType::Function {
@@ -4999,7 +5189,7 @@ let as_statement a b : int32 -> int32 -> () =
                                                     returns: types::UNIT.into(),
                                                     loc: (0, 0)
                                                 },
-                                                (18, 12)
+                                                (401,404)
                                             )
                                             .into(),
                                             arg: Some(
@@ -5012,11 +5202,11 @@ let as_statement a b : int32 -> int32 -> () =
                                             rt: types::UNIT,
                                             arg_t: types::INT32,
                                             is_extern: false,
-                                        })],
+                                        }))],
                                         ret: None
                                     },
                                     TypedMatchArm {
-                                        loc: (19, 10),
+                                        loc: (416,417),
                                         cond: crate::typed_ast::TypedPattern::Const(
                                             "3".to_string(),
                                             types::INT32
@@ -5029,7 +5219,7 @@ let as_statement a b : int32 -> int32 -> () =
                             ret: None
                         },
                         TypedMatchArm {
-                            loc: (20, 6),
+                            loc: (431,432),
                             cond: crate::typed_ast::TypedPattern::Const(
                                 "2".to_string(),
                                 types::INT32
@@ -5058,11 +5248,12 @@ let as_statement a b : int32 -> int32 -> () =
     }
     #[test]
     fn arrays() {
-        let module = file("test",
+        let module = file(
+            "test",
             "
-let simple _ : () -> [int32;5] = [5,4,3,2,1]
+let simple _ : () -> [int32;5] = [5,4,3,2,1];
 
-let should_fail _ : () -> [int32;5] = [1,2,3,4]
+let should_fail _ : () -> [int32;5] = [1,2,3,4];
 
 let not_so_simple a : int32 -> [int32;4] =
     return [
@@ -5097,11 +5288,11 @@ let not_so_simple a : int32 -> [int32;4] =
 
         assert_eq!(
             &TypedDeclaration::Value(TypedTopLevelValue {
-                loc: (1, 4),
+                loc: (5,11),
                 is_op: false,
                 ident: "simple".to_string(),
                 args: vec![TypedArgDeclaration::Discard {
-                    loc: (1, 11),
+                    loc: (12,13),
                     ty: types::UNIT
                 }],
                 value: TypedValueType::Expr(TypedExpr::ArrayLiteral {
@@ -5154,7 +5345,7 @@ let main _ : () -> () =
     return ();
 ";
 
-        let ast = file("",USAGE);
+        let ast = file("", USAGE);
         let dtree = ast.get_dependencies();
         let dtree = dtree
             .into_iter()
@@ -5175,11 +5366,11 @@ let main _ : () -> () =
         };
         assert_eq!(
             &TypedDeclaration::Value(TypedTopLevelValue {
-                loc: (1, 4),
+                loc: (5,6),
                 is_op: false,
                 ident: "f".to_string(),
                 args: vec![TypedArgDeclaration::Simple {
-                    loc: (1, 7),
+                    loc: (8,9),
                     ident: "a".to_string(),
                     ty: ResolvedType::Array {
                         underlining: types::INT32.into(),
@@ -5200,17 +5391,17 @@ let main _ : () -> () =
         );
         assert_eq!(
             &TypedDeclaration::Value(TypedTopLevelValue {
-                loc: (3, 4),
+                loc: (32,36),
                 is_op: false,
                 ident: "main".to_string(),
                 args: vec![TypedArgDeclaration::Discard {
-                    loc: (3, 9),
+                    loc: (37,38),
                     ty: types::UNIT,
                 },],
                 ty: types::UNIT.fn_ty(&types::UNIT),
                 value: TypedValueType::Function(vec![
-                    TypedStatement::FnCall(TypedFnCall {
-                        loc: (4, 4),
+                    TypedStatement::Expr(TypedExpr::FnCall(TypedFnCall {
+                        loc: (56,57),
                         value: TypedExpr::ValueRead(
                             "f".to_string(),
                             ResolvedType::Array {
@@ -5218,7 +5409,7 @@ let main _ : () -> () =
                                 size: 5
                             }
                             .fn_ty(&types::UNIT),
-                            (4, 4)
+                            (56,57)
                         )
                         .into(),
                         arg: Some(
@@ -5255,8 +5446,8 @@ let main _ : () -> () =
                             size: 5
                         },
                         is_extern: false,
-                    }),
-                    TypedStatement::Return(TypedExpr::UnitLiteral, (5, 4))
+                    })),
+                    TypedStatement::Return(TypedExpr::UnitLiteral, (75,81))
                 ]),
                 generics: None,
                 abi: None,
@@ -5267,7 +5458,8 @@ let main _ : () -> () =
     }
     #[test]
     fn destructuring_statement() {
-        let ast =file("",
+        let ast = file(
+            "",
             "
 let a (v:(int32,int32)) =
     let (x,y) = v;
@@ -5292,7 +5484,7 @@ let a (v:(int32,int32)) =
         };
         assert_eq!(
             &TypedDeclaration::Value(TypedTopLevelValue {
-                loc: (1, 4),
+                loc: (5,6),
                 is_op: false,
                 ident: "a".to_string(),
                 args: vec![TypedArgDeclaration::Simple {
@@ -5301,7 +5493,7 @@ let a (v:(int32,int32)) =
                         underlining: vec![types::INT32, types::INT32,],
                         loc: (0, 0)
                     },
-                    loc: (1, 7)
+                    loc: (8,9)
                 }],
                 ty: ResolvedType::Tuple {
                     underlining: vec![types::INT32, types::INT32,],
@@ -5310,12 +5502,12 @@ let a (v:(int32,int32)) =
                 .fn_ty(&types::UNIT),
                 value: TypedValueType::Function(vec![
                     TypedStatement::Declaration(TypedValueDeclaration {
-                        loc: (2, 8),
+                        loc: (35,40),
                         is_op: false,
                         is_curried: false,
                         target: TypedPattern::Destructure(TypedDestructure::Tuple(vec![
-                            TypedPattern::Read("x".to_string(), types::INT32, (2, 9)),
-                            TypedPattern::Read("y".to_string(), types::INT32, (2, 11)),
+                            TypedPattern::Read("x".to_string(), types::INT32, (36,37)),
+                            TypedPattern::Read("y".to_string(), types::INT32, (38,39)),
                         ])),
                         args: Vec::new(),
                         value: TypedValueType::Expr(TypedExpr::ValueRead(
@@ -5324,7 +5516,7 @@ let a (v:(int32,int32)) =
                                 underlining: vec![types::INT32, types::INT32,],
                                 loc: (0, 0)
                             },
-                            (2, 16)
+                            (43,44)
                         )),
                         ty: ResolvedType::Tuple {
                             underlining: vec![types::INT32, types::INT32,],
@@ -5333,7 +5525,7 @@ let a (v:(int32,int32)) =
                         generictypes: None,
                         abi: None,
                     }),
-                    TypedStatement::Return(TypedExpr::UnitLiteral, (3, 4))
+                    TypedStatement::Return(TypedExpr::UnitLiteral, (50,56))
                 ]),
                 generics: None,
                 abi: None,
@@ -5350,7 +5542,7 @@ let fun a = match a where
 | Test::A (a,b) -> 1,
 | Test::B -> 0,
 "#;
-        let ast = file("",SRC);
+        let ast = file("", SRC);
         let dtree = ast.get_dependencies();
         let dtree = dtree
             .into_iter()
@@ -5372,7 +5564,6 @@ let fun a = match a where
         };
 
         assert_eq!(
-            ty,
             &super::TypedDeclaration::TypeDefinition(super::ResolvedTypeDeclaration::Enum(
                 super::TypedEnumDeclaration {
                     ident: "Test".into(),
@@ -5384,26 +5575,26 @@ let fun a = match a where
                                 underlining: vec![types::INT8; 2],
                                 loc: (0, 0)
                             },
-                            loc: (1, 14)
+                            loc: (15,16)
                         },
                         crate::ast::EnumVariant::Unit {
                             ident: "B".into(),
-                            loc: (1, 30)
+                            loc: (31,32)
                         }
                     ],
-                    loc: (1, 5),
+                    loc: (6,10),
                 }
-            ))
+            )),
+            ty,
         );
 
         assert_eq!(
-            fun,
             &super::TypedDeclaration::Value(super::TypedTopLevelValue {
-                loc: (2, 4),
+                loc: (37,40),
                 is_op: false,
                 ident: "fun".into(),
                 args: vec![TypedArgDeclaration::Simple {
-                    loc: (2, 8),
+                    loc: (41,42),
                     ident: "a".into(),
                     ty: ResolvedType::User {
                         name: "Test".into(),
@@ -5418,20 +5609,20 @@ let fun a = match a where
                 }
                 .fn_ty(&types::INT8),
                 value: TypedValueType::Expr(super::TypedExpr::Match(super::TypedMatch {
-                    loc: (2, 12),
+                    loc: (45,50),
                     on: super::TypedExpr::ValueRead(
                         "a".into(),
                         ResolvedType::User {
                             name: "Test".into(),
                             generics: Vec::new(),
-                            loc: (1, 5)
+                            loc: (6,10)
                         },
-                        (2, 18)
+                        (51,52)
                     )
                     .into(),
                     arms: vec![
                         super::TypedMatchArm {
-                            loc: (3, 2),
+                            loc: (59,60),
                             cond: TypedPattern::EnumVariant {
                                 ty: ResolvedType::Dependent {
                                     base: ResolvedType::User {
@@ -5453,28 +5644,28 @@ let fun a = match a where
                                 pattern: Some(
                                     TypedPattern::Or(
                                         TypedPattern::Destructure(TypedDestructure::Tuple(vec![
-                                            TypedPattern::Read("a".into(), types::INT8, (3, 12)),
+                                            TypedPattern::Read("a".into(), types::INT8, (71,72)),
                                             TypedPattern::Const("0".into(), types::INT8),
                                         ]))
                                         .into(),
                                         TypedPattern::Destructure(TypedDestructure::Tuple(vec![
                                             TypedPattern::Const("0".into(), types::INT8),
-                                            TypedPattern::Read("a".into(), types::INT8, (3, 22)),
+                                            TypedPattern::Read("a".into(), types::INT8, (81,82)),
                                         ]))
                                         .into()
                                     )
                                     .into()
                                 ),
-                                loc: (3, 2)
+                                loc: (61,68)
                             },
                             block: Vec::new(),
                             ret: Some(
-                                super::TypedExpr::ValueRead("a".into(), types::INT8, (3, 29))
+                                super::TypedExpr::ValueRead("a".into(), types::INT8, (88,89))
                                     .into()
                             )
                         },
                         super::TypedMatchArm {
-                            loc: (4, 2),
+                            loc: (91,92),
                             cond: TypedPattern::EnumVariant {
                                 ty: ResolvedType::Dependent {
                                     base: ResolvedType::User {
@@ -5494,19 +5685,28 @@ let fun a = match a where
                                 },
                                 variant: "Test::A".into(),
                                 pattern: Some(
-                                    super::TypedPattern::Destructure(TypedDestructure::Tuple(vec![
-                                        TypedPattern::Read("a".into(), types::INT8, (4, 11)),
-                                        TypedPattern::Read("b".into(), types::INT8, (4, 13)),
-                                    ])).into()
+                                    super::TypedPattern::Destructure(TypedDestructure::Tuple(
+                                        vec![
+                                            TypedPattern::Read("a".into(), types::INT8, (102,103)),
+                                            TypedPattern::Read("b".into(), types::INT8, (104,105)),
+                                        ]
+                                    ))
+                                    .into()
                                 ),
-                                loc: (4, 2)
+                                loc: (93,100)
                             },
                             block: Vec::new(),
-                            ret: Some(super::TypedExpr::IntegerLiteral { value: "1".into(), size: types::IntWidth::Eight }.into())
+                            ret: Some(
+                                super::TypedExpr::IntegerLiteral {
+                                    value: "1".into(),
+                                    size: types::IntWidth::Eight
+                                }
+                                .into()
+                            )
                         },
                         super::TypedMatchArm {
-                            loc:(5,2),
-                            cond: TypedPattern::EnumVariant { 
+                            loc: (113,114),
+                            cond: TypedPattern::EnumVariant {
                                 ty: ResolvedType::Dependent {
                                     base: ResolvedType::User {
                                         name: "Test".into(),
@@ -5518,19 +5718,26 @@ let fun a = match a where
                                     generics: Vec::new(),
                                     ident: "Test::B".into(),
                                     loc: (0, 0)
-                                }, variant: "Test::B".into(), 
-                                pattern: None, 
-                                loc: (5,2) 
-                                
+                                },
+                                variant: "Test::B".into(),
+                                pattern: None,
+                                loc: (115,122)
                             },
-                            block:Vec::new(),
-                            ret: Some(super::TypedExpr::IntegerLiteral { value: "0".into(), size: types::IntWidth::Eight }.into())
+                            block: Vec::new(),
+                            ret: Some(
+                                super::TypedExpr::IntegerLiteral {
+                                    value: "0".into(),
+                                    size: types::IntWidth::Eight
+                                }
+                                .into()
+                            )
                         }
                     ]
                 })),
                 generics: None,
                 abi: None
-            })
+            }),
+            fun,
         );
     }
 }

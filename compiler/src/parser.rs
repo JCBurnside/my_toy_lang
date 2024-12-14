@@ -423,7 +423,7 @@ fn type_decl(input: &mut Stream<'_>) -> PResult<ast::TypeDefinition> {
         combinator::alt((
             combinator::preceded(
                 (ascii::space0,"type",ascii::space1),
-                struct_or_alias_def(generics.clone()),
+                combinator::cut_err(struct_or_alias_def(generics.clone())),
             ),
             enum_decl(generics).map(ast::TypeDefinition::Enum),
         ))
@@ -508,7 +508,7 @@ fn struct_body(input: &mut Stream<'_>) -> PResult<Vec<ast::FieldDecl>> {
             }),
             (ascii::multispace0, ',',ascii::multispace0),
         ),
-        (ascii::multispace0,'}'),
+        (ascii::multispace0,combinator::opt((',',ascii::multispace0)),'}'),
     )
     .parse_next(input)
 }
@@ -862,6 +862,7 @@ fn generics<'input>(input: &mut Stream<'input>) -> PResult<ast::GenericsDecl> {
 }
 
 fn if_statement(input :&mut Stream<'_>) -> PResult<ast::If> {
+    let prefix = input.state.prefix.clone();
     combinator::trace("if",winnow::combinator::seq! { ast::If{
         loc:"if".span().map(|loc| (loc.start,loc.end)),
         cond : combinator::delimited(ascii::multispace1,combinator::cut_err(expr).map(Into::into),(ascii::multispace1,"then")),
@@ -869,11 +870,17 @@ fn if_statement(input :&mut Stream<'_>) -> PResult<ast::If> {
             combinator::preceded((ascii::space0,ascii::line_ending),block),
             expr.map(|expr| ast::Block { statements:Vec::new(), implicit_ret:Some(expr.into())})
         )),
-        else_branch : combinator::opt(combinator::preceded("else",combinator::alt((
-            combinator::preceded(ascii::space1,if_statement).map(|if_|ast::Block { statements : vec![ast::Statement::IfStatement(if_)], implicit_ret:None}),
-            combinator::preceded((ascii::space0,ascii::line_ending),block),
-            expr.map(|expr| ast::Block { statements:Vec::new(), implicit_ret:Some(expr.into())})
-        )))),
+        _:ignore_blank_lines,
+        else_branch : combinator::opt(
+            combinator::preceded(
+                combinator::preceded(&*prefix, "else"),
+                combinator::alt((
+                    combinator::preceded(ascii::space1,if_statement).map(|if_|ast::Block { statements : vec![ast::Statement::IfStatement(if_)], implicit_ret:None}),
+                    combinator::preceded((ascii::space0,ascii::line_ending),block),
+                    expr.map(|expr| ast::Block { statements:Vec::new(), implicit_ret:Some(expr.into())})
+                ))
+            )
+        ),
     }
     }).parse_next(input)
 }
@@ -1225,10 +1232,10 @@ fn match_(input: &mut Stream<'_>) -> PResult<ast::Match> {
         // on another line.
         let prefix = input.state.prefix.clone();
         let checkpoint = input.checkpoint();
-        let new_prefix = prefix.to_owned() + ascii::space0(input)?;
+        let new_prefix = ascii::space0(input)?;
         input.reset(&checkpoint);
-        input.state.prefix = new_prefix.clone();
-        let arms = combinator::repeat(1.., combinator::preceded(new_prefix.as_ref(), arm))
+        input.state.prefix = new_prefix.into();
+        let arms = combinator::repeat(1.., combinator::preceded(new_prefix, arm))
             .parse_next(input)?;
         input.state.prefix = prefix;
         arms
