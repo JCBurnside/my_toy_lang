@@ -2212,6 +2212,7 @@ impl TypedIf {
             self.replace_type(name, new_ty);
         }
     }
+
 }
 
 #[derive(PartialEq, Debug, Clone)]

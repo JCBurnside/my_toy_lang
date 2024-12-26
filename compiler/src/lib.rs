@@ -60,7 +60,8 @@ pub fn get_untyped_ast(
     //     .chain(errors.into_iter().map(|e| Error::from(e).into()))
     //     .collect();
     // (ast, warningsanderrors)
-    todo!("fix parsing.")
+    let ast = parser::file(file_name, input);
+    (ast,Vec::new())
 }
 
 pub fn get_ast(input: &str, file_name: &str) -> typed_ast::TypedModuleDeclaration {
@@ -200,7 +201,7 @@ pub fn from_file<'ctx>(
     fwd_ops: HashMap<String, Vec<ResolvedType>>,
     project_name: String,
 ) -> (Result<TypedModuleDeclaration, Vec<Error>>, Vec<Warning>) {
-    /* 
+    
     // TODO: I would like to make this work for now I will read the whole file to a string then
     // let file = File::open(file).map_err(Box::new).map_err(|err| vec![err as Box<dyn Display>])?;
     // let file = BufReader::new(file);
@@ -223,19 +224,8 @@ pub fn from_file<'ctx>(
         Ok(contents) => contents,
         Err(e) => return (Err(vec![e]), Vec::new()),
     };
-    // lexer
-    let strm = TokenStream::from_source(&contents);
-    // parser
-    let parser = Parser::from_stream(strm);
-
-    let ParserReturns {
-        mut ast,
-        loc: _,
-        warnings,
-        errors,
-    } = parser.module(file_name.to_str().unwrap().to_string());
-    let warnings = warnings.into_iter().map(Warning::from).collect_vec();
-    let errors = errors.into_iter().map(Error::from).collect_vec();
+    let mut ast = parser::file(file_name.to_str().unwrap(), &contents);
+    
     ast.canonialize(vec![project_name]);
     let dependency_graph = ast.get_dependencies();
     let dependency_tree: HashMap<_, _> = dependency_graph
@@ -257,13 +247,8 @@ pub fn from_file<'ctx>(
     ast.lower_generics(&HashMap::new());
     let ast = unfold_global_curries(ast, HashMap::new(), dependency_tree);
     (
-        if errors.is_empty() {
-            Ok(ast)
-        } else {
-            Err(errors)
-        },
-        warnings,
+        Ok(ast),
+        Vec::new()
     )
-    */
-    todo!("fix parsing.")
+    
 }

@@ -24,10 +24,7 @@ use itertools::Itertools;
 
 use crate::type_resolver::TypeResolver;
 use compiler::typed_ast::{
-    collect_args, ResolvedTypeDeclaration, StructDefinition, TypedArgDeclaration,
-    TypedBinaryOpCall, TypedDeclaration, TypedDestructure, TypedExpr, TypedFnCall,
-    TypedIfBranching, TypedIfExpr, TypedMatch, TypedMatchArm, TypedMemberRead, TypedPattern,
-    TypedStatement, TypedTopLevelValue, TypedValueDeclaration, TypedValueType,
+    collect_args, ResolvedTypeDeclaration, StructDefinition, TypedArgDeclaration, TypedBinaryOpCall, TypedBlock, TypedDeclaration, TypedDestructure, TypedExpr, TypedFnCall, TypedIf, TypedIfExpr, TypedMatch, TypedMatchArm, TypedMemberRead, TypedPattern, TypedStatement, TypedTopLevelValue, TypedValueDeclaration, TypedValueType
 };
 use compiler::types::{self, ResolvedType};
 use multimap::MultiMap;
@@ -45,7 +42,7 @@ pub struct CodeGen<'ctx> {
     locals: HashMap<String, PointerValue<'ctx>>,
     current_module: String,
     target_info: TargetData,
-    enum_discrims:HashMap<String,Vec<String>>,
+    enum_discrims: HashMap<String, Vec<String>>,
     curry_ty: StructType<'ctx>,
     ret_target: Option<PointerValue<'ctx>>,
     // debug info starts here
@@ -96,7 +93,7 @@ impl<'ctx> CodeGen<'ctx> {
             locals: HashMap::new(),
             ret_target: None,
             current_module: String::new(),
-            enum_discrims:HashMap::new(),
+            enum_discrims: HashMap::new(),
             dibuilder: None,
             compile_unit: None,
             difile: None,
@@ -144,7 +141,7 @@ impl<'ctx> CodeGen<'ctx> {
                 fields,
                 renamed_fields,
             } => {
-                todo!()
+                todo!("todo destructuring struct args")
             }
             TypedArgDeclaration::Discard { loc, ty } | TypedArgDeclaration::Unit { loc, ty } => {
                 //TODO debug info for these args.
@@ -412,7 +409,9 @@ impl<'ctx> CodeGen<'ctx> {
         pat: TypedPattern,
     ) {
         match pat {
-            TypedPattern::EnumVariant { .. } => todo!("enum variant destructure. should be type checked."),
+            TypedPattern::EnumVariant { .. } => {
+                todo!("enum variant destructure. should be type checked.")
+            }
 
             TypedPattern::Const(_, _) => {
                 println!("invalid code.");
@@ -481,17 +480,18 @@ impl<'ctx> CodeGen<'ctx> {
     pub fn compile_statement(&mut self, stmnt: TypedStatement) {
         match stmnt {
             TypedStatement::IfBranching(ifbranch) => {
-                let TypedIfBranching {
+                let TypedIf {
                     cond,
                     true_branch,
-                    else_ifs,
                     else_branch,
                     ..
                 } = ifbranch;
-                let fun = self
-                    .builder
-                    .get_insert_block()
-                    .unwrap()
+                let parent_block = self
+                .builder
+                .get_insert_block()
+                .unwrap();
+                let fun = 
+                    parent_block
                     .get_parent()
                     .unwrap();
                 let true_block = self.ctx.append_basic_block(fun, "");
@@ -501,161 +501,39 @@ impl<'ctx> CodeGen<'ctx> {
                     AnyValueEnum::IntValue(it) => it,
                     _=> unreachable!("it can only ever be a point which means a value read or an expression resulting in a boolean")
                 };
-
-                match (else_ifs.is_empty(), else_branch.is_empty()) {
-                    (true, true) => {
-                        // if then
-                        self.builder
-                            .build_conditional_branch(cond, true_block, end_block)
-                            .unwrap();
-                        self.builder.position_at_end(true_block);
-                        for stmnt in true_branch {
-                            self.compile_statement(stmnt);
-                        }
-                        self.builder.build_unconditional_branch(end_block).unwrap();
-                    }
-                    (true, false) => {
-                        //if then else
-                        let else_block = self.ctx.append_basic_block(fun, "");
-                        self.builder
-                            .build_conditional_branch(cond, true_block, else_block)
-                            .unwrap();
-                        self.builder.position_at_end(true_block);
-                        for stmnt in true_branch {
-                            self.compile_statement(stmnt);
-                        }
-                        self.builder.build_unconditional_branch(end_block).unwrap();
-                        self.builder.position_at_end(else_block);
-                        for stmnt in else_branch {
-                            self.compile_statement(stmnt);
-                        }
-                        let _ = end_block.move_after(else_block);
-                        self.builder.build_unconditional_branch(end_block).unwrap();
-                    }
-                    (false, true) => {
-                        //if then else if then
-                        let cond_blocks =
-                            std::iter::repeat_with(|| self.ctx.append_basic_block(fun, ""))
-                                .take(else_ifs.len())
-                                .collect_vec();
-
-                        self.builder
-                            .build_conditional_branch(
-                                cond,
-                                true_block,
-                                *cond_blocks.first().unwrap(),
-                            )
-                            .unwrap();
-                        self.builder.position_at_end(true_block);
-                        for stmnt in true_branch {
-                            self.compile_statement(stmnt);
-                        }
-                        self.builder.position_at_end(true_block);
-
-                        let else_ifs = else_ifs
-                            .into_iter()
-                            .map(|(cond, stmnts)| {
-                                let block = self.ctx.append_basic_block(fun, "");
-                                self.builder.position_at_end(block);
-                                for stmnt in stmnts {
-                                    self.compile_statement(stmnt);
-                                }
-                                self.builder.build_unconditional_branch(end_block).unwrap();
-                                (cond, block)
-                            })
-                            .zip(cond_blocks.iter().copied())
-                            .map(|((cond, block), cond_block)| {
-                                let _ = block.move_after(cond_block);
-                                (cond, block, cond_block)
-                            })
-                            .collect_vec();
-                        let blocks = else_ifs
-                            .into_iter()
-                            .zip(cond_blocks.into_iter().skip(1).chain(once(end_block)))
-                            .map(|(it, false_block)| (it.0, it.1, it.2, false_block))
-                            .collect_vec();
-                        let _ = end_block.move_after(blocks.last().map(|it| it.1).unwrap());
-                        for (cond, true_block, cond_block, false_block) in blocks {
-                            self.builder.position_at_end(cond_block);
-                            let cond = match self.compile_expr(*cond) {
-                                AnyValueEnum::PointerValue(p) => self
-                                    .builder
-                                    .build_load(self.ctx.bool_type(), p, "")
-                                    .unwrap()
-                                    .into_int_value(),
-                                AnyValueEnum::IntValue(i) => i,
-                                _ => unreachable!(),
-                            };
-                            self.builder
-                                .build_conditional_branch(cond, true_block, false_block)
-                                .unwrap();
-                        }
-                    }
-                    (false, false) => {
-                        let cond_blocks =
-                            std::iter::repeat_with(|| self.ctx.append_basic_block(fun, ""))
-                                .take(else_ifs.len())
-                                .collect_vec();
-
-                        self.builder
-                            .build_conditional_branch(
-                                cond,
-                                true_block,
-                                *cond_blocks.first().unwrap(),
-                            )
-                            .unwrap();
-                        self.builder.position_at_end(true_block);
-                        for stmnt in true_branch {
-                            self.compile_statement(stmnt);
-                        }
-                        self.builder.build_unconditional_branch(end_block).unwrap();
-                        let else_block = self.ctx.append_basic_block(fun, "");
-                        let else_ifs = else_ifs
-                            .into_iter()
-                            .map(|(cond, stmnts)| {
-                                let block = self.ctx.append_basic_block(fun, "");
-                                self.builder.position_at_end(block);
-                                for stmnt in stmnts {
-                                    self.compile_statement(stmnt);
-                                }
-                                self.builder.build_unconditional_branch(end_block).unwrap();
-                                (cond, block)
-                            })
-                            .zip(cond_blocks.iter().copied())
-                            .map(|((cond, block), cond_block)| {
-                                let _ = block.move_after(cond_block);
-                                (cond, block, cond_block)
-                            })
-                            .collect_vec();
-                        let blocks = else_ifs
-                            .into_iter()
-                            .zip(cond_blocks.into_iter().skip(1).chain(once(else_block)))
-                            .map(|(it, false_block)| (it.0, it.1, it.2, false_block))
-                            .collect_vec();
-                        let _ = else_block.move_after(blocks.last().map(|it| it.2).unwrap());
-                        for (cond, true_block, cond_block, false_block) in blocks {
-                            self.builder.position_at_end(cond_block);
-                            let cond = match self.compile_expr(*cond) {
-                                AnyValueEnum::PointerValue(p) => self
-                                    .builder
-                                    .build_load(self.ctx.bool_type(), p, "")
-                                    .unwrap()
-                                    .into_int_value(),
-                                AnyValueEnum::IntValue(i) => i,
-                                _ => unreachable!(),
-                            };
-                            self.builder
-                                .build_conditional_branch(cond, true_block, false_block)
-                                .unwrap();
-                        }
-                        self.builder.position_at_end(else_block);
-                        for stmnt in else_branch {
-                            self.compile_statement(stmnt);
-                        }
-                        self.builder.build_unconditional_branch(end_block).unwrap();
-                        let _ = end_block.move_after(else_block);
-                    }
+                //build the true branch.
+                self.builder.position_at_end(true_block);
+                for stmnt in true_branch.statements {
+                    self.compile_statement(stmnt);
                 }
+                if let Some(true_expr) = true_branch.implicit_ret {
+                    let _ = self.compile_expr(*true_expr);
+                }
+                self.builder.build_unconditional_branch(end_block);
+                self.builder.position_at_end(parent_block);//reset to parent block to build the conditional
+                if let Some(else_branch) = else_branch {
+                    //if then else
+                    let else_block = self.ctx.append_basic_block(fun, "");
+                    self.builder
+                        .build_conditional_branch(cond, true_block, else_block)
+                        .unwrap();
+
+                    self.builder.build_unconditional_branch(end_block).unwrap();
+                    self.builder.position_at_end(else_block);
+                    for stmnt in else_branch.statements {
+                        self.compile_statement(stmnt);
+                    }
+                    if let Some(else_expr) = else_branch.implicit_ret {
+                        let _ = self.compile_expr(*else_expr);
+                    }
+                    let _ = end_block.move_after(else_block);
+                    self.builder.build_unconditional_branch(end_block).unwrap();
+                } else {
+                    
+                    self.builder
+                        .build_conditional_branch(cond, true_block, end_block);
+                }
+
                 #[cfg(debug_assertions)]
                 let _ = self.module.print_to_file("./debug.ll");
                 self.builder.position_at_end(end_block);
@@ -736,6 +614,23 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
 
+    fn compile_block(&mut self, block : TypedBlock) -> AnyValueEnum<'ctx> {
+        let TypedBlock {
+            statements,
+            implicit_ret,
+            ret_ty:_,
+        } = block;
+
+        for stmnt in statements {
+            self.compile_statement(stmnt);
+        }
+        if let Some(ret) = implicit_ret {
+            self.compile_expr(*ret)
+        } else {
+            self.ctx.i8_type().const_zero().into() // in theory this should never matter. could be any value.
+        }
+    }
+
     pub fn compile_expr(&mut self, expr: TypedExpr) -> AnyValueEnum<'ctx> {
         #[cfg(debug_assertions)]
         let _ = self.module.print_to_file("./debug.ll");
@@ -748,15 +643,15 @@ impl<'ctx> CodeGen<'ctx> {
                 }
             }
             TypedExpr::IfExpr(expr) => {
-                let rt = expr.get_ty();
-                let ty = self.type_resolver.resolve_type_as_basic(expr.get_ty());
-                let TypedIfExpr {
+                let TypedIf {
                     cond,
                     true_branch,
-                    else_ifs,
                     else_branch,
                     loc: _,
+                    result_ty:rt
                 } = expr;
+                let ty = self.type_resolver.resolve_type_as_basic(rt.clone());
+                
                 let fun = self
                     .builder
                     .get_insert_block()
@@ -775,139 +670,37 @@ impl<'ctx> CodeGen<'ctx> {
                 let result_block = self.ctx.append_basic_block(fun, "");
                 let then_block = self.ctx.append_basic_block(fun, "");
                 let else_block = self.ctx.append_basic_block(fun, "");
-                if else_ifs.is_empty() {
+                
+                self.builder
+                    .build_conditional_branch(root_cond, then_block, else_block)
+                    .unwrap();
+                self.builder.position_at_end(then_block);
+                
+                let true_value = self.compile_block(true_branch);
+                let true_value = convert_to_basic_value(true_value);
+                let true_value = if !rt.is_user() && true_value.is_pointer_value() {
                     self.builder
-                        .build_conditional_branch(root_cond, then_block, else_block)
-                        .unwrap();
-                    self.builder.position_at_end(then_block);
-                    for stmnt in true_branch.0 {
-                        self.compile_statement(stmnt);
-                    }
-                    let true_value = convert_to_basic_value(self.compile_expr(*true_branch.1));
-                    let true_value = if !rt.is_user() && true_value.is_pointer_value() {
-                        self.builder
-                            .build_load(ty, true_value.into_pointer_value(), "")
-                            .unwrap()
-                    } else {
-                        true_value
-                    };
-                    self.builder.position_at_end(else_block);
-                    for stmnt in else_branch.0 {
-                        self.compile_statement(stmnt);
-                    }
-                    let else_value = convert_to_basic_value(self.compile_expr(*else_branch.1));
-                    let else_value = if !rt.is_user() && else_value.is_pointer_value() {
-                        self.builder
-                            .build_load(ty, else_value.into_pointer_value(), "")
-                            .unwrap()
-                    } else {
-                        else_value
-                    };
-                    self.builder.position_at_end(result_block);
-                    let phi = self.builder.build_phi(ty, "").unwrap();
-                    phi.add_incoming(&[(&true_value, then_block), (&else_value, else_block)]);
-                    let _ = result_block.move_after(else_block);
-                    phi.as_any_value_enum()
+                        .build_load(ty, true_value.into_pointer_value(), "")
+                        .unwrap()
                 } else {
-                    let cond_blocks =
-                        std::iter::repeat_with(|| self.ctx.append_basic_block(fun, ""))
-                            .take(else_ifs.len())
-                            .collect_vec();
+                    true_value
+                };
+                self.builder.position_at_end(else_block);
+                let else_value = self.compile_block(else_branch.expect("if expressions require an else"));
+                let else_value = convert_to_basic_value(else_value);
+                let else_value = if !rt.is_user() && else_value.is_pointer_value() {
                     self.builder
-                        .build_conditional_branch(
-                            root_cond,
-                            then_block,
-                            *cond_blocks.first().unwrap(),
-                        )
-                        .unwrap();
-                    self.builder.position_at_end(result_block);
-                    let phi = self.builder.build_phi(ty, "").unwrap();
-                    self.builder.position_at_end(then_block);
-                    for stmnt in true_branch.0 {
-                        self.compile_statement(stmnt);
-                    }
-                    let true_value = convert_to_basic_value(self.compile_expr(*true_branch.1));
-                    let true_value = if !rt.is_user() && true_value.is_pointer_value() {
-                        self.builder
-                            .build_load(ty, true_value.into_pointer_value(), "")
-                            .unwrap()
-                    } else {
-                        true_value
-                    };
-                    self.builder
-                        .build_unconditional_branch(result_block)
-                        .unwrap();
-                    phi.add_incoming(&[(&true_value, then_block)]);
-                    let else_ifs = else_ifs
-                        .into_iter()
-                        .map(|(cond, stmnts, result)| {
-                            let block = self.ctx.append_basic_block(fun, "");
-                            self.builder.position_at_end(block);
-                            for stmnt in stmnts {
-                                self.compile_statement(stmnt);
-                            }
-                            let result = convert_to_basic_value(self.compile_expr(*result));
-                            let result = if !rt.is_user() && result.is_pointer_value() {
-                                self.builder
-                                    .build_load(ty, result.into_pointer_value(), "")
-                                    .unwrap()
-                            } else {
-                                result
-                            };
-                            phi.add_incoming(&[(
-                                &result,
-                                self.builder.get_insert_block().unwrap(),
-                            )]);
-                            self.builder
-                                .build_unconditional_branch(result_block)
-                                .unwrap();
-                            (cond, block)
-                        })
-                        .zip(cond_blocks.iter().copied())
-                        .map(|((cond, block), cond_block)| {
-                            let _ = block.move_after(cond_block);
-                            (cond, block, cond_block)
-                        })
-                        .collect_vec();
-                    let _ = else_block.move_after(else_ifs.last().unwrap().1);
-                    for ((cond, true_block, cond_block), false_block) in else_ifs
-                        .into_iter()
-                        .zip(cond_blocks.into_iter().skip(1).chain(once(else_block)))
-                    {
-                        self.builder.position_at_end(cond_block);
-                        let cond = match self.compile_expr(*cond) {
-                            AnyValueEnum::PointerValue(p) => self
-                                .builder
-                                .build_load(self.ctx.bool_type(), p, "")
-                                .unwrap()
-                                .into_int_value(),
-                            AnyValueEnum::IntValue(i) => i,
-                            _ => unreachable!(),
-                        };
-                        self.builder
-                            .build_conditional_branch(cond, true_block, false_block)
-                            .unwrap();
-                    }
-                    let _ = result_block.move_after(else_block);
-                    self.builder.position_at_end(else_block);
-                    for stmnt in else_branch.0 {
-                        self.compile_statement(stmnt);
-                    }
-                    let else_value = convert_to_basic_value(self.compile_expr(*else_branch.1));
-                    self.builder
-                        .build_unconditional_branch(result_block)
-                        .unwrap();
-                    let else_value = if !rt.is_user() && else_value.is_pointer_value() {
-                        self.builder
-                            .build_load(ty, else_value.into_pointer_value(), "")
-                            .unwrap()
-                    } else {
-                        else_value
-                    };
-                    phi.add_incoming(&[(&else_value, self.builder.get_insert_block().unwrap())]);
-                    self.builder.position_at_end(result_block);
-                    phi.as_any_value_enum()
-                }
+                        .build_load(ty, else_value.into_pointer_value(), "")
+                        .unwrap()
+                } else {
+                    else_value
+                };
+                self.builder.position_at_end(result_block);
+                let phi = self.builder.build_phi(ty, "").unwrap();
+                phi.add_incoming(&[(&true_value, then_block), (&else_value, else_block)]);
+                let _ = result_block.move_after(else_block);
+                phi.as_any_value_enum()
+                
             }
             TypedExpr::BinaryOpCall(TypedBinaryOpCall {
                 operator,
@@ -2108,7 +1901,7 @@ impl<'ctx> CodeGen<'ctx> {
                 compiler::typed_ast::ResolvedTypeDeclaration::Enum(enum_) => {
                     let i32_t = self.type_resolver.resolve_type_as_basic(types::INT32);
                     let i8_t = self.type_resolver.resolve_type_as_basic(types::INT8);
-                    
+
                     if enum_.generics.is_some() {
                         return;
                     }
@@ -2130,7 +1923,8 @@ impl<'ctx> CodeGen<'ctx> {
                         enum_.ident.clone(),
                         ResolvedTypeDeclaration::Enum(enum_.clone()),
                     );
-                    self.enum_discrims.insert(enum_.ident.clone(),enum_discrims);
+                    self.enum_discrims
+                        .insert(enum_.ident.clone(), enum_discrims);
                     let mut max_size = 0;
                     for variant in &enum_.values {
                         let variant_struct = self
@@ -2811,27 +2605,72 @@ impl<'ctx> CodeGen<'ctx> {
         }
 
         match pat {
-            TypedPattern::EnumVariant { variant, pattern:Some(pat), ty, .. } => {
-                let variant_short = if let Some((_,short)) = variant.rsplit_once("::") {
+            TypedPattern::EnumVariant {
+                variant,
+                pattern: Some(pat),
+                ty,
+                ..
+            } => {
+                let variant_short = if let Some((_, short)) = variant.rsplit_once("::") {
                     dbg!(short)
                 } else {
                     &variant
                 };
                 let success_block = self.ctx.append_basic_block(fun, dbg!(&variant));
                 let _ = success_block.move_after(curr_block);
-                let ResolvedType::User { name, .. } = cond_ty else { unreachable!() };
-                let discrim = dbg!(dbg!(&self.enum_discrims).get(dbg!(name)).unwrap()).iter().position(|it| it==variant_short).unwrap();
-                let value = self.builder.build_struct_gep(self.ctx.struct_type(&[self.ctx.i8_type().into()], false), cond_v.into_pointer_value(), 0, "$discrim").unwrap();
-                let value = self.builder.build_load(self.ctx.i8_type(),value,"").unwrap();
-                let right_variant = self.builder.build_int_compare(IntPredicate::EQ, value.into_int_value(), self.ctx.i8_type().const_int(discrim as _, false), "").unwrap();
-                let _ = self.builder.build_conditional_branch(right_variant, success_block, next_block);
+                let ResolvedType::User { name, .. } = cond_ty else {
+                    unreachable!()
+                };
+                let discrim = dbg!(dbg!(&self.enum_discrims).get(dbg!(name)).unwrap())
+                    .iter()
+                    .position(|it| it == variant_short)
+                    .unwrap();
+                let value = self
+                    .builder
+                    .build_struct_gep(
+                        self.ctx.struct_type(&[self.ctx.i8_type().into()], false),
+                        cond_v.into_pointer_value(),
+                        0,
+                        "$discrim",
+                    )
+                    .unwrap();
+                let value = self
+                    .builder
+                    .build_load(self.ctx.i8_type(), value, "")
+                    .unwrap();
+                let right_variant = self
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        value.into_int_value(),
+                        self.ctx.i8_type().const_int(discrim as _, false),
+                        "",
+                    )
+                    .unwrap();
+                let _ =
+                    self.builder
+                        .build_conditional_branch(right_variant, success_block, next_block);
                 self.builder.position_at_end(success_block);
-                let ResolvedType::Dependent { actual, ident, .. }= ty else { unreachable!() };
+                let ResolvedType::Dependent { actual, ident, .. } = ty else {
+                    unreachable!()
+                };
                 let variant_data_type = self.ctx.get_struct_type(&ident).unwrap();
-                let value = self.builder.build_struct_gep(variant_data_type,cond_v.into_pointer_value(),1,"").unwrap();
-                self.compile_complex_pattern(*pat, fun, &value.into(), &actual, success_block, next_block, bindings_block, bindings_phi, bindings_to_make)
-                
-            },
+                let value = self
+                    .builder
+                    .build_struct_gep(variant_data_type, cond_v.into_pointer_value(), 1, "")
+                    .unwrap();
+                self.compile_complex_pattern(
+                    *pat,
+                    fun,
+                    &value.into(),
+                    &actual,
+                    success_block,
+                    next_block,
+                    bindings_block,
+                    bindings_phi,
+                    bindings_to_make,
+                )
+            }
             TypedPattern::EnumVariant { .. } => unreachable!(),
             TypedPattern::Destructure(TypedDestructure::Tuple(conds)) => {
                 let ResolvedType::Tuple { underlining, .. } = cond_ty else {
@@ -2876,13 +2715,12 @@ impl<'ctx> CodeGen<'ctx> {
                     .remove_entry(&false)
                     .map(|(_, a)| a)
                     .unwrap_or_else(Vec::new);
-                complex.retain(|(pat,idx,ty)| {
-
+                complex.retain(|(pat, idx, ty)| {
                     let value = self
                         .builder
                         .build_struct_gep(tuple_ty, cond_v.into_pointer_value(), *idx as _, "")
                         .unwrap();
-                    if let TypedPattern::Read(name,_,_)= pat {
+                    if let TypedPattern::Read(name, _, _) = pat {
                         bindings_to_make.insert(name.clone(), value.as_basic_value_enum());
                         false
                     } else {
