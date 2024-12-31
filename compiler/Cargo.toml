@@ -17,7 +17,8 @@ regex = "1.6.0"
 lazy_static = "1.4.0"
 bimap = "0.6.3"
 thiserror = "1.0.57"
-
+winnow = "0.6.18"
+take_mut = "0.2.2"
 
 [dev-dependencies]
 pretty_assertions = "1.4"

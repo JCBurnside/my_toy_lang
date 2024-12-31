@@ -15,6 +15,18 @@ macro_rules! operators {
     };
 }
 
+use crate::tokens;
+fn lex(input :&mut Located<&str>) -> PResult<Vec<(Token,std::ops::Range<usize>)>> {
+    combinator::opt(comment).parse_next(input)?;
+    combinator::repeat(0..,combinator::alt((
+        "for".span().map(|span|(tokens::Token::For,span)),
+        "let".span().map(|span|(tokens::Token::Let,span)),
+        '('.span().map(|span| (tokens::Token::GroupOpen,span)),
+        ')'.span().map(|span| (tokens::Token::GroupClose,span)),
+        '<'
+    ))).parse_next(input)
+}
+
 use itertools::Itertools;
 
 use crate::{tokens::Token, util::ExtraIterUtils};

@@ -1,3245 +1,1151 @@
-use std::{
-    collections::{HashMap, HashSet},
-    fmt::Error,
-    iter::Peekable,
-    str::Chars,
+use crate::{ast, tokens::Token, types};
+use std::borrow::Cow;
+use winnow::{
+    ascii, combinator,
+    error::{AddContext, ContextError, ErrMode, ParserError, StrContext},
+    stream::{AsChar, Located, Location, Stream as WStream, StreamIsPartial},
+    token, PResult, Parser, Stateful,
 };
 
-use ast::{GenericsDecl, TypeDefinition};
-use itertools::Itertools;
+type Stream<'input> = Stateful<Located<StrippedParser<'input>>,OuterState<'input>>;
 
-use crate::{
-    ast::{
-        self, ArgDeclaration, BinaryOpCall, Expr, FieldDecl, FnCall, Match, Pattern,
-        PatternDestructure, Statement, StructConstruction, StructDefinition, TopLevelDeclaration,
-        TopLevelValue, ValueDeclaration, ValueType,
-    },
-    lexer::TokenStream,
-    tokens::Token,
-    types::{self, ResolvedType},
-};
-
-use thiserror::Error;
-
-#[derive(Error, Debug)]
-#[error("")]
-pub enum Warning {}
-
-#[allow(unused)]
-#[derive(Error, Debug)]
-#[error("{reason:?} at {span:?}")]
-pub struct ParseError {
-    span: (usize, usize),
-    reason: ParseErrorReason,
-}
-#[derive(Debug)]
-#[allow(unused)]
-enum ParseErrorReason {
-    UnbalancedBraces,
-    InvalidIdent,
-    IndentError,
-    TypeError,
-    ArgumentError,
-    DeclarationError,
-    UnexpectedEndOfFile,
-    UnsupportedEscape,
-    UnsupportedFeature,
-    UnexpectedToken,
-    NoElseBlock,
-    UnknownError, //internal use.  should basically never be hit.
+#[derive(Default,Clone,Debug)]
+struct State {
+    in_line_comment:bool,
+    multiline_comment_depth:usize,//depth to allow for nesting multiline comments
+    changed_multiline_comment_status:bool,
+    in_str_lit:bool,
+    in_char_lit:bool,
+    escaping:bool,
 }
 
-#[derive(Debug)]
-pub struct ParserReturns<T: std::fmt::Debug> {
-    pub ast: T,
-    pub loc: crate::Location,
-    pub warnings: Vec<Warning>, //TODO! add warnings and a way next_toplevel treat warnings as errors
-    pub errors: Vec<ParseError>,
+#[derive(Default,Debug)]
+struct OuterState<'input> {
+
+    prefix: Cow<'input, str>,
+    just_consumed_line:bool,
+    multi_line_expr:bool,
 }
 
-pub(crate) struct Parser<T: Clone>
-where
-    T: Iterator<Item = (Token, crate::Location)>,
-{
-    stream: Peekable<T>,
+#[derive(Clone)]
+struct StrippedParser<'input> {
+    state : State,
+    src : &'input str,
 }
 
-impl<'str> Parser<TokenStream<Peekable<Chars<'str>>>> {
-    #[cfg(test)]
-    pub(crate) fn from_source(source: &'str str) -> Self {
-        Self {
-            stream: TokenStream::from_source(source).peekable(),
-        }
+impl StrippedParser<'_> {
+    fn is_empty(&self) -> bool {
+        self.src.is_empty()
     }
 }
 
-impl<T: Clone> Parser<T>
-where
-    T: Iterator<Item = (Token, crate::Location)> + Clone,
-{
-    pub fn from_stream(stream: T) -> Self {
-        Self {
-            stream: stream.peekable(),
-        }
+impl std::fmt::Debug for StrippedParser<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.src.fmt(f)
+
+    }
+}
+
+#[derive(Clone)]
+struct StrippedParserCheckpoint<'a> {
+    inner : <&'a str as WStream>::Checkpoint,
+}
+
+impl std::fmt::Debug for StrippedParserCheckpoint<'_> {
+    fn fmt(&self, f:&mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.inner.fmt(f)
+    }
+}
+
+impl winnow::stream::Offset for StrippedParserCheckpoint<'_> {
+    fn offset_from(&self, other:&Self) -> usize {
+        self.inner.offset_from(&other.inner)
+    }
+}
+
+#[derive(Clone)]
+struct StrippedParserIterator<'a> {
+    base : StrippedParser<'a>,
+}
+
+impl<'a> std::iter::Iterator for StrippedParserIterator<'a> {
+    type Item =<StrippedParser<'a> as WStream>::Token;
+    
+    fn next(&mut self) -> Option<Self::Item> {
+        self.base.next_token()
+    }
+}
+
+impl<'a> WStream for StrippedParser<'a> {
+    type Token = <&'a str as WStream>::Token;
+
+    type Slice=<&'a str as WStream>::Slice;
+
+    type IterOffsets=std::iter::Enumerate<StrippedParserIterator<'a>>;
+
+    type Checkpoint= StrippedParserCheckpoint<'a>;
+
+    fn iter_offsets(&self) -> Self::IterOffsets {
+        StrippedParserIterator { base:self.clone() }.enumerate()
     }
 
-    pub fn has_next(&mut self) -> bool {
-        let _ = self
-            .stream
-            .peeking_take_while(|(token, _)| match token {
-                Token::Seq | Token::EndBlock => true,
-                _ => false,
-            })
-            .collect_vec();
-        self.stream
-            .peek()
-            .map_or(false, |(token, _)| !token.is_eof())
+    fn eof_offset(&self) -> usize {
+        self.src.eof_offset()
     }
-    pub(crate) fn module(mut self, name: String) -> ParserReturns<ast::ModuleDeclaration> {
-        let mut decls = Vec::new();
-        let mut warnings = Vec::new();
-        let mut errors = Vec::new();
-        while self.has_next() {
-            let decl = self.next_toplevel();
-            warnings.extend(decl.warnings);
-            errors.extend(decl.errors);
-            decls.push(decl.ast);
-        }
-        ParserReturns {
-            ast: ast::ModuleDeclaration {
-                loc: None,
-                name,
-                declarations: decls,
+
+    fn next_token(&mut self) -> Option<Self::Token> {
+        let token= self.src.next_token()?;
+        let out = match token {
+            '\n' if self.state.in_line_comment => {
+                self.state.in_line_comment = false;
+                Some('\n')
             },
-            loc: (0, 0),
-            warnings,
-            errors,
-        }
+            '"' if !self.state.in_str_lit && !(self.state.in_line_comment || self.state.multiline_comment_depth>0) => {
+                self.state.in_str_lit = true;
+                Some('"')
+            },
+            '"' if !self.state.escaping && !(self.state.in_line_comment || self.state.multiline_comment_depth>0) => {
+                self.state.in_str_lit = false;
+                Some('"')
+            },
+            '\'' if !self.state.in_char_lit && !(self.state.in_line_comment || self.state.multiline_comment_depth>0) =>{
+                self.state.in_char_lit = true;
+                Some('\'')
+            },
+            '\'' if !self.state.escaping && !(self.state.in_line_comment || self.state.multiline_comment_depth>0) => {
+                self.state.in_char_lit = false;
+                Some('\'')
+            },
+            '\\' if (self.state.in_char_lit || self.state.in_str_lit) && !(self.state.in_line_comment || self.state.multiline_comment_depth>0)=> {
+                self.state.escaping = !self.state.escaping;
+                Some('\\')
+            }
+            '#' if !self.state.in_str_lit && !self.state.in_char_lit => {
+                if Some('/') == self.src.peek_token().map(|(_,it)| it) {
+                    self.state.multiline_comment_depth+=1;
+                    self.state.changed_multiline_comment_status = true;
+                    Some(' ')
+                } else if self.state.changed_multiline_comment_status {
+                    self.state.changed_multiline_comment_status =false;
+                    Some(' ')
+                } else if Some('!') == self.src.peek_token().map(|(_,it)| it) {
+                    self.state.in_line_comment = true;
+                    Some(' ')
+                } else {
+                    Some('#')
+                }
+            }
+            '/' if self.state.multiline_comment_depth>0 => {
+                if Some('#') == self.src.peek_token().map(|(_,it)| it) {
+                    self.state.changed_multiline_comment_status = true;
+                    self.state.multiline_comment_depth -= 1;
+                    Some(' ')
+                } else if self.state.changed_multiline_comment_status {
+                    self.state.changed_multiline_comment_status = false;
+                    Some(' ')
+                } else {
+                    Some('/')
+                }
+            }
+            _ if self.state.in_line_comment || self.state.multiline_comment_depth > 0 => Some(' '),
+            _ => {
+                self.state.escaping=false;
+
+                Some(token)
+            },
+        };
+        // println!("token {token:?} state {:?} out {out:?}", &self.state);
+        out 
     }
 
-    pub fn next_toplevel(&mut self) -> ParserReturns<TopLevelDeclaration> {
-        let ParserReturns {
-            ast: abi,
-            loc: extern_loc,
-            mut warnings,
-            mut errors,
-        } = self.abi();
-        let ParserReturns {
-            ast: generics,
-            loc: for_loc,
-            warnings: for_warnings,
-            errors: for_errors,
-        } = self.collect_generics();
-        warnings.extend(for_warnings);
-        errors.extend(for_errors);
-        if abi.is_some() && generics.is_some() {
-            errors.push(ParseError {
-                span: for_loc,
-                reason: ParseErrorReason::DeclarationError,
-            });
+    fn offset_for<P>(&self, predicate: P) -> Option<usize>
+    where
+        P: Fn(Self::Token) -> bool {
+        for (o,c) in self.iter_offsets() {
+            if predicate(c) {
+                return Some(o);
+            }
         }
-        match self.stream.clone().next() {
-            Some((Token::For, loc)) => {
-                errors.push(ParseError {
-                    span: loc,
-                    reason: ParseErrorReason::DeclarationError,
-                });
-                ParserReturns {
-                    ast: ast::TopLevelDeclaration::Value(TopLevelValue {
-                        loc,
-                        is_op: false,
-                        ident: "<error>".to_string(),
-                        args: vec![ArgDeclaration::Simple {
-                            loc,
-                            ident: "<error>".to_string(),
-                            ty: Some(types::ERROR),
-                        }],
-                        ty: Some(types::ERROR),
-                        value: ValueType::Expr(Expr::Error),
-                        generics: generics,
-                        abi: None,
-                    }),
-                    loc,
-                    warnings,
-                    errors,
-                }
-            }
-            Some((Token::Type | Token::Enum, loc)) => {
-                if abi.is_some() {
-                    errors.push(ParseError {
-                        span: extern_loc,
-                        reason: ParseErrorReason::DeclarationError,
-                    });
-                }
-                let decl = self.type_decl(generics);
-                warnings.extend(decl.warnings);
-                errors.extend(decl.errors);
-                ParserReturns {
-                    ast: ast::TopLevelDeclaration::TypeDefinition(decl.ast),
-                    loc,
-                    warnings,
-                    errors,
-                }
-            }
-            Some((Token::Let, _)) => {
-                let _ = self.stream.next();
-                let (token, ident_span) = self.stream.next().unwrap();
-                let (ident, is_op) = match token {
-                    Token::Ident(ident) => (ident, false),
-                    Token::Op(ident) => (ident, true),
-                    _ => {
-                        return ParserReturns {
-                            ast: TopLevelDeclaration::Value(TopLevelValue {
-                                loc: ident_span,
-                                is_op: false,
-                                ident: "<error>".to_string(),
-                                args: vec![ArgDeclaration::Simple {
-                                    loc: (0, 0),
-                                    ident: "<error>".to_string(),
-                                    ty: Some(types::ERROR),
-                                }],
-                                ty: Some(types::ERROR),
-                                value: ValueType::Expr(Expr::Error),
-                                generics,
-                                abi,
+        None
+    }
+
+    fn offset_at(&self, tokens: usize) -> Result<usize, winnow::error::Needed> {
+        self.src.offset_at(tokens)
+    }
+
+    fn next_slice(&mut self, offset: usize) -> Self::Slice {
+
+        self.src.next_slice(offset)
+    }
+
+    fn checkpoint(&self) -> Self::Checkpoint {
+        StrippedParserCheckpoint { inner:self.src.checkpoint() }
+    }
+
+    fn reset(&mut self, checkpoint: &Self::Checkpoint) {
+        self.src.reset(&checkpoint.inner)
+    }
+
+    fn raw(&self) -> &dyn std::fmt::Debug {
+        self
+    }
+}
+
+
+
+impl winnow::stream::Offset<Self> for StrippedParser<'_> {
+    fn offset_from(&self, other:&Self) ->usize {
+        self.src.offset_from(&other.src.checkpoint())
+    }
+}
+
+impl<'a> winnow::stream::Offset<StrippedParserCheckpoint<'a>> for StrippedParser<'a> {
+    fn offset_from(&self, checkpoint:&StrippedParserCheckpoint<'a>) -> usize {
+        self.src.offset_from(&checkpoint.inner)
+    }
+}
+
+impl<'a,T> winnow::stream::Compare<T> for StrippedParser<'a> 
+where &'a str : winnow::stream::Compare<T> {
+    fn compare(&self, t: T) -> winnow::stream::CompareResult {
+        self.src.compare(t)
+    }
+}
+
+impl<'a> winnow::stream::StreamIsPartial for StrippedParser<'a>{
+    type PartialState = <&'a str as winnow::stream::StreamIsPartial>::PartialState;
+
+    fn complete(&mut self) -> Self::PartialState {
+        self.src.complete()
+    }
+
+    fn restore_partial(&mut self, state: Self::PartialState) {
+        self.src.restore_partial(state)
+    }
+
+    fn is_partial_supported() -> bool {
+        <Located<&'a str> as winnow::stream::StreamIsPartial>::is_partial_supported()
+    }
+}
+
+
+impl winnow::stream::AsBStr for StrippedParser<'_> {
+    fn as_bstr(&self) -> &[u8] {
+        self.src.as_bstr()
+    }
+}
+
+pub(crate) fn file(file_name:&str, src :&str) ->ast::ModuleDeclaration{
+    let src = Stream {
+        input: Located::new(StrippedParser{
+            src,
+            state:Default::default(),
+        }),
+        state: Default::default(),
+    };
+
+    let decls = combinator::delimited(ignore_blank_lines, top_level_block,(ascii::space0,ignore_blank_lines)).parse(src).unwrap();
+
+    ast::ModuleDeclaration{ loc: None, name: file_name.into(), declarations: decls }
+}
+
+fn parens< I, O, E>(
+    parser: impl Parser<I, O, E>
+) -> impl Parser<I, O, E> 
+where I : winnow::stream::Stream<Token=char> + winnow::stream::StreamIsPartial + winnow::stream::Compare<char>,
+      E : ParserError<I> 
+{
+    combinator::delimited(
+        (ascii::space0,'(',ascii::space0),
+        parser,
+        (ascii::space0,')'),
+        
+    )
+}
+// (name,weight,right associative)
+const PRECIDENCE: [(&'static str, usize, bool); 12] = [
+    (".", usize::MAX, true),
+    ("**", 7, false),
+    ("*", 5, true),
+    ("/", 5, true),
+    ("+", 4, true),
+    ("-", 4, true),
+    ("<", 2, true),
+    ("<=", 2, true),
+    (">", 2, true),
+    (">=", 2, true),
+    ("&&", 1, true),
+    ("||", 1, true),
+];
+
+enum ShuntingYardOptions {
+    Expr(ast::Expr),
+    Op((String, crate::Location)),
+}
+
+fn expect_line(input : &mut Stream<'_>) -> PResult<()> {
+    combinator::trace("expect line",|input : &mut Stream<'_>| {
+
+        if input.state.just_consumed_line {
+            return Ok(());
+        }
+        let _ = ascii::space0(input)?;
+        let _ = ascii::line_ending(input)?;
+        input.state.just_consumed_line = true;
+        Ok(())
+    }).parse_next(input)
+}
+
+fn reset_line(input:&mut Stream<'_>) -> PResult<()> {
+    combinator::trace("reset line",|input : &mut Stream<'_>| {
+        input.state.just_consumed_line=false;
+        Ok(())
+    }).parse_next(input)
+}
+
+fn ignore_blank_lines(input: &mut Stream<'_>) -> PResult<()> {
+    combinator::trace("blank lines",|input : &mut Stream<'_>| {
+
+        let mut checkpoint = input.checkpoint();
+        let _ = ascii::space0(input)?;
+        while let Some(_) = combinator::opt(ascii::line_ending).parse_next(input)? {
+            checkpoint = input.checkpoint();
+            ascii::space0(input)?;
+        }
+        input.reset(&checkpoint);
+        Ok(())
+    }).parse_next(input)
+}
+
+
+fn char_lit(input: &mut Stream<'_>) -> PResult<String> {
+    combinator::delimited(
+        '\'',
+        escaper('\''),
+        combinator::preceded(combinator::not('\\'), '\''),
+    )
+    .parse_next(input)
+}
+
+fn string_lit(input: &mut Stream<'_>) -> PResult<String> {
+    combinator::trace(
+        "string_lit",
+        combinator::delimited(
+            '"',
+            escaper('"'),
+            /* combinator::preceded(combinator::not('\\'), */
+            combinator::cut_err('"') //)
+                .context(winnow::error::StrContext::Label("string terminator".into())),
+        ),
+    )
+    .parse_next(input)
+}
+
+fn escaper<'a, E: ParserError<Stream<'a>>>(surronding: char) -> impl Parser<Stream<'a>, String, E> {
+    ascii::escaped_transform::<_, _, _, _, String>(
+        token::take_till(1.., ['\n', '\r', '\\', surronding]),
+        '\\',
+        combinator::alt((
+            "n".value("\n"),
+            //todo ocatal and hex escapes.
+            "t".value("\t"),
+            "\\".value("\\"),
+            "\"".value("\""),
+            "\'".value("\'"),
+            "r".value("\r"), //don't expect this to be common.
+                             //more escapes?
+        )),
+
+    )
+}
+
+
+fn simple_ident<'input>(input: &mut Stream<'input>) -> PResult<Cow<'input, str>> {
+    token::take_while(1.., |c: char| c.is_alphanumeric() || c == '_')
+        .verify(|s: &str| !s.starts_with(char::is_numeric))
+        .context(winnow::error::StrContext::Expected(
+            "indentifers can't start with numbers".into(),
+        ))
+        .verify(|s| !KEYWORDS.contains(s))
+        .context(winnow::error::StrContext::Expected(
+            "identifiers can't be a keyword".into(),
+        ))
+        .map(Into::into)
+        .parse_next(input)
+}
+
+fn ident(input:&mut Stream<'_>) -> PResult<String> {
+    combinator::separated_foldl1(
+        simple_ident.map(Into::into),
+        (ascii::space0,"::",ascii::space0),
+        |left,_,right| format!("{left}::{right}")
+    ).parse_next(input)
+}
+
+fn top_level_block(input: &mut Stream<'_>) -> PResult<Vec<ast::TopLevelDeclaration>> {
+    ignore_blank_lines(input)?;
+    let old_prefix = input.state.prefix.clone();
+    let checkpoint = input.checkpoint();
+    let new_prefix = ascii::space0(input)?;
+    input.reset(&checkpoint);
+    if !new_prefix.starts_with(old_prefix.as_ref()) {
+        Ok(Vec::new())
+    } else {
+    
+        input.state.prefix = new_prefix.into();
+        let result = combinator::repeat(0..,combinator::preceded((ignore_blank_lines,ascii::space0.verify(|it:&str| it == new_prefix)), top_level_decl)).parse_next(input);
+        input.state.prefix = old_prefix;
+        result
+    }
+}
+
+
+
+
+fn top_level_decl(input: &mut Stream<'_>) -> PResult<ast::TopLevelDeclaration> {
+    
+
+    let result = combinator::alt((
+        mod_decl.map(ast::TopLevelDeclaration::Mod),
+        top_level_value.map(ast::TopLevelDeclaration::Value),
+        type_decl.map(ast::TopLevelDeclaration::TypeDefinition),
+    ))
+    .parse_next(input)?;
+    
+    Ok(result)
+}
+
+
+fn type_decl(input: &mut Stream<'_>) -> PResult<ast::TypeDefinition> {
+    combinator::trace("type declaration", |input: &mut Stream<'_>| {
+        let generics = combinator::opt(generics).parse_next(input)?;
+        
+        combinator::alt((
+            combinator::preceded(
+                (ascii::space0,"type",ascii::space1),
+                combinator::cut_err(struct_or_alias_def(generics.clone())),
+            ),
+            enum_decl(generics).map(ast::TypeDefinition::Enum),
+        ))
+        .parse_next(input)
+    })
+    .map(|mut decl| {
+        decl.bind_generics();
+        decl
+    })
+    .parse_next(input)
+}
+
+const EQ_OP : Token<'static> = Token::Op("=");
+
+fn enum_decl<'input>(
+    generics: Option<ast::GenericsDecl>,
+) -> impl Parser<Stream<'input>, ast::EnumDeclaration, ContextError> {
+    combinator::trace("enum declaration", move |input: &mut Stream<'_>| {
+        let (ident, loc) =
+            combinator::preceded(
+                (ascii::space0,"enum",ascii::space1), 
+            simple_ident.with_span())
+                .parse_next(input)?;
+        let values = combinator::preceded(
+            (ascii::space0,'=',ascii::space0),
+            combinator::repeat(
+                1..,
+                combinator::preceded(
+                    (ascii::space0,'|', ascii::space0),
+                    |input: &mut Stream<'_>| {
+                        let (ident, loc) = simple_ident.with_span().parse_next(input)?;
+                        let _ = ascii::space0(input)?;
+                        let loc = (loc.start, loc.end);
+                        let struct_ident = ident.clone();
+                        let tuple_ident = ident.clone();
+                        combinator::alt((
+                            struct_body.map(move |fields| ast::EnumVariant::Struct {
+                                ident: struct_ident.clone().into(),
+                                fields,
+                                loc,
                             }),
-                            loc: ident_span,
-                            warnings: Vec::new(),
-                            errors: vec![ParseError {
-                                span: ident_span,
-                                reason: ParseErrorReason::DeclarationError,
-                            }],
-                        }
-                    }
-                };
-                let args = self.collect_args();
-                warnings.extend(args.warnings);
-                errors.extend(args.errors);
-                let mut args = args.ast;
-                if is_op && (args.len() > 2 || args.len() == 0) {
-                    errors.push(ParseError {
-                        span: ident_span,
-                        reason: ParseErrorReason::ArgumentError,
-                    });
-                }
-                let mut ty = if let Some((Token::Colon, _)) = self.stream.peek() {
-                    let _ = self.stream.next();
-                    let ty = self.collect_type();
-                    warnings.extend(ty.warnings);
-                    errors.extend(ty.errors);
-                    Some(ty.ast)
-                } else {
-                    if is_op {
-                        errors.push(ParseError {
-                            span: ident_span,
-                            reason: ParseErrorReason::DeclarationError,
-                        });
-                    }
-                    None
-                };
-                let value = match self.stream.peek() {
-                    Some((Token::Op(op), _)) if op == "=" => {
-                        let _ = self.stream.next();
-                        match self.stream.peek() {
-                            Some((Token::BeginBlock, _)) => {
-                                let block = self.collect_block();
-                                warnings.extend(block.warnings);
-                                errors.extend(block.errors);
-                                ValueType::Function(block.ast)
-                            }
-                            Some(_) => {
-                                let expr = self.next_expr();
-                                warnings.extend(expr.warnings);
-                                errors.extend(expr.errors);
-                                ValueType::Expr(expr.ast)
-                            }
-                            None => {
-                                errors.push(ParseError {
-                                    span: (0, 0),
-                                    reason: ParseErrorReason::UnexpectedEndOfFile,
-                                });
-                                ValueType::Expr(Expr::Error)
-                            }
-                        }
-                    }
-                    Some((Token::Seq, _)) if abi.is_some() => {
-                        let _ = self.stream.next();
-                        ValueType::External
-                    }
-                    Some((_, loc)) => {
-                        errors.push(ParseError {
-                            span: *loc,
-                            reason: ParseErrorReason::UnexpectedToken,
-                        });
-                        ValueType::Expr(Expr::Error)
-                    }
-                    None => {
-                        errors.push(ParseError {
-                            span: (0, 0),
-                            reason: ParseErrorReason::UnexpectedEndOfFile,
-                        });
-                        ValueType::Expr(Expr::Error)
-                    }
-                };
-                if let Some(generics) = &generics {
-                    for arg in &mut args {
-                        generics
-                            .decls
-                            .iter()
-                            .map(|(_, it)| it)
-                            .for_each(|name| arg.apply_generic(name));
-                    }
-                    if let Some(ty) = &mut ty {
-                        *ty = generics
-                            .decls
-                            .iter()
-                            .map(|(_, it)| it)
-                            .fold(ty.clone(), |ty, name| ty.replace_user_with_generic(name));
-                    }
-                }
-                ParserReturns {
-                    ast: TopLevelDeclaration::Value(TopLevelValue {
-                        loc: ident_span,
-                        is_op,
-                        ident,
-                        args,
-                        ty,
-                        value,
-                        generics,
-                        abi,
-                    }),
-                    loc: ident_span,
-                    warnings,
-                    errors,
-                }
-            }
-            Some((Token::EoF, loc)) => {
-                errors.push(ParseError {
-                    span: loc,
-                    reason: ParseErrorReason::UnexpectedEndOfFile,
-                });
-                ParserReturns {
-                    ast: ast::TopLevelDeclaration::Value(TopLevelValue {
-                        loc,
-                        is_op: false,
-                        ident: "<error>".to_string(),
-                        args: vec![ArgDeclaration::Simple {
-                            loc,
-                            ident: "<error>".to_string(),
-                            ty: Some(types::ERROR),
-                        }],
-                        ty: Some(types::ERROR),
-                        value: ValueType::Expr(Expr::Error),
-                        generics: generics,
-                        abi: None,
-                    }),
-                    loc,
-                    warnings,
-                    errors,
-                }
-            }
-            Some((_, loc)) => {
-                errors.push(ParseError {
-                    span: (0, 0),
-                    reason: ParseErrorReason::UnexpectedToken,
-                });
-                ParserReturns {
-                    ast: ast::TopLevelDeclaration::Value(TopLevelValue {
-                        loc,
-                        is_op: false,
-                        ident: "<error>".to_string(),
-                        args: vec![ArgDeclaration::Simple {
-                            loc,
-                            ident: "<error>".to_string(),
-                            ty: Some(types::ERROR),
-                        }],
-                        ty: Some(types::ERROR),
-                        value: ValueType::Expr(Expr::Error),
-                        generics: generics,
-                        abi: None,
-                    }),
-                    loc,
-                    warnings,
-                    errors,
-                }
-            }
-            None => {
-                errors.push(ParseError {
-                    span: (0, 0),
-                    reason: ParseErrorReason::UnexpectedEndOfFile,
-                });
-                ParserReturns {
-                    ast: ast::TopLevelDeclaration::Value(TopLevelValue {
-                        loc: (0, 0),
-                        is_op: false,
-                        ident: "<error>".to_string(),
-                        args: vec![ArgDeclaration::Simple {
-                            loc: (0, 0),
-                            ident: "<error>".to_string(),
-                            ty: Some(types::ERROR),
-                        }],
-                        ty: Some(types::ERROR),
-                        value: ValueType::Expr(Expr::Error),
-                        generics: generics,
-                        abi: None,
-                    }),
-                    loc: (0, 0),
-                    warnings,
-                    errors,
-                }
-            }
-        }
-    }
-    pub fn next_statement(&mut self) -> ParserReturns<Statement> {
-        match self.stream.clone().next() {
-            Some((Token::For, _)) => {
-                let ParserReturns {
-                    ast: generics,
-                    loc,
-                    mut warnings,
-                    mut errors,
-                } = self.collect_generics();
-                let inner = self.fn_declaration(None, generics);
-                warnings.extend(inner.warnings);
-                errors.extend(inner.errors);
-                if let Some((Token::Seq, _)) = self.stream.clone().next() {
-                    self.stream.next();
-                } else {
-                    // TODO generated error here.
-                    println!("expected ; on line {}", inner.loc.0);
-                }
-                ParserReturns {
-                    ast: Statement::Declaration(inner.ast),
-                    loc,
-                    warnings,
-                    errors,
-                }
-            }
-            Some((Token::Let, _)) => {
-                let inner = match self.stream.clone().nth(1) {
-                    Some((Token::GroupOpen, _)) => self.destructuring_declaration(),
-                    Some((Token::Ident(_), _))
-                        if self.stream.clone().nth(2).map(|(a, _)| a) == Some(Token::CurlOpen) =>
-                    {
-                        self.destructuring_declaration()
-                    }
-                    _ => self.fn_declaration(None, None),
-                };
-                if let Some((Token::Seq, _)) = self.stream.clone().next() {
-                    self.stream.next();
-                } else {
-                    // TODO generated error here.
-                    println!("expected ; on line {}", inner.loc.0);
-                }
-
-                ParserReturns {
-                    ast: Statement::Declaration(inner.ast),
-                    loc: inner.loc,
-                    warnings: inner.warnings,
-                    errors: inner.errors,
-                }
-            }
-            Some((Token::Return, _)) => {
-                let inner = self.ret();
-                if let Some((Token::Seq, _)) = self.stream.clone().next() {
-                    self.stream.next();
-                } else {
-                    println!("expected ; on line {}", inner.loc.0);
-                    //TODO! convert next_toplevel an error that is added and returned as part of the ast.
-                }
-                inner
-            }
-            // hmmm should handle if it's actually a binary op call esp and/or compose.
-            Some((Token::Ident(_), _)) =>
-            // for now last statement in a block is not treated as return though will allow for that soon.
-            {
-                let ParserReturns {
-                    ast,
-                    loc,
-                    warnings,
-                    errors,
-                } = self.function_call();
-                let inner = Statement::FnCall(ast);
-                if let Some((Token::Seq, _)) = self.stream.clone().next() {
-                    self.stream.next();
-                } else {
-                    println!("expected ; on line {}", inner.get_loc().0);
-                    //TODO! convert next_toplevel a warning that is added and returned as part of the ast.
-                }
-                ParserReturns {
-                    ast: inner,
-                    loc,
-                    warnings,
-                    errors,
-                }
-            }
-            Some((Token::If, _)) => {
-                let inner = self.ifstatement();
-
-                ParserReturns {
-                    ast: Statement::IfStatement(inner.ast),
-                    loc: inner.loc,
-                    warnings: inner.warnings,
-                    errors: inner.errors,
-                }
-            }
-            Some((Token::Match, _)) => {
-                let ParserReturns {
-                    ast: match_,
-                    loc,
-                    warnings,
-                    errors,
-                } = self.match_();
-                let ast = Statement::Match(match_);
-                ParserReturns {
-                    ast,
-                    loc,
-                    warnings,
-                    errors,
-                }
-            }
-            _ => unreachable!("how?"),
-        }
-    }
-
-    pub fn next_expr(&mut self) -> ParserReturns<ast::Expr> {
-        match self.stream.clone().next() {
-            Some((Token::If, loc)) => {
-                let ParserReturns {
-                    ast,
-                    loc: _,
-                    warnings,
-                    errors,
-                } = self.ifexpr();
-                ParserReturns {
-                    ast: Expr::If(ast),
-                    loc,
-                    warnings,
-                    errors,
-                }
-            }
-            Some((Token::BracketOpen, _)) => self.array_literal(),
-            Some((Token::GroupOpen, loc))
-                if matches!(self.stream.clone().nth(1), Some((Token::GroupClose, _))) =>
-            {
-                self.stream.next();
-                self.stream.next();
-                return ParserReturns {
-                    ast: Expr::UnitLiteral,
-                    loc,
-                    warnings: Vec::new(),
-                    errors: Vec::new(),
-                };
-            }
-            Some((Token::GroupOpen, group_loc)) => {
-                let mut group_opens = 0;
-                if let Some((Token::Op(_), _)) = self
-                    .stream
-                    .clone()
-                    .skip(1)
-                    .skip_while(|(it, _)| match it {
-                        //skip this whole expression next_toplevel examine what's after it.
-                        Token::GroupOpen => {
-                            group_opens += 1;
-                            true
-                        }
-                        Token::Ident(_)
-                        | Token::FloatingPoint(_, _)
-                        | Token::Integer(_, _)
-                        | Token::Op(_) => true,
-                        Token::GroupClose => {
-                            group_opens -= 1;
-                            group_opens >= 0
-                        }
-                        _ => false,
-                    })
-                    .skip(1)
-                    .next()
-                {
-                    self.binary_op()
-                } else {
-                    self.stream.next();
-                    let mut out = self.next_expr();
-
-                    match self.stream.peek() {
-                        Some((Token::GroupClose, _)) => {
-                            let _ = self.stream.next();
-                        }
-                        Some((Token::Comma, _)) => {
-                            let _ = self.stream.next();
-                            let mut ast = vec![out.ast];
-                            loop {
-                                let ParserReturns {
-                                    ast: expr,
-                                    loc,
-                                    warnings,
-                                    errors,
-                                } = self.next_expr();
-                                out.errors.extend(errors);
-                                out.warnings.extend(warnings);
-                                ast.push(expr);
-                                match self.stream.clone().next() {
-                                    Some((Token::Comma, _)) => {
-                                        self.stream.next();
-                                        continue;
-                                    }
-                                    Some((Token::GroupClose, _)) => {
-                                        self.stream.next();
-                                        break;
-                                    }
-                                    Some((Token::EoF, _)) | None => {
-                                        out.errors.push(ParseError {
-                                            span: (0, 0),
-                                            reason: ParseErrorReason::UnexpectedEndOfFile,
-                                        });
-                                        break;
-                                    }
-                                    // TODO better error reporting.
-                                    Some((_other, loc)) => {
-                                        out.errors.push(ParseError {
-                                            span: loc,
-                                            reason: ParseErrorReason::UnexpectedToken,
-                                        });
-                                        ast.push(ast::Expr::Error);
-                                        break;
-                                    }
-                                }
-                            }
-
-                            out.ast = if ast.len() == 1 {
-                                ast.pop().unwrap()
-                            } else {
-                                Expr::TupleLiteral {
-                                    contents: ast,
-                                    loc: group_loc,
-                                }
-                            }
-                        }
-                        _ => (),
-                    }
-                    return out;
-                }
-            }
-            Some((Token::Ident(_), _))
-                if match self.stream.clone().nth(1) {
-                    Some((Token::Op(s), _)) => s == "<",
-                    _ => false,
-                } =>
-            {
-                let mut angle_depth = 1;
-                let mut skipped = self.stream.clone().skip(2).skip_while(|(it, _)| {
-                    if angle_depth == 0 {
-                        false
-                    } else {
-                        match it {
-                            Token::Op(op) if op.chars().all_equal_value() == Ok('>') => {
-                                if angle_depth <= op.len() {
-                                    angle_depth -= op.len();
-                                    true
-                                } else {
-                                    false
-                                }
-                            }
-                            _ => true,
-                        }
-                    }
-                });
-                if let Some((Token::CurlOpen, _)) = skipped.next() {
-                    let ParserReturns {
-                        ast,
-                        loc,
-                        warnings,
-                        errors,
-                    } = self.struct_construct();
-                    ParserReturns {
-                        ast: Expr::StructConstruction(ast),
-                        loc,
-                        warnings,
-                        errors,
-                    }
-                } else {
-                    self.binary_op()
-                }
-            }
-            Some((
-                Token::Integer(_, _)
-                | Token::FloatingPoint(_, _)
-                | Token::CharLiteral(_)
-                | Token::StringLiteral(_)
-                | Token::Ident(_)
-                | Token::True
-                | Token::False,
-                _,
-            )) if match self.stream.clone().nth(1) {
-                Some((Token::Op(_), _)) => true,
-                _ => false,
-            } =>
-            {
-                self.binary_op()
-            }
-            Some((
-                Token::CharLiteral(_)
-                | Token::StringLiteral(_)
-                | Token::FloatingPoint(_, _)
-                | Token::Integer(_, _),
-                _,
-            )) => self.literal(),
-            Some((Token::Ident(_), _)) => {
-                if let Some((
-                    Token::Ident(_)
-                    | Token::GroupOpen
-                    | Token::StringLiteral(_)
-                    | Token::CharLiteral(_)
-                    | Token::FloatingPoint(_, _)
-                    | Token::Integer(_, _),
-                    _,
-                )) = self.stream.clone().nth(1)
-                {
-                    let ParserReturns {
-                        ast,
-                        loc,
-                        warnings,
-                        errors,
-                    } = self.function_call();
-                    ParserReturns {
-                        ast: Expr::FnCall(ast),
-                        loc,
-                        warnings,
-                        errors,
-                    }
-                } else if let Some((Token::CurlOpen, _)) = self
-                    .stream
-                    .clone()
-                    .skip(1)
-                    .skip_while(|(it, _)| matches!(it, Token::BeginBlock))
-                    .next()
-                {
-                    let ParserReturns {
-                        ast,
-                        loc,
-                        warnings,
-                        errors,
-                    } = self.struct_construct();
-                    ParserReturns {
-                        ast: Expr::StructConstruction(ast),
-                        loc,
-                        warnings,
-                        errors,
-                    }
-                } else {
-                    self.value()
-                }
-            }
-            Some((Token::True, loc)) => {
-                let _ = self.stream.next();
-                ParserReturns {
-                    ast: Expr::BoolLiteral(true, loc),
-                    loc,
-                    warnings: Vec::new(),
-                    errors: Vec::new(),
-                }
-            }
-            Some((Token::False, loc)) => {
-                let _ = self.stream.next();
-                ParserReturns {
-                    ast: Expr::BoolLiteral(false, loc),
-                    loc,
-                    warnings: Vec::new(),
-                    errors: Vec::new(),
-                }
-            }
-            Some((Token::Match, _)) => {
-                let ParserReturns {
-                    ast,
-                    loc,
-                    warnings,
-                    errors,
-                } = self.match_();
-                ParserReturns {
-                    ast: Expr::Match(ast),
-                    loc,
-                    warnings,
-                    errors,
-                }
-            }
-            _ => ParserReturns {
-                ast: Expr::Error,
-                loc: (0, 0),
-                warnings: Vec::new(),
-                errors: vec![ParseError {
-                    span: (0, 0),
-                    reason: ParseErrorReason::UnknownError,
-                }],
-            },
-        }
-    }
-
-    fn ifexpr(&mut self) -> ParserReturns<ast::IfExpr> {
-        let Some((Token::If, if_loc)) = self.stream.next() else {
-            unreachable!()
-        };
-        let ParserReturns {
-            ast: root_cond,
-            loc: _,
-            mut warnings,
-            mut errors,
-        } = self.next_expr();
-        if let Some((Token::Then, _)) = self.stream.peek() {
-            let _ = self.stream.next();
-        } else {
-            let (_token, loc) = self.stream.next().unwrap();
-            // TODO! recovery?
-            errors.push(ParseError {
-                span: loc,
-                reason: ParseErrorReason::UnexpectedToken,
-            });
-        }
-        let true_body = match self.stream.clone().next() {
-            Some((Token::BeginBlock, _)) => {
-                let _ = self.stream.next();
-                let mut body = Vec::new();
-                while self
-                    .stream
-                    .clone()
-                    .skip_while(|(it, _)| it != &Token::Seq && it != &Token::EndBlock)
-                    .next()
-                    .map(|a| a.0)
-                    != Some(Token::EndBlock)
-                {
-                    let stmnt = self.next_statement();
-                    warnings.extend(stmnt.warnings);
-                    errors.extend(stmnt.errors);
-                    body.push(stmnt.ast);
-                }
-                let ret = self.next_expr();
-                errors.extend(ret.errors);
-                warnings.extend(ret.warnings);
-                let _ = self.stream.next();
-                (body, ret.ast)
-            }
-            _ => (Vec::new(), {
-                let ret = self.next_expr();
-                warnings.extend(ret.warnings);
-                errors.extend(ret.errors);
-                ret.ast
-            }),
-        };
-        if let Some((Token::Else, _)) = self.stream.peek() {
-            let _ = self.stream.next();
-            let mut else_ifs = Vec::new();
-
-            while let Some((Token::If, _)) = self.stream.peek() {
-                let Some((Token::If, loc)) = self.stream.next() else {
-                    unreachable!()
-                };
-                let cond = self.next_expr();
-                warnings.extend(cond.warnings);
-                errors.extend(cond.errors);
-                let cond = cond.ast.into();
-
-                if let Some((Token::Then, _)) = self.stream.peek() {
-                    let _ = self.stream.next();
-                } else {
-                    let (_token, loc) = self.stream.next().unwrap();
-                    // TODO! recovery?
-                    errors.push(ParseError {
-                        span: loc,
-                        reason: ParseErrorReason::UnexpectedToken,
-                    });
-                }
-                let (body, ret) = match self.stream.clone().next() {
-                    Some((Token::BeginBlock, _)) => {
-                        let _ = self.stream.next();
-                        let mut body = Vec::new();
-                        while self
-                            .stream
-                            .clone()
-                            .skip_while(|(it, _)| it != &Token::Seq && it != &Token::EndBlock)
-                            .next()
-                            .map(|a| a.0)
-                            != Some(Token::EndBlock)
-                        {
-                            let stmnt = self.next_statement();
-                            warnings.extend(stmnt.warnings);
-                            errors.extend(stmnt.errors);
-                            body.push(stmnt.ast);
-                        }
-                        let ret = self.next_expr();
-                        errors.extend(ret.errors);
-                        warnings.extend(ret.warnings);
-                        let _ = self.stream.next();
-                        (body, ret.ast)
-                    }
-                    _ => {
-                        let ret = self.next_expr();
-                        warnings.extend(ret.warnings);
-                        errors.extend(ret.errors);
-                        (Vec::new(), ret.ast)
-                    }
-                };
-                else_ifs.push((cond, body, ret.into()));
-
-                if let Some((Token::Else, _loc)) = self.stream.clone().next() {
-                    let _else_token = self.stream.next();
-                } else {
-                    //todo! recovery?
-                    errors.push(ParseError {
-                        span: loc,
-                        reason: ParseErrorReason::UnexpectedToken,
-                    });
-                    return ParserReturns {
-                        ast: ast::IfExpr {
-                            cond: root_cond.into(),
-                            loc: if_loc,
-                            true_branch: (true_body.0, true_body.1.into()),
-                            else_ifs,
-                            else_branch: (Vec::new(), ast::Expr::Error.into()),
-                        },
-                        loc: if_loc,
-                        warnings,
-                        errors,
-                    };
-                };
-            }
-
-            let else_branch = match self.stream.clone().next() {
-                Some((Token::BeginBlock, _)) => {
-                    let _ = self.stream.next();
-
-                    let mut body = Vec::new();
-                    while self
-                        .stream
-                        .clone()
-                        .skip_while(|(it, _)| it != &Token::Seq && it != &Token::EndBlock)
-                        .next()
-                        .map(|a| a.0 != Token::EndBlock && a.0 != Token::EoF)
-                        .unwrap_or(false)
-                    {
-                        let stmnt = self.next_statement();
-                        warnings.extend(stmnt.warnings);
-                        errors.extend(stmnt.errors);
-                        body.push(stmnt.ast);
-                    }
-                    let ret = self.next_expr();
-                    warnings.extend(ret.warnings);
-                    errors.extend(ret.errors);
-
-                    let _ = self.stream.next();
-                    (body, ret.ast.into())
-                }
-                _ => {
-                    let ret = self.next_expr();
-                    warnings.extend(ret.warnings);
-                    errors.extend(ret.errors);
-                    (Vec::new(), ret.ast.into())
-                }
-            };
-
-            ParserReturns {
-                ast: ast::IfExpr {
-                    cond: root_cond.into(),
-                    true_branch: (true_body.0, true_body.1.into()),
-                    else_ifs,
-                    else_branch,
-                    loc: if_loc,
-                },
-                loc: if_loc,
-                warnings,
-                errors,
-            }
-        } else {
-            if let Some((_, loc)) = self.stream.clone().next() {
-                errors.push(ParseError {
-                    span: loc,
-                    reason: ParseErrorReason::UnexpectedToken,
-                });
-            }
-            // TODO! recover
-            ParserReturns {
-                ast: ast::IfExpr {
-                    cond: root_cond.into(),
-                    true_branch: (true_body.0, true_body.1.into()),
-                    else_ifs: Vec::new(),
-                    else_branch: (Vec::new(), Expr::Error.into()),
-                    loc: if_loc,
-                },
-                loc: if_loc,
-                warnings,
-                errors,
-            }
-        }
-    }
-
-    fn value(&mut self) -> ParserReturns<Expr> {
-        if let Some((Token::Ident(ident), loc)) = self.stream.clone().next() {
-            let _ = self.stream.next();
-            ParserReturns {
-                ast: ast::Expr::ValueRead(ident, loc),
-                loc,
-                warnings: Vec::new(),
-                errors: Vec::new(),
-            }
-        } else {
-            let loc = if let Some((_, loc)) = self.stream.peek() {
-                *loc
-            } else {
-                return ParserReturns {
-                    ast: Expr::Error,
-                    loc: (0, 0),
-                    warnings: Vec::new(),
-                    errors: vec![ParseError {
-                        span: (0, 0),
-                        reason: ParseErrorReason::UnexpectedEndOfFile,
-                    }],
-                };
-            };
-            ParserReturns {
-                ast: Expr::Error,
-                loc: loc,
-                warnings: Vec::new(),
-                errors: vec![ParseError {
-                    span: loc,
-                    reason: ParseErrorReason::UnknownError,
-                }],
-            }
-        }
-    }
-
-    fn function_call(&mut self) -> ParserReturns<FnCall> {
-        let mut errors = Vec::new();
-        let mut warnings = Vec::new();
-        if let Some((Token::Ident(ident), value_loc)) = self.stream.next() {
-            let mut values = Vec::<(ast::Expr, (usize, usize))>::new();
-            while let Some((
-                | Token::GroupOpen
-                | Token::Ident(_)
-                // | Token::Op(_) // TODO! this will need some special handling.  ie for `foo bar >>> baz`  should that be parsed as `(foo bar) >>> baz` or `foo (bar >>> baz)`
-                | Token::Integer(_,_)
-                | Token::FloatingPoint(_, _)
-                | Token::CharLiteral(_)
-                | Token::StringLiteral(_)
-                | Token::True
-                | Token::False
-                | Token::BracketOpen
-                ,_
-            )) = self.stream.peek() {
-                match self.stream.peek().map(|(a,_)| a) {
-                    Some(Token::Ident(_)) => {
-                        let test = self.stream.clone().nth(1);
-                        if let Some((Token::Op(_),_)) = test {
-                            let ParserReturns { ast:expr, loc, warnings:expr_warnings, errors:expr_errors } =self.binary_op();
-                            values.push((expr,loc));
-                            warnings.extend(expr_warnings);
-                            errors.extend(expr_errors);
-                        } else {
-                            let ParserReturns { ast:expr, loc, warnings:expr_warnings, errors:expr_errors } =self.value();
-                            values.push((expr,loc));
-                            warnings.extend(expr_warnings);
-                            errors.extend(expr_errors);
-                        }
-                    }
-                    Some(Token::GroupOpen | Token::BracketOpen) =>{
-                        let value = self.next_expr();
-                        errors.extend(value.errors);
-                        warnings.extend(value.warnings);
-                        values.push((value.ast,value.loc))
+                            type_.map(move |ty| ast::EnumVariant::Tuple {
+                                ident: tuple_ident.clone().into(),
+                                ty,
+                                loc,
+                            }),
+                            combinator::empty.value(ast::EnumVariant::Unit {
+                                ident: ident.into(),
+                                loc,
+                            }),
+                        ))
+                        .parse_next(input)
                     },
-                    Some(
-                        | Token::Integer(_,_)
-                        | Token::FloatingPoint(_, _)
-                        | Token::CharLiteral(_)
-                        | Token::StringLiteral(_)
-                        | Token::True
-                        | Token::False
-                    ) => {
-                        let test = self.stream.clone().nth(1);
-                        if let Some((
-                            | Token::Ident(_)
-                            | Token::Integer(_,_)
-                            | Token::FloatingPoint(_, _)
-                            | Token::CharLiteral(_)
-                            | Token::StringLiteral(_)
-                        ,loc)) = test {
-                            let ParserReturns { ast, loc:_, warnings:lit_warnings, errors:lit_errors, }= self.literal();
-                            warnings.extend(lit_warnings);
-                            errors.extend(lit_errors);
-                            values.push((ast,loc))
-                        } else if let Some((Token::Op(_),_)) = test {
-                            let ParserReturns { ast:expr, loc, warnings:expr_warnings, errors:expr_errors } =self.binary_op();
-                            values.push((expr,loc));
-                            warnings.extend(expr_warnings);
-                            errors.extend(expr_errors);
-                        } else {
-                            let ParserReturns { ast, loc:_, warnings:lit_warnings, errors:lit_errors, }= self.literal();
-                            warnings.extend(lit_warnings);
-                            errors.extend(lit_errors);
-                            values.push((ast,value_loc))
-                        }
-                    },
-                    _ => unreachable!()
-                    // TODO! add in operator case special handling
-                }
-            }
-            let (ast, _loc) = values.into_iter().fold(
-                (
-                    FnCall {
-                        loc: value_loc,
-                        value: ast::Expr::ValueRead(ident, value_loc).into(),
-                        arg: None,
-                    },
-                    value_loc,
                 ),
-                |(inner, loc), (next, next_loc)| {
-                    if let FnCall {
-                        value, arg: None, ..
-                    } = inner
-                    {
-                        (
-                            FnCall {
-                                loc,
-                                value,
-                                arg: Some(next.into()),
-                            },
-                            next_loc,
-                        )
-                    } else {
-                        (
-                            FnCall {
-                                loc,
-                                value: Expr::FnCall(inner).into(),
-                                arg: Some(next.into()),
-                            },
-                            next_loc,
-                        )
-                    }
-                },
-            );
-            ParserReturns {
-                ast,
-                loc: value_loc,
-                warnings,
-                errors,
-            }
-        } else {
-            errors.push(ParseError {
-                span: (0, 0),
-                reason: ParseErrorReason::UnknownError,
-            });
-            ParserReturns {
-                ast: FnCall {
-                    value: Expr::Error.into(),
-                    arg: Some(Expr::Error.into()),
-                    loc: (0, 0),
-                },
-                loc: (0, 0),
-                warnings,
-                errors,
-            }
+            ),
+        )
+        .parse_next(input)?;
+        Ok(ast::EnumDeclaration {
+            ident: ident.into(),
+            generics: generics.clone(),
+            values,
+            loc: (loc.start, loc.end),
+        })
+    })
+}
+
+
+
+fn struct_body(input: &mut Stream<'_>) -> PResult<Vec<ast::FieldDecl>> {
+    combinator::delimited(
+        (ascii::space0,'{',ascii::multispace0),
+        combinator::separated(
+            0..,
+            combinator::separated_pair(
+                simple_ident.with_span(),
+                (ascii::multispace0,':',ascii::multispace0),
+                type_
+            ).map(|((ident, loc), ty)| ast::FieldDecl {
+                name: ident.into(),
+                ty,
+                loc: (loc.start, loc.end),
+            }),
+            (ascii::multispace0, ',',ascii::multispace0),
+        ),
+        (ascii::multispace0,combinator::opt((',',ascii::multispace0)),'}'),
+    )
+    .parse_next(input)
+}
+
+fn struct_or_alias_def<'input>(
+    generics: Option<ast::GenericsDecl>,
+) -> impl Parser<Stream<'input>, ast::TypeDefinition, ContextError> {
+    combinator::trace(
+        "struct or alias",
+        move |input: &mut Stream<'_>| -> PResult<ast::TypeDefinition> {
+            let (ident, loc) = simple_ident.with_span().parse_next(input)?;
+
+            let _ = (ascii::space0,'=',ascii::space0).void().parse_next(input)?;
+            let result = combinator::alt((
+                combinator::trace("struct", struct_body).map(|fields| {
+                    ast::TypeDefinition::Struct(ast::StructDefinition {
+                        ident: ident.clone().into(),
+                        generics: generics.clone(),
+                        values: fields,
+                        loc: (loc.start, loc.end),
+                    })
+                }),
+                combinator::trace("alias", type_)
+                    .verify(|_| generics.is_none())
+                    .context(winnow::error::StrContext::Label(
+                        "generic aliases are not yet implemented",
+                    ))
+                    .map(|ty| ast::TypeDefinition::Alias(ident.clone().into(), ty)),
+            ))
+            .parse_next(input)?;
+            Ok(result)
+        },
+    )
+}
+
+
+fn op<'input>(input: &mut Stream<'input>) -> PResult<Cow<'input,str>> {
+    token::take_while(
+        1..,
+        [
+            '|', '>', '<', '!', '@', '=', '&', '+', '-', '\\', '/', '*', '^', '.',
+        ],
+    )
+    .map(Into::into)
+    .parse_next(input)
+}
+
+fn mod_decl<'input>(input: &mut Stream<'input>) -> PResult<ast::ModuleDeclaration> {
+    //TODO! 
+    combinator::fail.context(StrContext::Label("submoules not yet supported")).parse_next(input)
+}
+
+fn unit(input:&mut Stream<'_>) -> PResult<()> {
+    (
+        '(',
+        ascii::space0,
+        ')'    
+    ).void()
+    .parse_next(input)
+}
+
+fn block(input: &mut Stream) -> PResult<ast::Block> {
+combinator::trace("block", |input: &mut Stream<'_>|{
+        // let _ = (ascii::space0,ascii::line_ending).void().parse_next(input)?;
+        let old_prefix = input.state.prefix.clone();
+        let checkpoint= input.checkpoint();
+        let new_prefix = ascii::space0(input)?;
+        if !new_prefix.starts_with(old_prefix.as_ref()) {
+            return Err(ErrMode::Cut(ContextError::new().add_context(input, &checkpoint, StrContext::Expected(winnow::error::StrContextValue::Description("expected the body to be an ident deeper")))))
         }
+        input.reset(&checkpoint);
+        input.state.prefix=new_prefix.into();
+        let result = (
+            combinator::repeat(
+                0..,
+                combinator::preceded(
+                    ignore_blank_lines,
+                    combinator::delimited(
+                        combinator::trace("prefix",(new_prefix,reset_line)),
+                        combinator::trace(format!("block statement prefix {:?}",new_prefix),combinator::repeat(1..,statement)),
+                        combinator::trace("ending",combinator::alt((expect_line,(ascii::space0,combinator::eof).void())))
+                     )
+                )
+            ).map(|statements : Vec<Vec<_>>| {
+                    statements.into_iter().flat_map(Vec::into_iter).collect()
+            })
+            ,
+            combinator::opt(combinator::preceded((ignore_blank_lines,new_prefix,reset_line),expr).map(Into::into))
+        ).map(|(statements,implicit_ret)| ast::Block { statements, implicit_ret })
+        .parse_next(input);
+        input.state.prefix=old_prefix;
+        result
+    }
+).parse_next(input)
+}
+
+fn comma(input:&mut Stream<'_>) -> PResult<()> {
+    (ascii::space0,',',ascii::space0).void().parse_next(input)
+}
+
+fn type_<'input>(input: &mut Stream<'input>) -> PResult<types::ResolvedType> {
+    let result = combinator::trace(
+        "type",
+        combinator::alt((
+            "int8".value(types::INT8),
+            "int16".value(types::INT16),
+            "int32".value(types::INT32),
+            "int64".value(types::INT64),
+            "float32".value(types::FLOAT32),
+            "float64".value(types::FLOAT64),
+            unit.value(types::UNIT),
+            "str".value(types::STR),
+            "char".value(types::CHAR),
+            "bool".value(types::BOOL),
+            (ident,combinator::opt(combinator::delimited((ascii::space0,'<',ascii::space0), combinator::separated(0.., type_, comma),(ascii::space0,'>',ascii::space0)))).with_span().map(|((ident,generics),span)| {
+                types::ResolvedType::User{
+                    name: ident.into(),
+                    generics:generics.unwrap_or_default(),
+                    loc: (span.start,span.end),
+                }
+            }),
+            //array
+            combinator::delimited(
+                (ascii::space0, '[', ascii::space0),
+                combinator::separated_pair(
+                    type_,
+                    (ascii::space0, ';', ascii::space0),
+                    ascii::dec_uint,
+                ),
+                (ascii::space0, ']', ascii::space0),
+            )
+            .map(|(underlining, count)| types::ResolvedType::Array {
+                underlining: underlining.into(),
+                size: count,
+            }),
+            combinator::delimited(
+                (ascii::space0, '[', ascii::space0),
+                type_,
+                (ascii::space0, ']', ascii::space0),
+            )
+            .map(|underlining| types::ResolvedType::Slice {
+                underlining: underlining.into(),
+            }),
+            combinator::preceded((ascii::space0, '&', ascii::space0), type_).map(|underlining| {
+                types::ResolvedType::Ref {
+                    underlining: underlining.into(),
+                }
+            }),
+            parens(combinator::separated(
+                2..,
+                type_,
+                (ascii::space0, ',', ascii::space0),
+            ))
+            .with_span()
+            .map(|(underlining, loc)| types::ResolvedType::Tuple {
+                underlining,
+                loc: (loc.start, loc.end),
+            }),
+            parens(type_),
+        )),
+    )
+    .parse_next(input)?;
+    if let Some((loc, ret)) = combinator::trace(
+        "type (function)",
+        combinator::opt((
+            combinator::delimited(ascii::space0, "->".span(), ascii::space0),
+            type_,
+        )),
+    )
+    .parse_next(input)?
+    {
+        Ok(types::ResolvedType::Function {
+            arg: result.into(),
+            returns: ret.into(),
+            loc: (loc.start, loc.end),
+        })
+    } else {
+        Ok(result)
+    }
+}
+
+fn arg<'input>(input: &mut Stream<'input>) -> PResult<ast::ArgDeclaration> {
+    let apply_ty = combinator::delimited(
+        ('(', ascii::space0),
+        combinator::separated_pair(arg, (ascii::space0, ':', ascii::space0), type_),
+        (ascii::space0, ')'),
+    )
+    .map(|(mut arg, real_ty)| {
+        match &mut arg {
+            ast::ArgDeclaration::Simple { ty, .. }
+            | ast::ArgDeclaration::DestructureTuple(_, ty, _)
+            | ast::ArgDeclaration::Discard { ty, .. }
+            | ast::ArgDeclaration::Unit { ty, .. } => {
+                ty.replace(real_ty);
+            }
+            ast::ArgDeclaration::DestructureStruct {
+                loc,
+                struct_ident,
+                fields,
+                renamed_fields,
+            } => todo!("not a common case.  (StructType {{ ... }} : StructType)"),
+        }
+        arg
+    });
+    let unit = ('(', ascii::space0, ')')
+        .with_span()
+        .map(|((_, _space, _), loc)| {
+            //todo generate warnings??
+            ast::ArgDeclaration::Unit {
+                loc: (loc.start, loc.end),
+                ty: None,
+            }
+        });
+    combinator::alt((
+        unit,
+        apply_ty,
+        "_".span().map(|loc| ast::ArgDeclaration::Discard {
+            loc: (loc.start, loc.end),
+            ty: None,
+        }),
+        combinator::delimited(('(', ascii::space0), arg, (ascii::space0, ')')),
+        combinator::delimited(
+            ('(', ascii::space0),
+            combinator::separated(1.., arg, (ascii::space0, ',', ascii::space0)),
+            (ascii::space0, ')'),
+        )
+        .with_span()
+        .map(|(args, loc)| ast::ArgDeclaration::DestructureTuple(args, None, (loc.start, loc.end))),
+        simple_ident
+            .with_span()
+            .map(|(ident, loc)| ast::ArgDeclaration::Simple {
+                loc: (loc.start, loc.end),
+                ident: ident.into(),
+                ty: None,
+            }),
+        // todo! other destrctures
+    ))
+    .parse_next(input)
+}
+
+fn top_level_value(input: &mut Stream<'_>) -> PResult<ast::TopLevelValue> {
+    let generics = combinator::opt(generics).parse_next(input)?;
+    let abi = combinator::opt(
+        combinator::preceded(
+            ("extern", ascii::space1),
+            combinator::alt((
+                r#""C""#.span().map(|span| ast::Abi {
+                    loc: (span.start, span.end),
+                    identifier: "C".into(),
+                }),
+                r#""intrinsic""#.span().map(|span| ast::Abi {
+                    loc: (span.start, span.end),
+                    identifier: "interinsic".into(),
+                }),
+            )),
+        )
+        .verify(|_| generics.is_none())
+        .context(StrContext::Expected(
+            "can not combine an abi with generics".into(),
+        )),
+    )
+    .parse_next(input)?;
+
+    (ascii::multispace0, "let").void().parse_next(input)?;
+    ascii::space1(input)?;
+    let ((ident, loc), is_op) = combinator::alt((
+        parens(op).with_span().map(|it| (it, true)),
+        simple_ident.with_span().map(|it| (it, false)),
+    ))
+    .parse_next(input)?;
+    let args = combinator::opt(combinator::preceded(
+        ascii::space1,
+        combinator::separated(1.., arg, ascii::space1),
+    ))
+    .parse_next(input)?
+    .unwrap_or_default();
+    let ty = combinator::opt(combinator::preceded(
+        (ascii::space0, ':', ascii::space0),
+        type_,
+    ))
+    .parse_next(input)?;
+    if let Some(_) = combinator::opt((ascii::space0, '=').void()).parse_next(input)? {
+        let mut value = ast::TopLevelValue {
+            loc: (loc.start, loc.end),
+            is_op,
+            ident: ident.into(),
+            args,
+            ty,
+            value: combinator::trace(
+                "value",
+                combinator::alt((
+                    combinator::preceded((ascii::space0, ascii::line_ending), block)
+                        .map(ast::ValueType::Function),
+                    combinator::delimited(ascii::space0, expr, |input:&mut Stream<'_>| {
+                        if input.state.multi_line_expr {
+                            input.state.multi_line_expr=false;
+                            Ok(())
+                        } else {
+                            (ascii::space0,';').void().parse_next(input)
+                        }
+                    })
+                    .map(ast::ValueType::Expr),
+                )),
+            )
+            .parse_next(input)?,
+            generics,
+            abi,
+        };
+        value.bind_generics();
+        Ok(value)
+    } else {
+        (ascii::space0, ';')
+            .void()
+            .verify(|_| abi.is_some() && ty.is_some() && generics.is_none())
+            .parse_next(input)?;
+        Ok(ast::TopLevelValue {
+            loc: (loc.start, loc.end),
+            is_op,
+            ident: ident.into(),
+            args,
+            ty,
+            value: ast::ValueType::External,
+            generics,
+            abi,
+        })
+    }
+}
+
+fn generics<'input>(input: &mut Stream<'input>) -> PResult<ast::GenericsDecl> {
+    let for_loc = "for".span().parse_next(input)?;
+    let decls = combinator::delimited(
+        (ascii::space0, '<'),
+        combinator::separated(
+            1..,
+            combinator::delimited(
+                ascii::space0,
+                simple_ident
+                    .with_span()
+                    .map(|(a, b)| ((b.start, b.end), a.into())),
+                ascii::space0,
+            ),
+            ',',
+        ),
+        (ascii::space0, '>'),
+    )
+    .parse_next(input)?;
+    Ok(ast::GenericsDecl {
+        for_loc: (for_loc.start, for_loc.end),
+        decls,
+    })
+}
+
+fn if_statement(input :&mut Stream<'_>) -> PResult<ast::If> {
+    let prefix = input.state.prefix.clone();
+    combinator::trace("if",winnow::combinator::seq! { ast::If{
+        loc:"if".span().map(|loc| (loc.start,loc.end)),
+        cond : combinator::delimited(ascii::multispace1,combinator::cut_err(expr).map(Into::into),(ascii::multispace1,"then")),
+        true_branch : combinator::alt((
+            combinator::preceded((ascii::space0,ascii::line_ending),block),
+            expr.map(|expr| ast::Block { statements:Vec::new(), implicit_ret:Some(expr.into())})
+        )),
+        _:ignore_blank_lines,
+        else_branch : combinator::opt(
+            combinator::preceded(
+                combinator::preceded(&*prefix, "else"),
+                combinator::alt((
+                    combinator::preceded(ascii::space1,if_statement).map(|if_|ast::Block { statements : vec![ast::Statement::IfStatement(if_)], implicit_ret:None}),
+                    combinator::preceded((ascii::space0,ascii::line_ending),block),
+                    expr.map(|expr| ast::Block { statements:Vec::new(), implicit_ret:Some(expr.into())})
+                ))
+            )
+        ),
+    }
+    }).parse_next(input)
+}
+
+fn statement(input: &mut Stream<'_>) -> PResult<ast::Statement> {
+    let declaration = combinator::preceded(
+        ("let", ascii::space1),
+        combinator::cut_err((
+            pattern
+                .verify(|pat| {
+                    !matches!(
+                        pat,
+                        ast::Pattern::Or(_, _) 
+                        | ast::Pattern::EnumVariant { .. } 
+                        | ast::Pattern::ConstNumber(_)
+                        | ast::Pattern::ConstStr(_)
+                        | ast::Pattern::ConstChar(_)
+                        | ast::Pattern::ConstBool(_)
+                        
+                    )
+                })
+                .with_span()
+                .map(|(pat, loc)| ((loc.start, loc.end), pat)),
+            combinator::opt(combinator::preceded(
+                (ascii::space0, ':', ascii::space0),
+                type_,
+            )),
+            combinator::preceded(
+                (ascii::space0, "=", ascii::space0),
+                combinator::alt((
+                    combinator::preceded((ascii::space0, ascii::line_ending), block)
+                        .map(ast::ValueType::Function),
+                    combinator::terminated(expr,(ascii::space0,';')).map(ast::ValueType::Expr),
+                )),
+            ),
+        )),
+    )
+    .map(|((loc, target), ty, value)| ast::ValueDeclaration {
+        loc,
+        is_op: false,
+        target,
+        args: Vec::new(),
+        ty,
+        value,
+        generictypes: None,
+        abi: None,
+    });
+    let multiline_context = input.state.multi_line_expr;
+    let result = combinator::trace(
+        "statement",
+            combinator::alt((
+                
+                declaration.map(ast::Statement::Declaration),
+                match_.map(ast::Statement::Match),
+                if_statement.map(ast::Statement::IfStatement),
+                combinator::terminated(combinator::alt((
+
+                    ("return".span(),
+                    combinator::cut_err(combinator::preceded(ascii::space1, expr)),
+                
+                    ).map(|(loc, expr)| ast::Statement::Return(expr.into(), (loc.start, loc.end))),
+                    expr.map(ast::Statement::Expr),
+                
+                    )),
+                    (ascii::multispace0,';')
+                ),
+                combinator::fail.context(StrContext::Label("Invalid statement"))//this should never be reached???
+            )),
+    )
+    .parse_next(input);
+    input.state.multi_line_expr=multiline_context;
+    // ignore_blank_lines(input)?;
+    result
+}
+
+
+
+fn simple_expr(input:&mut Stream<'_>) -> PResult<ast::Expr> {
+
+    
+    if input.is_empty() {
+        return Err(ErrMode::Backtrack(ContextError::new()));
     }
 
-    fn struct_construct(&mut self) -> ParserReturns<StructConstruction> {
-        let mut warnings = Vec::new();
-        let mut errors = Vec::new();
-        let Some((_, loc)) = self.stream.clone().next() else {
-            unreachable!("ICE: somehow reached struct construction with no token?")
-        };
-
-        let ty = self.collect_type();
-        warnings.extend(ty.warnings);
-        errors.extend(ty.errors);
-        let (name, generics) = if let ResolvedType::User { name, generics, .. } = ty.ast {
-            (name, generics)
-        } else {
-            ("<error>".to_string(), vec![types::ERROR])
-        };
-        let Some((Token::CurlOpen, loc)) = self.stream.next() else {
-            /* TODO? handle blocks?
-                EG: ```
-                let x = Foo
-                    {
-                        y:0
-                    }
-                ```
-                though idomatic would be the following or inline.
-                ```
-                let x = Foo {
-                    y:0
-                }
-                ```
-            */
-            unreachable!("ICE: reached struct construction with no braces?")
-        };
-        let mut fields = HashMap::new();
-        while let Some((Token::Ident(_), _)) = self.stream.peek() {
-            let Some((Token::Ident(ident), loc)) = self.stream.next() else {
-                unreachable!()
-            };
-            let Some((Token::Colon, _)) = self.stream.next() else {
-                todo!("handle infered assignment")
-            };
-            let ParserReturns {
-                ast: expr,
-                loc: _,
-                warnings: expr_warnings,
-                errors: expr_errors,
-            } = self.next_expr();
-            warnings.extend(expr_warnings);
-            errors.extend(expr_errors);
-            if fields.contains_key(&ident) {
-                let (_, loc): &(_, crate::Location) = &fields[&ident];
-                errors.push(ParseError {
-                    span: *loc,
-                    reason: ParseErrorReason::DeclarationError,
+    let if_ = combinator::trace("if",winnow::combinator::seq! { ast::If{
+        loc:"if".span().map(|loc| (loc.start,loc.end)),
+        cond : combinator::delimited(ascii::multispace1,expr.map(Into::into),(ascii::multispace1,"then")),
+        true_branch : combinator::alt((
+            combinator::preceded((ascii::space0,ascii::line_ending,|input:&mut Stream<'_>| {
+                input.state.multi_line_expr=true;
+                Ok(())
+            }),block),
+            expr.map(|expr| ast::Block { statements:Vec::new(), implicit_ret:Some(expr.into())})
+        )),
+        _:(ascii::multispace0,"else"),//TODO! need to check indent level or if inline then space preceded.
+        else_branch : combinator::alt((
+            combinator::preceded((ascii::space0,ascii::line_ending,|input:&mut Stream<'_>| {
+                input.state.multi_line_expr=true;
+                Ok(())
+            }),block),
+            expr.map(|expr| ast::Block { statements:Vec::new(), implicit_ret:Some(expr.into())})
+        )).map(Into::into),
+    }
+    });
+    let struct_con = (
+        type_.with_span(),
+        combinator::delimited(
+            (ascii::space0, '{', ascii::multispace0),
+            combinator::separated(
+                0..,
+                combinator::alt((
+                    combinator::separated_pair(
+                        simple_ident,
+                        (ascii::space0, ':', ascii::space0),
+                        expr,
+                    )
+                    .map(|(ident, expr)| {
+                        let loc = expr.get_loc();
+                        (ident, (expr, loc))
+                    }),
+                    simple_ident.with_span().map(|(ident, loc)| {
+                        (
+                            ident.clone(),
+                            (
+                                ast::Expr::ValueRead(ident.into(), (loc.start, loc.end)),
+                                (loc.start, loc.end),
+                            ),
+                        )
+                    }),
+                )),
+                (ascii::multispace0, ',', ascii::multispace0),
+            ),
+            (ascii::space0, '}', ascii::multispace0),
+        ),
+    )
+        .map(|((ty, loc), fields): (_, Vec<_>)| {
+            if let types::ResolvedType::User { name, generics, .. } = ty {
+                ast::Expr::StructConstruction(ast::StructConstruction {
+                    loc: (loc.start, loc.end),
+                    fields: fields
+                        .into_iter()
+                        .map(|(ident, value)| (ident.into(), value))
+                        .collect(),
+                    generics,
+                    ident: name,
                 })
             } else {
-                fields.insert(ident, (expr, loc));
-            }
-            if let Some((Token::Comma, _)) = self.stream.peek() {
-                self.stream.next();
-            }
-        }
-        let _: Vec<_> = self
-            .stream
-            .peeking_take_while(|(t, _)| matches!(t, Token::EndBlock))
-            .collect();
-        let Some((Token::CurlClose, _)) = self.stream.next() else {
-            errors.push(ParseError {
-                span: loc,
-                reason: ParseErrorReason::UnbalancedBraces,
-            });
-            fields.insert("".to_string(), (Expr::Error, (0, 0)));
-            return ParserReturns {
-                ast: StructConstruction {
-                    loc,
-                    fields,
-                    generics,
-                    ident: "".to_string(),
-                },
-                loc,
-                warnings,
-                errors,
-            };
-        };
-        ParserReturns {
-            ast: StructConstruction {
-                loc,
-                fields,
-                generics,
-                ident: name,
-            },
-            loc,
-            warnings,
-            errors,
-        }
-    }
-
-    fn ret(&mut self) -> ParserReturns<Statement> {
-        let (token, span) = self.stream.next().unwrap();
-        if token == Token::Return {
-            let ParserReturns {
-                ast: expr,
-                loc: _,
-                warnings,
-                errors,
-            } = self.next_expr();
-            ParserReturns {
-                ast: ast::Statement::Return(expr, span),
-                loc: span,
-                warnings,
-                errors,
-            }
-        } else {
-            ParserReturns {
-                ast: Statement::Error,
-                loc: span,
-                warnings: Vec::new(),
-                errors: vec![ParseError {
-                    span,
-                    reason: ParseErrorReason::UnknownError,
-                }],
-            }
-        }
-    }
-
-    fn literal(&mut self) -> ParserReturns<Expr> {
-        let (token, span) = self.stream.next().unwrap();
-        match make_literal(token, span) {
-            Ok(lit) => ParserReturns {
-                ast: lit,
-                loc: span,
-                warnings: Vec::new(),
-                errors: Vec::new(),
-            },
-            Err(e) => ParserReturns {
-                ast: Expr::Error,
-                loc: span,
-                warnings: Vec::new(),
-                errors: vec![e],
-            },
-        }
-    }
-
-    fn ifstatement(&mut self) -> ParserReturns<crate::ast::IfBranching> {
-        let Some((Token::If, if_loc)) = self.stream.next() else {
-            unreachable!()
-        };
-        let ParserReturns {
-            ast: cond,
-            mut warnings,
-            mut errors,
-            loc: _,
-        } = self.next_expr();
-        let cond = cond.into();
-        if let Some((Token::Then, _)) = self.stream.peek() {
-            let _ = self.stream.next();
-        } else {
-            let (token, loc) = self.stream.next().unwrap();
-            println!(
-                "Expected then but got {:?} at line:{} col:{}",
-                token, loc.0, loc.1
-            );
-            errors.push(ParseError {
-                span: loc,
-                reason: ParseErrorReason::UnexpectedToken,
-            });
-            //TODO? more recovery?
-            return ParserReturns {
-                ast: ast::IfBranching {
-                    cond,
-                    true_branch: vec![Statement::Error],
-                    else_ifs: Vec::new(),
-                    else_branch: Vec::new(),
-                    loc: if_loc,
-                },
-                loc: if_loc,
-                warnings,
-                errors,
-            };
-        };
-
-        let body = match self.stream.peek() {
-            Some((Token::BeginBlock, _)) => {
-                let block = self.collect_block();
-                warnings.extend(block.warnings);
-                errors.extend(block.errors);
-                block.ast
-            }
-            _ => {
-                let stmnt = self.next_statement();
-                warnings.extend(stmnt.warnings);
-                errors.extend(stmnt.errors);
-                vec![stmnt.ast]
-            }
-        };
-
-        if let Some((Token::Else, _)) = self.stream.peek() {
-            let mut else_ifs = Vec::new();
-            while let Some((Token::If, _)) = self.stream.clone().nth(1) {
-                let Some((Token::Else, _)) = self.stream.next() else {
-                    unreachable!()
-                };
-                let Some((Token::If, _loc)) = self.stream.next() else {
-                    unreachable!()
-                };
-
-                let ParserReturns {
-                    ast: cond,
-                    warnings: new_warnings,
-                    errors: new_errors,
-                    loc: _,
-                } = self.next_expr();
-                warnings.extend(new_warnings);
-                errors.extend(new_errors);
-                let cond = cond.into();
-                if let Some((Token::Then, _)) = self.stream.peek() {
-                    let _ = self.stream.next();
-                } else {
-                    let (token, loc) = self.stream.next().unwrap();
-                    println!(
-                        "Expected then but got {:?} at line:{} col:{}",
-                        token, loc.0, loc.1
-                    );
-                    errors.push(ParseError {
-                        span: loc,
-                        reason: ParseErrorReason::UnexpectedToken,
-                    });
-                };
-                let body = match self.stream.peek() {
-                    Some((Token::BeginBlock, _)) => {
-                        let block = self.collect_block();
-                        warnings.extend(block.warnings);
-                        errors.extend(block.errors);
-                        block.ast
-                    }
-                    _ => {
-                        let stmnt = self.next_statement();
-                        warnings.extend(stmnt.warnings);
-                        errors.extend(stmnt.errors);
-                        vec![stmnt.ast]
-                    }
-                };
-                else_ifs.push((cond, body));
-            }
-
-            let else_branch = if let Some((Token::Else, _)) = self.stream.clone().next() {
-                let _ = self.stream.next();
-
-                match self.stream.peek() {
-                    Some((Token::BeginBlock, _)) => {
-                        let block = self.collect_block();
-                        warnings.extend(block.warnings);
-                        errors.extend(block.errors);
-                        block.ast
-                    }
-                    _ => {
-                        let stmnt = self.next_statement();
-                        warnings.extend(stmnt.warnings);
-                        errors.extend(stmnt.errors);
-                        vec![stmnt.ast]
-                    }
-                }
-            } else {
-                Vec::new()
-            };
-            ParserReturns {
-                ast: ast::IfBranching {
-                    cond,
-                    true_branch: body,
-                    else_ifs,
-                    else_branch,
-                    loc: if_loc,
-                },
-                loc: if_loc,
-                warnings,
-                errors,
-            }
-        } else {
-            ParserReturns {
-                ast: ast::IfBranching {
-                    cond,
-                    true_branch: body,
-                    else_ifs: Vec::new(),
-                    else_branch: Vec::new(),
-                    loc: if_loc,
-                },
-                loc: if_loc,
-                warnings,
-                errors,
-            }
-        }
-    }
-
-    pub(crate) fn collect_type(&mut self) -> ParserReturns<ResolvedType> {
-        let mut warnings = Vec::new();
-        let mut errors = Vec::new();
-        let ty = self.stream.next();
-        match ty {
-            Some((Token::Ident(ty), loc)) => {
-                let mut generic_args = Vec::new();
-                if self.stream.peek().map(|(a, _)| a) == Some(&Token::Op("<".to_string())) {
-                    self.stream.next();
-                    while {
-                        let ty = self.collect_type();
-                        warnings.extend(ty.warnings);
-                        errors.extend(ty.errors);
-                        generic_args.push(ty.ast);
-                        #[cfg(debug_assertions)]
-                        let _peek = self.stream.peek();
-                        if self.stream.peek().map(|(a, _)| a) == Some(&Token::Comma) {
-                            let _ = self.stream.next();
-                            true
-                        } else {
-                            false
-                        }
-                    } {}
-                    if !generic_args.is_empty() {
-                        let mut should_pop = false;
-                        if let Some((Token::Op(s), _)) = self.stream.peek_mut() {
-                            if s.chars().all_equal_value() == Ok('>') {
-                                s.pop();
-                                if s.len() == 0 {
-                                    should_pop = true;
-                                }
-                            } else {
-                                errors.push(ParseError {
-                                    span: loc,
-                                    reason: ParseErrorReason::UnbalancedBraces,
-                                });
-                                return ParserReturns {
-                                    ast: types::ERROR,
-                                    loc,
-                                    warnings,
-                                    errors,
-                                };
-                            }
-                        }
-                        if should_pop {
-                            let _ = self.stream.next();
-                        }
-                    }
-                }
-                if let Some((Token::Arrow, fn_loc)) = self.stream.clone().next() {
-                    self.stream.next();
-                    let result = self.collect_type();
-                    let ty = type_from_string(&ty, generic_args, loc);
-                    warnings.extend(result.warnings);
-                    errors.extend(result.errors);
-                    ParserReturns {
-                        ast: ResolvedType::Function {
-                            arg: ty.into(),
-                            returns: result.ast.into(),
-                            loc: fn_loc,
-                        },
-                        loc: fn_loc,
-                        warnings,
-                        errors,
-                    }
-                } else {
-                    let ty = type_from_string(&ty, generic_args, loc);
-                    ParserReturns {
-                        ast: ty,
-                        loc,
-                        warnings,
-                        errors,
-                    }
-                }
-            }
-            Some((Token::GroupOpen, span)) => {
-                if let Some((Token::GroupClose, _)) = self.stream.peek() {
-                    self.stream.next();
-                    return if let Some((Token::Arrow, arr_loc)) = self.stream.clone().next() {
-                        self.stream.next();
-                        let returns = self.collect_type();
-                        warnings.extend(returns.warnings);
-                        errors.extend(returns.errors);
-                        ParserReturns {
-                            ast: ResolvedType::Function {
-                                arg: types::UNIT.into(),
-                                returns: returns.ast.into(),
-                                loc: arr_loc,
-                            },
-                            loc: span,
-                            warnings,
-                            errors,
-                        }
-                    } else {
-                        ParserReturns {
-                            ast: types::UNIT,
-                            loc: span,
-                            warnings,
-                            errors,
-                        }
-                    };
-                }
-                let ty = self.collect_type();
-                warnings.extend(ty.warnings);
-                errors.extend(ty.errors);
-                let loc = ty.loc;
-                let mut tys = vec![ty.ast];
-                loop {
-                    if let Some((Token::Comma, _)) = self.stream.clone().next() {
-                        let _ = self.stream.next();
-                        let ty = self.collect_type();
-                        warnings.extend(ty.warnings);
-                        errors.extend(ty.errors);
-                        tys.push(ty.ast);
-                        match self.stream.clone().next() {
-                            Some((Token::GroupClose, _)) => {
-                                break;
-                            }
-                            Some((Token::Comma, _)) => continue,
-                            _ => {
-                                errors.push(ParseError {
-                                    span: span,
-                                    reason: ParseErrorReason::TypeError,
-                                });
-                                return ParserReturns {
-                                    ast: types::ERROR,
-                                    loc: (0, 0),
-                                    warnings,
-                                    errors,
-                                };
-                            }
-                        }
-                    } else {
-                        break;
-                        //TODO! error reporting?
-                    }
-                }
-                let ty = if tys.len() == 1 {
-                    tys.pop().unwrap()
-                } else {
-                    ResolvedType::Tuple {
-                        underlining: tys,
-                        loc: span,
-                    }
-                };
-                if let Some((Token::GroupClose, _)) = self.stream.clone().next() {
-                    let _ = self.stream.next();
-                } else {
-                    errors.push(ParseError {
-                        span,
-                        reason: ParseErrorReason::UnbalancedBraces,
-                    });
-                }
-                if let Some((Token::Arrow, arr_loc)) = self.stream.clone().next() {
-                    self.stream.next();
-                    let result = self.collect_type();
-                    warnings.extend(result.warnings);
-                    errors.extend(result.errors);
-                    ParserReturns {
-                        ast: ResolvedType::Function {
-                            arg: ty.into(),
-                            returns: result.ast.into(),
-                            loc: arr_loc,
-                        },
-                        loc: arr_loc,
-                        warnings,
-                        errors,
-                    }
-                } else {
-                    ParserReturns {
-                        ast: ty,
-                        loc,
-                        warnings,
-                        errors,
-                    }
-                }
-            }
-            Some((Token::BracketOpen, loc)) => {
-                let ty = self.collect_type();
-                warnings.extend(ty.warnings);
-                errors.extend(ty.errors);
-                let ty = ty.ast;
-                match self.stream.clone().next() {
-                    Some((Token::Seq, _)) => {
-                        let _ = self.stream.next();
-                        match self.stream.clone().next() {
-                            Some((Token::Integer(false, _), _)) => {
-                                let Some((Token::Integer(_, value), _)) = self.stream.next() else {
-                                    unreachable!()
-                                };
-                                match self.stream.peek() {
-                                    Some((Token::BracketClose, _)) => {
-                                        let _ = self.stream.next();
-                                        ParserReturns {
-                                            ast: ResolvedType::Array {
-                                                underlining: ty.into(),
-                                                size: value.parse().unwrap(),
-                                            },
-                                            loc,
-                                            warnings,
-                                            errors,
-                                        }
-                                    }
-                                    Some((t, loc)) => {
-                                        println!(
-                                            "unexpected token:{t:?} at line:{}, col:{}",
-                                            loc.0, loc.1
-                                        );
-                                        errors.push(ParseError {
-                                            span: *loc,
-                                            reason: ParseErrorReason::UnbalancedBraces,
-                                        });
-                                        ParserReturns {
-                                            ast: types::ERROR,
-                                            loc: *loc,
-                                            warnings,
-                                            errors,
-                                        }
-                                    }
-                                    None => {
-                                        unreachable!("how did this happen.  this is an ice please report it.");
-                                    }
-                                }
-                            }
-                            Some((t, loc)) => {
-                                println!("unexpected token:{t:?} at line:{}, col:{}", loc.0, loc.1);
-                                errors.push(ParseError {
-                                    span: loc,
-                                    reason: ParseErrorReason::UnbalancedBraces,
-                                });
-                                ParserReturns {
-                                    ast: types::ERROR,
-                                    loc,
-                                    warnings,
-                                    errors,
-                                }
-                            }
-                            None => {
-                                unreachable!(
-                                    "how did this happen.  this is an ice please report it."
-                                );
-                            }
-                        }
-                    }
-                    Some((Token::BracketClose, _)) => {
-                        let _ = self.stream.next();
-                        ParserReturns {
-                            ast: ResolvedType::Slice {
-                                underlining: ty.into(),
-                            },
-                            loc,
-                            warnings,
-                            errors,
-                        }
-                    }
-                    Some((t, loc)) => {
-                        println!("unexpected token:{t:?} at line:{}, col:{}", loc.0, loc.1);
-                        errors.push(ParseError {
-                            span: loc,
-                            reason: ParseErrorReason::UnbalancedBraces,
-                        });
-                        ParserReturns {
-                            ast: types::ERROR,
-                            loc,
-                            warnings,
-                            errors,
-                        }
-                    }
-                    None => {
-                        unreachable!("how did this happen.  this is an ICE please report it.");
-                    }
-                }
-            }
-            Some((_, span)) => {
-                errors.push(ParseError {
-                    span,
-                    reason: ParseErrorReason::TypeError,
-                });
-                ParserReturns {
-                    ast: types::ERROR,
-                    loc: span,
-                    warnings,
-                    errors,
-                }
-            }
-            None => {
-                errors.push(ParseError {
-                    span: (0, 0),
-                    reason: ParseErrorReason::TypeError,
-                });
-                ParserReturns {
-                    ast: types::ERROR,
-                    loc: (0, 0),
-                    warnings,
-                    errors,
-                }
-            }
-        }
-    }
-    #[allow(unused)]
-    fn pipe(&mut self) -> Result<Expr, ParseError> {
-        todo!("pipes")
-    }
-    #[allow(unused)]
-    /// will probably remove as it can easily be defined in lang?
-    fn compose(&mut self) -> Result<Expr, ParseError> {
-        todo!("compose")
-    }
-
-    fn abi(&mut self) -> ParserReturns<Option<ast::Abi>> {
-        match self.stream.clone().next() {
-            Some((Token::Extern, loc)) => {
-                let _ = self.stream.next();
-                let mut errors = Vec::new();
-                let abi = if let Some((Token::StringLiteral(_), _)) = self.stream.clone().next() {
-                    let Some((Token::StringLiteral(name), _)) = self.stream.next() else {
-                        unreachable!()
-                    };
-                    name
-                } else {
-                    errors.push(ParseError {
-                        span: loc,
-                        reason: ParseErrorReason::UnexpectedToken,
-                    });
-                    "".to_string()
-                };
-                ParserReturns {
-                    ast: Some(ast::Abi {
-                        loc,
-                        identifier: abi,
-                    }),
-                    loc,
-                    warnings: Vec::new(),
-                    errors,
-                }
-            }
-            _ => ParserReturns {
-                ast: None,
-                loc: (0, 0),
-                warnings: Vec::new(),
-                errors: Vec::new(),
-            },
-        }
-    }
-
-    fn declaration(&mut self) -> ParserReturns<ast::ValueDeclaration> {
-        let ParserReturns {
-            ast: abi,
-            loc: extern_loc,
-            mut warnings,
-            mut errors,
-        } = self.abi();
-        let ParserReturns {
-            ast: generics,
-            loc: for_loc,
-            warnings: for_warnings,
-            errors: for_errors,
-        } = self.collect_generics();
-        warnings.extend(for_warnings);
-        errors.extend(for_errors);
-        if abi.is_some() && generics.is_some() {
-            errors.push(ParseError {
-                span: for_loc,
-                reason: ParseErrorReason::DeclarationError,
-            });
-        }
-        let next = self.stream.clone().next();
-        match next {
-            Some((Token::Let, _)) => self.fn_declaration(abi, generics),
-            Some((Token::Seq, _)) => {
-                let _ = self.stream.next();
-                self.declaration()
-            }
-            _ => unimplemented!(),
-        }
-    }
-
-    fn type_decl(
-        &mut self,
-        generics: Option<ast::GenericsDecl>,
-    ) -> ParserReturns<ast::TypeDefinition> {
-        let mut warnings = Vec::new();
-        let mut errors = Vec::new();
-        let Some((t, loc)) = self.stream.next() else {
-            unreachable!()
-        };
-        match t {
-            Token::Type => {
-                let (ident, loc) = match self.stream.next() {
-                    Some((Token::Ident(ident), loc)) => (ident, loc),
-                    _ => {
-                        // todo recover?
-                        errors.push(ParseError {
-                            span: loc,
-                            reason: ParseErrorReason::DeclarationError,
-                        });
-                        return ParserReturns {
-                            ast: TypeDefinition::Alias("<Error>".to_string(), types::ERROR),
-                            loc,
-                            warnings,
-                            errors,
-                        };
-                    }
-                };
-                let Some((Token::Op(op), _)) = self.stream.next() else {
-                    errors.push(ParseError {
-                        span: loc,
-                        reason: ParseErrorReason::DeclarationError,
-                    });
-                    return ParserReturns {
-                        ast: TypeDefinition::Alias("<Error>".to_string(), types::ERROR),
-                        loc,
-                        warnings,
-                        errors,
-                    };
-                };
-                if op != "=" {
-                    errors.push(ParseError {
-                        span: loc,
-                        reason: ParseErrorReason::DeclarationError,
-                    });
-                    return ParserReturns {
-                        ast: TypeDefinition::Alias("<Error>".to_string(), types::ERROR),
-                        loc,
-                        warnings,
-                        errors,
-                    };
-                }
-                match self.stream.peek() {
-                    Some((Token::Ident(_), _)) => {
-                        let ty = self.collect_type();
-                        warnings.extend(ty.warnings);
-                        errors.extend(ty.errors);
-                        ParserReturns {
-                            ast: ast::TypeDefinition::Alias(ident, ty.ast),
-                            loc,
-                            warnings,
-                            errors,
-                        }
-                    }
-                    Some((Token::CurlOpen, _)) => {
-                        let strct = self.struct_declaration(ident, generics, loc);
-                        warnings.extend(strct.warnings);
-                        errors.extend(strct.errors);
-                        ParserReturns {
-                            ast: ast::TypeDefinition::Struct(strct.ast),
-                            loc,
-                            warnings,
-                            errors,
-                        }
-                    }
-                    // Some((Token::Op(op), _)) if op == "|" => Ok(ast::TypeDefinition::Enum(
-                    //     ident,
-                    //     self.enum_declaration(generics)?,
-                    //     loc,
-                    // )),
-                    _ => {
-                        errors.push(ParseError {
-                            span: loc,
-                            reason: ParseErrorReason::DeclarationError,
-                        });
-                        ParserReturns {
-                            ast: ast::TypeDefinition::Alias("<error>".to_string(), types::ERROR),
-                            loc,
-                            warnings,
-                            errors,
-                        }
-                    }
-                }
-            }
-            Token::Enum => {
-                let enum_ = self.enum_declaration(generics);
-                ParserReturns {
-                    ast: ast::TypeDefinition::Enum(enum_.ast),
-                    loc,
-                    warnings: enum_.warnings,
-                    errors: enum_.errors,
-                }
-            }
-            _ => unreachable!(),
-        }
-    }
-
-    #[allow(unused)]
-    fn enum_declaration(
-        &mut self,
-        generics: Option<GenericsDecl>,
-    ) -> ParserReturns<ast::EnumDeclaration> {
-        let mut errors = Vec::new();
-        let mut warnings = Vec::new();
-        let (ident, loc) = match self.stream.clone().next() {
-            Some((Token::Ident(_), _)) => {
-                let Some((Token::Ident(ident), loc)) = self.stream.next() else {
-                    unreachable!()
-                };
-                (ident, loc)
-            }
-            Some((Token::EoF, loc)) => {
-                errors.push(ParseError {
-                    span: loc,
-                    reason: ParseErrorReason::UnexpectedEndOfFile,
-                });
-                return ParserReturns {
-                    ast: ast::EnumDeclaration {
-                        ident: "<error>".to_string(),
-                        generics,
-                        values: Vec::new(),
-                        loc: (0, 0),
-                    },
-                    loc: (0, 0),
-                    warnings,
-                    errors,
-                };
-            }
-            Some((_, loc)) => {
-                let _ = self
-                    .stream
-                    .peeking_take_while(|(token, _)| match token {
-                        Token::Op(op) if op == "=" || op == "|" => false,
-                        _ => true,
-                    })
-                    .collect_vec();
-                errors.push(ParseError {
-                    span: loc,
-                    reason: ParseErrorReason::UnexpectedToken,
-                });
-                ("<error>".to_string(), loc)
-            }
-            None => {
-                errors.push(ParseError {
-                    span: (0, 0),
-                    reason: ParseErrorReason::UnexpectedEndOfFile,
-                });
-                return ParserReturns {
-                    ast: ast::EnumDeclaration {
-                        ident: "<error>".to_string(),
-                        generics,
-                        values: Vec::new(),
-                        loc: (0, 0),
-                    },
-                    loc: (0, 0),
-                    warnings,
-                    errors,
-                };
-            }
-        };
-        let op = match self.stream.next() {
-            Some((Token::Op(op), _)) => op,
-            _ => {
-                //TODO! progress next_toplevel valid point.
-                errors.push(ParseError {
-                    span: loc,
-                    reason: ParseErrorReason::DeclarationError,
-                });
-                return ParserReturns {
-                    ast: ast::EnumDeclaration {
-                        ident,
-                        generics,
-                        values: vec![ast::EnumVariant::Tuple {
-                            ident: "<error>".to_string(),
-                            ty: types::ERROR,
-                            loc: (0, 0),
-                        }],
-                        loc,
-                    },
-                    loc,
-                    warnings,
-                    errors,
-                };
-            }
-        };
-
-        if op != "=" {
-            //TODO! progress next_toplevel until valid point.
-            errors.push(ParseError {
-                span: loc,
-                reason: ParseErrorReason::DeclarationError,
-            });
-            return ParserReturns {
-                ast: ast::EnumDeclaration {
-                    ident,
-                    generics,
-                    values: vec![ast::EnumVariant::Tuple {
-                        ident: "<error>".to_string(),
-                        ty: types::ERROR,
-                        loc: (0, 0),
-                    }],
-                    loc,
-                },
-                loc,
-                warnings,
-                errors,
-            };
-        }
-        let mut values = Vec::new();
-        while let Some((Token::Op(op), _)) = self.stream.peek() {
-            if op == "|" {
-                let _ = self.stream.next();
-                let (ident, variant_loc) = match self.stream.clone().next() {
-                    Some((Token::Ident(_), _)) => {
-                        let Some((Token::Ident(ident), loc)) = self.stream.next() else {
-                            unreachable!()
-                        };
-                        (ident, loc)
-                    }
-                    Some((Token::EoF, loc)) => {
-                        errors.push(ParseError {
-                            span: loc,
-                            reason: ParseErrorReason::UnexpectedEndOfFile,
-                        });
-                        return ParserReturns {
-                            ast: ast::EnumDeclaration {
-                                ident,
-                                generics,
-                                values: vec![ast::EnumVariant::Tuple {
-                                    ident: "<error>".to_string(),
-                                    ty: types::ERROR,
-                                    loc: (0, 0),
-                                }],
-                                loc,
-                            },
-                            loc,
-                            warnings,
-                            errors,
-                        };
-                    }
-                    Some((_, loc)) => {
-                        let _ = self
-                            .stream
-                            .peeking_take_while(|(token, _)| match token {
-                                Token::Op(op) if op == "=" || op == "|" => false,
-                                _ => true,
-                            })
-                            .collect_vec();
-                        errors.push(ParseError {
-                            span: loc,
-                            reason: ParseErrorReason::UnexpectedToken,
-                        });
-                        ("<error>".to_string(), loc)
-                    }
-                    None => {
-                        errors.push(ParseError {
-                            span: (0, 0),
-                            reason: ParseErrorReason::UnexpectedEndOfFile,
-                        });
-                        return ParserReturns {
-                            ast: ast::EnumDeclaration {
-                                ident,
-                                generics,
-                                values: vec![ast::EnumVariant::Tuple {
-                                    ident: "<error>".to_string(),
-                                    ty: types::ERROR,
-                                    loc: (0, 0),
-                                }],
-                                loc,
-                            },
-                            loc,
-                            warnings,
-                            errors,
-                        };
-                    }
-                };
-                match self.stream.peek() {
-                    Some((Token::CurlOpen, _)) => {
-                        let fields = self.struct_declaration("".to_string(), generics.clone(), loc);
-                        warnings.extend(fields.warnings);
-                        errors.extend(fields.errors);
-                        values.push(ast::EnumVariant::Struct {
-                            ident,
-                            fields: fields.ast.values,
-                            loc: variant_loc,
-                        });
-                    }
-                    Some((Token::Op(op), _)) if op == "|" => {
-                        values.push(ast::EnumVariant::Unit {
-                            ident,
-                            loc: variant_loc,
-                        });
-                    }
-                    Some((Token::Ident(_) | Token::BracketOpen | Token::GroupOpen, _)) => {
-                        let ty = self.collect_type();
-                        warnings.extend(ty.warnings);
-                        errors.extend(ty.errors);
-                        let ty = ty.ast;
-                        let ty = if let Some(generics) = &generics {
-                            generics
-                                .decls
-                                .iter()
-                                .map(|(_, name)| name)
-                                .fold(ty, |accum, name| accum.replace_user_with_generic(name))
-                        } else {
-                            ty
-                        };
-                        values.push(ast::EnumVariant::Tuple {
-                            ident,
-                            ty,
-                            loc: variant_loc,
-                        });
-                    }
-                    _ => {
-                        values.push(ast::EnumVariant::Unit {
-                            ident,
-                            loc: variant_loc,
-                        });
-                        break;
-                    }
-                }
-            } else {
-                break;
-            }
-        }
-        ParserReturns {
-            ast: ast::EnumDeclaration {
-                ident,
-                generics,
-                values,
-                loc,
-            },
-            loc,
-            warnings,
-            errors,
-        }
-    }
-
-    fn struct_declaration(
-        &mut self,
-        ident: String,
-        generics: Option<ast::GenericsDecl>,
-        loc: crate::Location,
-    ) -> ParserReturns<ast::StructDefinition> {
-        let Some((Token::CurlOpen, _)) = self.stream.next() else {
-            unreachable!()
-        };
-        while let Some((Token::BeginBlock, _)) = self.stream.clone().next() {
-            self.stream.next();
-        }
-        let mut errors = Vec::new();
-        #[allow(unused_mut)]
-        let mut warnings = Vec::new();
-        let mut fields = Vec::<ast::FieldDecl>::new();
-        while let Some((Token::Ident(_), _)) = self.stream.clone().next() {
-            let Some((Token::Ident(name), loc)) = self.stream.next() else {
-                unreachable!();
-            };
-            let Some((Token::Colon, _)) = self.stream.next() else {
-                errors.push(ParseError {
-                    span: (0, 10000),
-                    reason: ParseErrorReason::DeclarationError,
-                });
-                fields.push(FieldDecl {
-                    name,
-                    ty: ResolvedType::Error,
-                    loc,
-                });
-                let ts = self
-                    .stream
-                    .clone()
-                    .take_while(|(it, _)| match it {
-                        Token::Comma | Token::CurlClose | Token::EndBlock => false,
-                        _ => true,
-                    })
-                    .collect_vec();
-                for _ in ts {
-                    let _ = self.stream.next();
-                }
-                continue;
-            };
-            let ty = self.collect_type();
-            warnings.extend(ty.warnings);
-            errors.extend(ty.errors);
-            let ty = ty.ast;
-            let ty = if let Some(generics) = &generics {
-                generics
-                    .decls
-                    .iter()
-                    .map(|(_, it)| it)
-                    .fold(ty, |result, it| result.replace_user_with_generic(it))
-            } else {
-                ty
-            };
-            if let Some((Token::Comma, _)) = self.stream.clone().next() {
-                self.stream.next();
-            } else {
-                if let Some((Token::Ident(_), loc)) = self.stream.clone().next() {
-                    println!("expected comma at line:{},col:{}", loc.0, loc.1);
-                    while let Some((token, _)) = self.stream.clone().next() {
-                        match token {
-                            Token::CurlClose => {
-                                self.stream.next();
-                                break;
-                            }
-                            _ => {
-                                self.stream.next();
-                            }
-                        }
-                    }
-                    errors.push(ParseError {
-                        span: loc,
-                        reason: ParseErrorReason::DeclarationError,
-                    });
-                }
-            }
-            while let Some((Token::EndBlock, _)) = self.stream.clone().next() {
-                self.stream.next();
-            }
-            fields.push(ast::FieldDecl { name, ty, loc });
-        }
-        while let Some((Token::EndBlock | Token::Comma, _)) = self.stream.clone().next() {
-            self.stream.next();
-        }
-        let Some((Token::CurlClose, _)) = self.stream.next() else {
-            errors.push(ParseError {
-                span: (0, 11111),
-                reason: ParseErrorReason::DeclarationError,
-            });
-            return ParserReturns {
-                ast: StructDefinition {
-                    ident,
-                    generics,
-                    values: fields,
-                    loc,
-                },
-                loc,
-                warnings,
-                errors,
-            };
-        };
-        ParserReturns {
-            ast: StructDefinition {
-                ident,
-                generics,
-                values: fields,
-                loc,
-            },
-            loc,
-            warnings,
-            errors,
-        }
-    }
-
-    fn collect_generics(&mut self) -> ParserReturns<Option<ast::GenericsDecl>> {
-        #[allow(unused_mut)]
-        let mut warnings = Vec::new();
-        let mut errors = Vec::new();
-        let generics = if let Some((Token::For, _)) = self.stream.clone().next() {
-            let Some((_, for_loc)) = self.stream.next() else {
-                unreachable!()
-            };
-            match self.stream.next() {
-                Some((Token::Op(op), _)) if op == "<" => {
-                    let mut out = self
-                        .stream
-                        .clone()
-                        .filter(|(token, _)| &Token::Comma != token)
-                        .take_while(|(token, _)| &Token::Op(">".to_string()) != token)
-                        .collect_vec();
-                    // TODO should probably fold next_toplevel ensure that it is comma seperated.
-                    let first_span = out.first().unwrap().1;
-                    let num = out.len();
-                    out.dedup_by_key(|(it, _)| it.clone());
-                    if out.len() == num {
-                        Some(ast::GenericsDecl {
-                            for_loc,
-                            decls: out
-                                .into_iter()
-                                .filter_map(|(t, loc)| {
-                                    let Token::Ident(name) = t else { return None };
-                                    Some((loc, name))
-                                })
-                                .collect(),
-                        })
-                    } else {
-                        errors.push(ParseError {
-                            span: first_span,
-                            reason: ParseErrorReason::DeclarationError,
-                        });
-                        return ParserReturns {
-                            ast: None,
-                            loc: first_span,
-                            warnings,
-                            errors,
-                        };
-                    }
-                }
-                _ => {
-                    errors.push(ParseError {
-                        span: for_loc,
-                        reason: ParseErrorReason::DeclarationError,
-                    });
-                    return ParserReturns {
-                        ast: None,
-                        loc: for_loc,
-                        warnings,
-                        errors,
-                    };
-                }
-            }
-        } else {
-            None
-        };
-        if generics.is_some() {
-            while let Some((token, _)) = self.stream.clone().next() {
-                match token {
-                    Token::Op(op) if op == ">" => {
-                        self.stream.next();
-                        break;
-                    }
-                    _ => {
-                        self.stream.next();
-                    }
-                }
-            }
-        }
-        ParserReturns {
-            loc: generics.as_ref().map(|it| it.for_loc).unwrap_or_default(),
-            ast: generics,
-            warnings,
-            errors,
-        }
-    }
-
-    fn parse_arg(&mut self) -> ParserReturns<ArgDeclaration> {
-        #[allow(unused_mut)]
-        let mut warnings = Vec::new();
-        let mut errors = Vec::new();
-        match self.stream.clone().next() {
-            Some((Token::GroupOpen, _)) => {
-                //(
-                let Some((Token::GroupOpen, open_loc)) = self.stream.next() else {
-                    unreachable!()
-                };
-                match self.stream.clone().next() {
-                    Some((Token::GroupClose, _)) => {
-                        //()
-                        let _ = self.stream.next(); // )
-                        let ty = if let Some((Token::Colon, _)) = self.stream.clone().next() {
-                            let _ = self.stream.next(); // :
-                            let ty = self.collect_type();
-                            warnings.extend(ty.warnings);
-                            errors.extend(ty.errors);
-                            // will error at type checking/inference phase if not a unit type.
-                            Some(ty.ast)
-                        } else {
-                            None
-                        };
-                        ParserReturns {
-                            ast: ArgDeclaration::Unit { loc: open_loc, ty },
-                            loc: open_loc,
-                            warnings,
-                            errors,
-                        }
-                    }
-                    Some((Token::Ident(_), _)) => {
-                        // (<ident>
-                        let Some((Token::Ident(name), loc)) = self.stream.next() else {
-                            unreachable!()
-                        };
-                        match self.stream.clone().next() {
-                            Some((Token::Colon, _)) => {
-                                //(<ident>:
-                                let _ = self.stream.next(); // :
-                                let ty = self.collect_type();
-                                warnings.extend(ty.warnings);
-                                errors.extend(ty.errors);
-                                let ty = ty.ast;
-                                match self.stream.clone().next() {
-                                    Some((Token::GroupClose, _)) => {
-                                        let _ = self.stream.next();
-                                    }
-                                    Some((_, loc)) => {
-                                        errors.push(ParseError {
-                                            span: loc,
-                                            reason: ParseErrorReason::UnbalancedBraces,
-                                        });
-                                    }
-                                    None => {
-                                        errors.push(ParseError {
-                                            span: (0, 0),
-                                            reason: ParseErrorReason::UnbalancedBraces,
-                                        });
-                                    }
-                                }
-                                ParserReturns {
-                                    ast: if name == "_" {
-                                        ArgDeclaration::Discard { loc, ty: Some(ty) }
-                                    } else {
-                                        ArgDeclaration::Simple {
-                                            loc,
-                                            ident: name,
-                                            ty: Some(ty),
-                                        }
-                                    },
-                                    loc,
-                                    warnings,
-                                    errors,
-                                }
-                            }
-                            Some((Token::Comma, _)) => {
-                                //(<ident>,
-                                let mut contents = vec![if name == "_" {
-                                    ArgDeclaration::Discard { loc, ty: None }
-                                } else {
-                                    ArgDeclaration::Simple {
-                                        loc,
-                                        ident: name,
-                                        ty: None,
-                                    }
-                                }];
-                                let _ = self.stream.next(); //,
-                                while let Some((Token::Ident(_) | Token::GroupOpen, _)) =
-                                    self.stream.clone().next()
-                                {
-                                    let arg = self.parse_arg();
-                                    warnings.extend(arg.warnings);
-                                    errors.extend(arg.errors);
-                                    contents.push(arg.ast);
-                                }
-                                let ty = if let Some((Token::Colon, _)) = self.stream.clone().next()
-                                {
-                                    let _ = self.stream.next();
-                                    let ty = self.collect_type();
-                                    warnings.extend(ty.warnings);
-                                    errors.extend(ty.errors);
-                                    Some(ty.ast)
-                                } else {
-                                    None
-                                };
-                                if let Some((Token::GroupClose, _)) = self.stream.clone().next() {
-                                    let _ = self.stream.next();
-                                } else {
-                                    errors.push(ParseError {
-                                        span: loc,
-                                        reason: ParseErrorReason::UnbalancedBraces,
-                                    });
-                                }
-                                ParserReturns {
-                                    ast: ArgDeclaration::DestructureTuple(contents, ty, open_loc),
-                                    loc: open_loc,
-                                    warnings,
-                                    errors,
-                                }
-                            }
-                            Some((Token::GroupClose, _)) => {
-                                //(<ident>)
-                                let _ = self.stream.next();
-                                ParserReturns {
-                                    ast: if name == "_" {
-                                        ArgDeclaration::Discard { loc, ty: None }
-                                    } else {
-                                        ArgDeclaration::Simple {
-                                            loc,
-                                            ident: name,
-                                            ty: None,
-                                        }
-                                    },
-                                    loc: open_loc,
-                                    warnings,
-                                    errors,
-                                }
-                            }
-                            Some((_, loc)) => {
-                                errors.push(ParseError {
-                                    span: loc,
-                                    reason: ParseErrorReason::UnbalancedBraces,
-                                });
-                                ParserReturns {
-                                    ast: ArgDeclaration::Simple {
-                                        loc,
-                                        ident: "<error>".to_string(),
-                                        ty: Some(types::ERROR),
-                                    },
-                                    loc,
-                                    warnings,
-                                    errors,
-                                }
-                            }
-                            None => {
-                                errors.push(ParseError {
-                                    span: (0, 0),
-                                    reason: ParseErrorReason::UnbalancedBraces,
-                                });
-                                ParserReturns {
-                                    ast: ArgDeclaration::Simple {
-                                        loc: (0, 0),
-                                        ident: "<error>".to_string(),
-                                        ty: Some(types::ERROR),
-                                    },
-                                    loc: (0, 0),
-                                    warnings,
-                                    errors,
-                                }
-                            }
-                        }
-                    }
-                    _ => {
-                        //(<unknown>
-                        let inner = self.parse_arg();
-                        warnings.extend(inner.warnings);
-                        errors.extend(inner.errors);
-                        let mut inner = inner.ast;
-                        if let Some((Token::Colon, _)) = self.stream.clone().next() {
-                            let _ = self.stream.next();
-                            let ty = self.collect_type();
-                            warnings.extend(ty.warnings);
-                            errors.extend(ty.errors);
-                            let new_ty = ty.ast;
-                            match &mut inner {
-                                ArgDeclaration::DestructureStruct {
-                                    loc,
-                                    struct_ident,
-                                    fields,
-                                    renamed_fields,
-                                } => (), //generate warning.
-                                ArgDeclaration::Discard { ty, .. }
-                                | ArgDeclaration::DestructureTuple(_, ty, _)
-                                | ArgDeclaration::Unit { ty, .. }
-                                | ArgDeclaration::Simple { ty, .. } => *ty = Some(new_ty),
-                            }
-                        }
-                        if let Some((Token::GroupClose, _)) = self.stream.clone().next() {
-                            let _ = self.stream.next();
-                        } else {
-                            errors.push(ParseError {
-                                span: open_loc,
-                                reason: ParseErrorReason::UnbalancedBraces,
-                            });
-                        }
-                        ParserReturns {
-                            ast: inner,
-                            loc: open_loc,
-                            warnings,
-                            errors,
-                        }
-                    }
-                }
-            }
-            Some((Token::Ident(_), _)) => {
-                let Some((Token::Ident(ident), loc)) = self.stream.next() else {
-                    unreachable!()
-                };
-                ParserReturns {
-                    loc,
-                    ast: if ident == "_" {
-                        ArgDeclaration::Discard { loc, ty: None }
-                    } else {
-                        ArgDeclaration::Simple {
-                            loc,
-                            ident,
-                            ty: None,
-                        }
-                    },
-                    warnings,
-                    errors,
-                }
-            }
-            Some((Token::EoF, loc)) => {
-                errors.push(ParseError {
-                    span: loc,
-                    reason: ParseErrorReason::UnexpectedEndOfFile,
-                });
-                ParserReturns {
-                    ast: ArgDeclaration::Simple {
-                        loc,
-                        ident: "<error>".to_string(),
-                        ty: Some(types::ERROR),
-                    },
-                    loc,
-                    warnings,
-                    errors,
-                }
-            }
-            Some((_token, loc)) => {
-                errors.push(ParseError {
-                    span: loc,
-                    reason: ParseErrorReason::UnexpectedToken,
-                });
-                ParserReturns {
-                    loc,
-                    ast: ArgDeclaration::Simple {
-                        loc,
-                        ident: "<error>".to_string(),
-                        ty: Some(types::ERROR),
-                    },
-                    warnings,
-                    errors,
-                }
-            }
-            None => {
-                errors.push(ParseError {
-                    span: (0, 0),
-                    reason: ParseErrorReason::UnexpectedEndOfFile,
-                });
-                ParserReturns {
-                    ast: ArgDeclaration::Simple {
-                        loc: (0, 0),
-                        ident: "<error>".to_string(),
-                        ty: Some(types::ERROR),
-                    },
-                    loc: (0, 0),
-                    warnings,
-                    errors,
-                }
-            }
-        }
-    }
-
-    fn collect_args(&mut self) -> ParserReturns<Vec<ArgDeclaration>> {
-        let mut out = Vec::new();
-        let mut warnings = Vec::new();
-        let mut errors = Vec::new();
-        while let Some((t, _)) = self.stream.clone().next() {
-            if let Token::Op(eq) = &t {
-                if eq == "=" {
-                    break;
-                }
-            }
-            if t == Token::Colon {
-                break;
-            }
-            let arg = self.parse_arg();
-            warnings.extend(arg.warnings);
-            errors.extend(arg.errors);
-            out.push(arg.ast)
-        }
-        ParserReturns {
-            ast: out,
-            loc: (0, 0), //this is discarded.
-            warnings,
-            errors,
-        }
-    }
-
-    fn destructuring_declaration(&mut self) -> ParserReturns<ValueDeclaration> {
-        let Some((Token::Let, _)) = self.stream.next() else {
-            unreachable!()
-        };
-        let ParserReturns {
-            ast: kind,
-            loc,
-            mut warnings,
-            mut errors,
-        } = self.collect_pattern();
-        let ty = if let Some((Token::Colon, _)) = self.stream.peek() {
-            let _ = self.stream.next();
-            let ty = self.collect_type();
-            warnings.extend(ty.warnings);
-            errors.extend(ty.errors);
-            Some(ty.ast)
-        } else {
-            None
-        };
-        if let Some((Token::Op(eq), loc)) = self.stream.peek() {
-            if eq != "=" {
-                errors.push(ParseError {
-                    span: *loc,
-                    reason: ParseErrorReason::UnexpectedToken,
-                });
-            } else {
-                let _ = self.stream.next();
-            }
-        } else {
-            errors.push(ParseError {
-                span: loc,
-                reason: ParseErrorReason::UnexpectedToken,
-            });
-        }
-        let expr = match self.stream.peek() {
-            Some((Token::BeginBlock, loc)) => {
-                errors.push(ParseError {
-                    span: *loc,
-                    reason: ParseErrorReason::UnsupportedFeature,
-                });
-                let result = self.collect_block();
-                warnings.extend(result.warnings);
-                errors.extend(result.errors);
                 ast::Expr::Error
             }
-            Some(_) => {
-                let result = self.next_expr();
-                warnings.extend(result.warnings);
-                errors.extend(result.errors);
-                result.ast
-            }
-            _ => {
-                errors.push(ParseError {
-                    span: (0, 0),
-                    reason: ParseErrorReason::UnexpectedEndOfFile,
-                });
-                ast::Expr::Error
-            }
-        };
-        ParserReturns {
-            ast: ValueDeclaration {
-                loc,
-                is_op: false,
-                target: kind,
-                args: Vec::new(),
-                ty,
-                value: ValueType::Expr(expr),
-                generictypes: None,
-                abi: None,
-            },
-            loc,
-            warnings,
-            errors,
-        }
-    }
+        });
 
-    fn fn_declaration(
-        &mut self,
-        abi: Option<ast::Abi>,
-        generics: Option<ast::GenericsDecl>,
-    ) -> ParserReturns<ValueDeclaration> {
-        if let Some((Token::Let, _start)) = self.stream.next() {
-            let (token, ident_span) = self.stream.next().unwrap();
-            let (ident, is_op) = match token {
-                Token::Ident(ident) => (ident, false),
-                Token::Op(ident) => (ident, true),
-                _ => {
-                    return ParserReturns {
-                        ast: ValueDeclaration {
-                            loc: ident_span,
-                            is_op: false,
-                            target: ast::Pattern::Read("<error>".to_string(), ident_span),
-                            args: vec![ArgDeclaration::Simple {
-                                loc: (0, 0),
-                                ident: "<error>".to_string(),
-                                ty: Some(types::ERROR),
-                            }],
-                            ty: Some(types::ERROR),
-                            value: ValueType::Expr(Expr::Error),
-                            generictypes: generics,
-                            abi,
-                        },
-                        loc: ident_span,
-                        warnings: Vec::new(),
-                        errors: vec![ParseError {
-                            span: ident_span,
-                            reason: ParseErrorReason::DeclarationError,
-                        }],
-                    }
-                }
-            };
-            let ParserReturns {
-                ast: mut args,
-                loc: _,
-                mut warnings,
-                mut errors,
-            } = self.collect_args();
-            if is_op && (args.len() > 2 || args.len() == 0) {
-                if let Some((Token::Colon, _)) = self.stream.clone().next() {
-                    let _ = self.stream.next();
-                    let _ = self.collect_type();
-                }
-                if let Some((Token::Op(op), _)) = self.stream.clone().next() {
-                    if op == "=" {
-                        let _ = self.stream.next();
-                        match self.stream.clone().next() {
-                            Some((Token::BeginBlock, _)) => {
-                                let _ = self.collect_block();
-                            }
-                            Some(_) => {
-                                let _ = self.next_expr();
-                            }
-                            _ => (),
-                        }
-                    }
-                }
-                errors.push(ParseError {
-                    span: ident_span,
-                    reason: ParseErrorReason::DeclarationError,
-                });
-                return ParserReturns {
-                    ast: ValueDeclaration {
-                        loc: ident_span,
-                        is_op,
-                        target: ast::Pattern::Read(ident, ident_span),
-                        args,
-                        ty: Some(types::ERROR),
-                        value: ValueType::Expr(ast::Expr::Error),
-                        generictypes: generics,
-                        abi,
-                    },
-                    loc: ident_span,
-                    warnings,
-                    errors,
-                };
-            }
-
-            let mut ty = if let Some((Token::Colon, _)) = self.stream.clone().next() {
-                let _ = self.stream.next();
-                let ty = self.collect_type();
-                warnings.extend(ty.warnings);
-                errors.extend(ty.errors);
-                let ty = ty.ast;
-                Some(ty)
-            } else {
-                None
-            };
-
-            let op = match self.stream.next() {
-                Some((Token::Op(op), _)) => op,
-                Some((Token::Seq, _)) => {
-                    if !abi.is_some() {
-                        errors.push(ParseError {
-                            span: ident_span,
-                            reason: ParseErrorReason::DeclarationError,
-                        });
-                        return ParserReturns {
-                            ast: ValueDeclaration {
-                                loc: ident_span,
-                                is_op,
-                                target: ast::Pattern::Read(ident, ident_span),
-                                args,
-                                ty,
-                                value: ValueType::Expr(Expr::Error),
-                                generictypes: generics,
-                                abi,
-                            },
-                            loc: ident_span,
-                            warnings,
-                            errors,
-                        };
-                    } else if ty.is_none() || args.len() != 0 {
-                        errors.push(ParseError {
-                            span: ident_span,
-                            reason: ParseErrorReason::DeclarationError,
-                        });
-                        return ParserReturns {
-                            ast: ValueDeclaration {
-                                loc: ident_span,
-                                is_op,
-                                target: ast::Pattern::Read(ident, ident_span),
-                                args,
-                                ty,
-                                value: ValueType::Expr(Expr::Error),
-                                generictypes: generics,
-                                abi,
-                            },
-                            loc: ident_span,
-                            warnings,
-                            errors,
-                        };
-                    } else {
-                        return ParserReturns {
-                            ast: ValueDeclaration {
-                                loc: ident_span,
-                                is_op,
-                                target: ast::Pattern::Read(ident, ident_span),
-                                args,
-                                ty,
-                                value: ValueType::External,
-                                generictypes: generics,
-                                abi,
-                            },
-                            loc: ident_span,
-                            warnings,
-                            errors,
-                        };
-                    }
-                }
-                _ => {
-                    //TODO! progress next_toplevel valid point.
-                    errors.push(ParseError {
-                        span: ident_span,
-                        reason: ParseErrorReason::DeclarationError,
-                    });
-                    return ParserReturns {
-                        ast: ValueDeclaration {
-                            loc: ident_span,
-                            is_op,
-                            target: ast::Pattern::Read(ident, ident_span),
-                            args,
-                            ty,
-                            value: ValueType::Expr(Expr::Error),
-                            generictypes: generics,
-                            abi,
-                        },
-                        loc: ident_span,
-                        warnings,
-                        errors,
-                    };
-                }
-            };
-
-            if op != "=" {
-                //TODO! progress next_toplevel until valid point.
-                errors.push(ParseError {
-                    span: ident_span,
-                    reason: ParseErrorReason::DeclarationError,
-                });
-                return ParserReturns {
-                    ast: ValueDeclaration {
-                        loc: ident_span,
-                        is_op,
-                        target: ast::Pattern::Read(ident, ident_span),
-                        args,
-                        ty,
-                        value: ValueType::Expr(Expr::Error),
-                        generictypes: generics,
-                        abi,
-                    },
-                    loc: ident_span,
-                    warnings,
-                    errors,
-                };
-            }
-
-            let value = match self.stream.clone().next() {
-                Some((Token::BeginBlock, _)) => ValueType::Function({
-                    let block = self.collect_block();
-                    warnings.extend(block.warnings);
-                    errors.extend(block.errors);
-                    block.ast
+        ascii::space0(input)?;
+        combinator::trace(
+            "simple expr",
+            combinator::alt((
+                //axioms
+                "()".map(|_| ast::Expr::UnitLiteral),
+                "true"
+                    .span()
+                    .map(|loc| ast::Expr::BoolLiteral(true, (loc.start, loc.end))),
+                "false"
+                    .span()
+                    .map(|loc| ast::Expr::BoolLiteral(false, (loc.start, loc.end))),
+                combinator::trace("struct construction",struct_con),
+                ascii::dec_int.map(|it: i128| ast::Expr::NumericLiteral {
+                    value: it.to_string(),
                 }),
-                Some((_, _)) => {
-                    let ParserReturns {
-                        ast,
-                        loc: _,
-                        warnings: expr_warnings,
-                        errors: expr_errors,
-                    } = self.next_expr();
-                    warnings.extend(expr_warnings);
-                    errors.extend(expr_errors);
-                    ValueType::Expr(ast)
-                }
-                _ => {
-                    errors.push(ParseError {
-                        span: ident_span,
-                        reason: ParseErrorReason::UnexpectedEndOfFile,
-                    });
-                    return ParserReturns {
-                        ast: ValueDeclaration {
-                            loc: ident_span,
-                            is_op,
-                            target: ast::Pattern::Read(ident, ident_span),
-                            args,
-                            ty,
-                            value: ValueType::Expr(Expr::Error),
-                            generictypes: generics,
-                            abi,
-                        },
-                        loc: ident_span,
-                        warnings,
-                        errors,
-                    };
-                }
-            };
-            if let Some(generics) = &generics {
-                for arg in &mut args {
-                    generics
-                        .decls
-                        .iter()
-                        .map(|(_, it)| it)
-                        .for_each(|name| arg.apply_generic(name));
-                }
+                ascii::float.map(|it: f64| ast::Expr::NumericLiteral {
+                    value: it.to_string(),
+                }),
+                string_lit.map(ast::Expr::StringLiteral),
+                char_lit.map(ast::Expr::CharLiteral),
+                // todo! operator read.  important for passing operators to functions
+                // parens(op).map(ast::Expr::OpRead)
+                //dependents.
+                parens(expr),
+                //tuple
+                combinator::trace("tuple",parens(combinator::separated(
+                    1..,
+                    expr,
+                    (ascii::multispace0, ',', ascii::multispace0),
+                )))
+                .with_span()
+                .map(|(contents, loc)| ast::Expr::TupleLiteral {
+                    contents,
+                    loc: (loc.start, loc.end),
+                }),
+                //array
+                combinator::trace("array construction",combinator::delimited(
+                    ('[', ascii::multispace0),
+                    combinator::cut_err(combinator::separated(
+                        1..,
+                        expr,
+                        (ascii::multispace0, ',', ascii::multispace0),
+                    )),
+                    (ascii::multispace0, ']'),
+                )).with_span()
+                .map(|(contents, loc)| ast::Expr::ArrayLiteral {
+                    contents,
+                    loc: (loc.start, loc.end),
+                }),
+                if_.map(ast::Expr::If),
+                match_.map(ast::Expr::Match),
+                ident
+                    .with_span()
+                    .map(|(name, loc)| ast::Expr::ValueRead(name.into(), (loc.start, loc.end))),
+                
+                // combinator::separated(expr,combinator::delimited(ascii::multispace0,op,ascii::multispace0))
+            )),
+        ).parse_next(input)
+}
 
-                if let Some(ty) = &mut ty {
-                    *ty = generics
-                        .decls
-                        .iter()
-                        .map(|(_, it)| it)
-                        .fold(ty.clone(), |ty, name| ty.replace_user_with_generic(name));
-                }
-            }
+fn expr(input: &mut Stream<'_>) -> PResult<ast::Expr> {
+    combinator::trace("expr",|input:&mut Stream<'_>| {
+    
 
-            return ParserReturns {
-                ast: ValueDeclaration {
-                    loc: ident_span,
-                    is_op,
-                    target: ast::Pattern::Read(ident, ident_span),
-                    args,
-                    ty,
-                    value,
-                    generictypes: generics,
-                    abi,
-                },
-                loc: ident_span,
-                warnings,
-                errors,
-            };
-        }
-        return ParserReturns {
-            ast: ValueDeclaration {
-                loc: (0, 0),
-                is_op: false,
-                target: ast::Pattern::Read("<error>".to_string(), (0, 0)),
-                args: vec![ArgDeclaration::Simple {
-                    loc: (0, 0),
-                    ident: "<error>".to_string(),
-                    ty: Some(types::ERROR),
-                }],
-                ty: Some(types::ERROR),
-                value: ValueType::Expr(Expr::Error),
-                generictypes: generics,
-                abi,
-            },
-            loc: (0, 0),
-            warnings: Vec::new(),
-            errors: vec![ParseError {
-                span: (0, 0),
-                reason: ParseErrorReason::UnknownError,
-            }],
-        };
-    }
-
-    fn collect_block(&mut self) -> ParserReturns<Vec<Statement>> {
-        let mut warnings = Vec::new();
-        let mut errors = Vec::new();
-        let sub = if let Some((Token::BeginBlock, _)) = self.stream.next() {
-            let mut sub_expr = Vec::new();
-            loop {
-                let next = self.stream.peek();
-                if let Some((Token::EndBlock, _)) = next {
-                    self.stream.next();
-                    break;
-                } else if let Some((Token::EoF, _)) = next {
-                    break;
-                }
-                let stmnt = self.next_statement();
-                warnings.extend(stmnt.warnings);
-                errors.extend(stmnt.errors);
-                sub_expr.push(stmnt.ast);
-            }
-            sub_expr
-        } else {
-            errors.push(ParseError {
-                span: (0, 0),
-                reason: ParseErrorReason::UnknownError,
-            });
-            Vec::new()
-        };
-        ParserReturns {
-            ast: sub,
-            loc: (0, 0),
-            warnings,
-            errors,
-        }
-    }
-
-    fn binary_op(&mut self) -> ParserReturns<Expr> {
-        let op_loc = self.stream.clone().nth(2).unwrap().1;
-        let mut warnings = Vec::new();
-        let mut errors = Vec::new();
-        let mut group_opens = 0;
-        let tokens = self
-            .stream
-            .clone()
-            .take_while(|(t, _)| match t {
-                Token::GroupOpen => {
-                    group_opens += 1;
-                    true
-                }
-                Token::Ident(_)
-                | Token::FloatingPoint(_, _)
-                | Token::Integer(_, _)
-                | Token::Op(_) => true,
-                Token::GroupClose => {
-                    group_opens -= 1;
-                    group_opens >= 0
-                }
-                _ => false,
+    let out = simple_expr(input)?;
+    let out = if let Some(args) = combinator::opt(combinator::preceded(
+        ascii::multispace1,
+        combinator::separated::<_, _, Vec<_>, _, _, _, _>(1.., simple_expr, ascii::multispace1),
+    ))
+    .parse_next(input)?
+    {
+        std::iter::once(out)
+            .chain(args)
+            .reduce(|value, arg| {
+                let loc = value.get_loc();
+                ast::Expr::FnCall(ast::FnCall {
+                    value: value.into(),
+                    arg: Some(arg.into()),
+                    loc,
+                })
             })
-            .collect_vec();
-        for _ in 0..tokens.len() {
-            self.stream.next();
-        }
+            .unwrap()
+    } else {
+        out
+    };
+    if let Some(op_ident) = combinator::opt(combinator::preceded(
+        ascii::space0,
+        op.with_span()
+            .map(|(op, loc)| (op.to_string(), (loc.start, loc.end))),
+    ))
+    .parse_next(input)?
+    {
+        let mut output = vec![ShuntingYardOptions::Expr(out)];
+        let mut op_stack = vec![op_ident];
+        let op = combinator::delimited(ascii::space0, op.with_span(), ascii::space0)
+            .map(|(op, loc)| (op.to_string(), (loc.start, loc.end)))
+            .map(ShuntingYardOptions::Op);
+        let mut opts = combinator::opt(combinator::preceded(
+            ascii::space0,
+            combinator::alt((simple_expr.map(ShuntingYardOptions::Expr), op)),
+        ));
 
-        // (name,weight,right associative)
-        const PRECIDENCE: [(&'static str, usize, bool); 12] = [
-            (".", usize::MAX, true),
-            ("**", 7, false),
-            ("*", 5, true),
-            ("/", 5, true),
-            ("+", 4, true),
-            ("-", 4, true),
-            ("<", 2, true),
-            ("<=", 2, true),
-            (">", 2, true),
-            (">=", 2, true),
-            ("&&", 1, true),
-            ("||", 1, true),
-        ];
-        let mut output = Vec::with_capacity(tokens.len());
-        let mut op_stack = Vec::with_capacity(tokens.len() / 3);
-        let mut token_iter = tokens.into_iter().peekable();
-        while let Some((token, _)) = token_iter.peek() {
-            match token {
-                Token::GroupOpen => {
-                    let _ = token_iter.next();
-                    let mut group_opens = 0;
-                    let sub_tokens = token_iter
-                        .clone()
-                        .take_while(|(t, _)| match t {
-                            Token::GroupClose => {
-                                group_opens -= 1;
-                                group_opens >= 0
-                            }
-                            Token::GroupOpen => {
-                                group_opens += 1;
-                                true
-                            }
-                            Token::Ident(_)
-                            | Token::FloatingPoint(_, _)
-                            | Token::Integer(_, _)
-                            | Token::Op(_) => true,
-                            _ => false,
-                        })
-                        .collect_vec();
-                    for _ in 0..sub_tokens.len() {
-                        token_iter.next();
-                    }
-                    let ParserReturns {
-                        ast: result,
-                        loc,
-                        warnings: expr_warnings,
-                        errors: expr_errors,
-                    } = Parser::from_stream(sub_tokens.into_iter()).next_expr();
-                    warnings.extend(expr_warnings);
-                    errors.extend(expr_errors);
-                    output.push(ShuntingYardOptions::Expr((result, loc)));
+        //todo! move to just before inference for
+        while let Some(opts) = opts.parse_next(input)? {
+            match opts {
+                ShuntingYardOptions::Expr(_) => {
+                    output.push(opts);
                 }
-                Token::GroupClose => {
-                    let _ = token_iter.next();
-                }
-                Token::Ident(_) => {
-                    if let Some((
-                        Token::Ident(_)
-                        | Token::CharLiteral(_)
-                        | Token::StringLiteral(_)
-                        | Token::FloatingPoint(_, _)
-                        | Token::Integer(_, _)
-                        | Token::GroupOpen,
-                        _,
-                    )) = token_iter.clone().nth(1)
-                    {
-                        let sub_tokens = token_iter
-                            .clone()
-                            .take_while(|(t, _)| match t {
-                                Token::GroupClose => {
-                                    group_opens -= 1;
-                                    group_opens >= 0
-                                }
-                                Token::GroupOpen => {
-                                    group_opens += 1;
-                                    true
-                                }
-                                Token::Ident(_)
-                                | Token::FloatingPoint(_, _)
-                                | Token::Integer(_, _) => true,
-                                Token::Op(_) => group_opens >= 0,
-                                _ => false,
-                            })
-                            .collect_vec();
-                        for _ in 0..sub_tokens.len() {
-                            token_iter.next();
-                        }
-                        let ParserReturns {
-                            ast: result,
-                            loc,
-                            warnings: expr_warnings,
-                            errors: expr_errors,
-                        } = Parser::from_stream(sub_tokens.into_iter()).next_expr();
-                        warnings.extend(expr_warnings);
-                        errors.extend(expr_errors);
-
-                        output.push(ShuntingYardOptions::Expr((result, loc)));
-                    } else {
-                        let Some((Token::Ident(ident), loc)) = token_iter.next() else {
-                            unreachable!()
-                        };
-                        output.push(ShuntingYardOptions::Expr((
-                            Expr::ValueRead(ident, loc),
-                            loc,
-                        )));
-                    }
-                }
-                Token::Integer(_, _)
-                | Token::FloatingPoint(_, _)
-                | Token::CharLiteral(_)
-                | Token::StringLiteral(_) => output.push(ShuntingYardOptions::Expr({
-                    let Some((token, span)) = token_iter.next() else {
-                        return ParserReturns {
-                            ast: Expr::Error,
-                            loc: (0, 0),
-                            warnings: Vec::new(),
-                            errors: vec![ParseError {
-                                span: (0, 0),
-                                reason: ParseErrorReason::UnknownError,
-                            }],
-                        };
-                    };
-
-                    let result = match make_literal(token, span) {
-                        Ok(r) => r,
-                        Err(e) => {
-                            errors.push(e);
-                            ast::Expr::Error
-                        }
-                    };
-                    (result, span)
-                })),
-                Token::Op(_) => {
-                    let Some((Token::Op(ident), loc)) = token_iter.next() else {
-                        unreachable!()
-                    };
+                ShuntingYardOptions::Op((op_ident, loc)) => {
                     let (prec, left) = PRECIDENCE
                         .iter()
                         .find_map(|(op, weight, assc)| {
-                            if op == &ident {
+                            if op == &op_ident {
                                 Some((*weight, *assc))
                             } else {
                                 None
@@ -3247,7 +1153,7 @@ where
                         })
                         .unwrap_or((1, false));
                     if op_stack.is_empty() {
-                        op_stack.push((ident, loc));
+                        op_stack.push((op_ident, loc));
                         continue;
                     }
                     while let Some(op_back) = op_stack.last() {
@@ -3267,749 +1173,315 @@ where
                             };
                             output.push(ShuntingYardOptions::Op(op_back));
                         } else {
-                            op_stack.push((ident.clone(), loc));
+                            op_stack.push((op_ident.clone(), loc));
                             break;
                         }
                     }
                     if op_stack.last().is_none() {
-                        op_stack.push((ident, loc));
+                        op_stack.push((op_ident, loc));
                     }
                 }
-                _ => break,
             }
         }
         output.extend(op_stack.into_iter().rev().map(ShuntingYardOptions::Op));
-        let mut final_expr = Vec::<(ast::Expr, crate::Location)>::new();
+        let mut final_expr = Vec::new();
         for expr in output {
             match expr {
                 ShuntingYardOptions::Expr(expr) => final_expr.push(expr),
                 ShuntingYardOptions::Op((op, loc)) => {
-                    let Some((rhs, _)) = final_expr.pop() else {
+                    let Some(rhs) = final_expr.pop() else {
                         unreachable!()
                     };
-                    let Some((lhs, _)) = final_expr.pop() else {
+                    let Some(lhs) = final_expr.pop() else {
                         unreachable!()
                     };
-                    final_expr.push((
-                        ast::Expr::BinaryOpCall(BinaryOpCall {
-                            loc,
-                            operator: op,
-                            lhs: lhs.into(),
-                            rhs: rhs.into(),
-                        }),
+                    final_expr.push(ast::Expr::BinaryOpCall(ast::BinaryOpCall {
                         loc,
-                    ))
+                        operator: op,
+                        lhs: lhs.into(),
+                        rhs: rhs.into(),
+                    }));
                 }
             }
         }
-
-        if final_expr.len() != 1 {
-            errors.push(ParseError {
-                span: op_loc,
-                reason: ParseErrorReason::UnknownError,
-            });
-            ParserReturns {
-                ast: Expr::Error,
-                loc: op_loc,
-                warnings,
-                errors,
-            }
+        if final_expr.len() == 1 {
+            Ok(final_expr.pop().unwrap())
         } else {
-            let (expr, _loc) = final_expr.into_iter().next().unwrap();
-
-            ParserReturns {
-                ast: expr,
-                loc: op_loc,
-                warnings,
-                errors,
-            }
+            Err(ErrMode::Cut(ContextError::new().add_context(
+                input,
+                &input.checkpoint(),
+                winnow::error::StrContext::Label("Incomplete binary op expression"),
+            )))
         }
+    } else {
+        Ok(out)
     }
+    }).parse_next(input)
+}
 
-    fn match_(&mut self) -> ParserReturns<Match> {
-        let Some((Token::Match, match_loc)) = self.stream.next() else {
-            unreachable!()
-        };
-        let ParserReturns {
-            ast: on,
-            loc: _,
-            mut warnings,
-            mut errors,
-        } = self.next_expr();
-        if let Some((Token::Where, _)) = self.stream.clone().next() {
-            let _ = self.stream.next();
-        } else {
-            //TODO? recovery?
-            let loc = if let Some((_, loc)) = self.stream.clone().next() {
-                loc
-            } else {
-                (0, 0)
-            };
-            errors.push(ParseError {
-                span: loc,
-                reason: ParseErrorReason::UnexpectedToken,
-            })
-        };
-        let expect_block = if let Some((Token::BeginBlock, _)) = self.stream.clone().next() {
-            let _ = self.stream.next();
-            true
-        } else {
-            false
-        };
-        let mut arms = Vec::new();
-        while let Some((Token::Op(op), _)) = self.stream.peek() {
-            if op != "|" {
-                break;
-            }
-            let _ = self.stream.next();
-            let pattern = self.collect_pattern();
-            warnings.extend(pattern.warnings);
-            errors.extend(pattern.errors);
-            let loc = pattern.loc;
-            let cond = pattern.ast;
-            if let Some((Token::Arrow, _)) = self.stream.peek() {
-                self.stream.next();
-            } else {
-                let Some((t, loc)) = self.stream.peek() else {
-                    unreachable!()
-                };
-                println!(
-                    "expected -> but got {:?} at line: {}, col: {}",
-                    t, loc.0, loc.1
-                );
-            }
-            let (block, ret) = match self.stream.peek() {
-                Some((Token::BeginBlock, _)) => {
-                    let _ = self.stream.next();
-                    let mut body = Vec::new();
-                    while self
-                        .stream
-                        .clone()
-                        .skip_while(|(it, _)| it != &Token::Seq && it != &Token::EndBlock)
-                        .next()
-                        .map(|a| a.0 != Token::EndBlock && a.0 != Token::EoF)
-                        .unwrap_or(false)
-                    {
-                        let stmnt = self.next_statement();
-                        warnings.extend(stmnt.warnings);
-                        errors.extend(stmnt.errors);
-                        body.push(stmnt.ast);
-                    }
-                    match self.stream.peek() {
-                        Some((Token::EndBlock, _)) => {
-                            let _ = self.stream.next();
-                            (body, None)
-                        }
-                        _ => {
-                            let ParserReturns {
-                                ast: ret,
-                                warnings: ret_warnings,
-                                errors: ret_errors,
-                                loc: _,
-                            } = self.next_expr();
-                            warnings.extend(ret_warnings);
-                            errors.extend(ret_errors);
-                            if let Some((Token::EndBlock, _)) = self.stream.peek() {
-                                let _ = self.stream.next();
-                            } else {
-                                println!("did you mean next_toplevel move back a block?");
-                            }
-                            (body, Some(ret.into()))
-                        }
-                    }
-                }
-                _ => {
-                    let ParserReturns {
-                        ast: expr,
-                        warnings: ret_warnings,
-                        errors: ret_errors,
-                        loc: _,
-                    } = self.next_expr();
-                    warnings.extend(ret_warnings);
-                    errors.extend(ret_errors);
+fn match_(input: &mut Stream<'_>) -> PResult<ast::Match> {
+    let loc = "match"
+        .span()
+        .map(|loc| (loc.start, loc.end))
+        .parse_next(input)?;
+    let on = combinator::delimited(ascii::multispace1, expr, (ascii::multispace1, "where"))
+        .parse_next(input)?;
+    let _spaces = ascii::space0(input)?;
+    let arms = if ascii::line_ending::<_, ErrMode<ContextError>>(input).is_ok() {
+        input.state.multi_line_expr=true;
+        // on another line.
+        let prefix = input.state.prefix.clone();
+        let checkpoint = input.checkpoint();
+        let new_prefix = ascii::space0(input)?;
+        input.reset(&checkpoint);
+        input.state.prefix = new_prefix.into();
+        let arms = combinator::repeat(1.., combinator::preceded(new_prefix, arm))
+            .parse_next(input)?;
+        input.state.prefix = prefix;
+        arms
+    } else {
+        // on same line.
+        todo!()
+    };
+    Ok(ast::Match {
+        loc,
+        on: on.into(),
+        arms,
+    })
+}
 
-                    if let Some((Token::Comma, _)) = self.stream.peek() {
-                        let _ = self.stream.next();
-                    } else {
-                        let Some((peeked, loc)) = self.stream.peek() else {
-                            unreachable!()
-                        };
-                        println!(
-                            "expected `,` but got {:?} at line : {}, col: {}",
-                            peeked, loc.0, loc.1
-                        )
-                    }
-                    (Vec::new(), Some(expr.into()))
-                }
-            };
-            arms.push(ast::MatchArm {
-                block,
-                ret,
-                cond,
-                loc,
-            });
-        }
+fn arm(input: &mut Stream<'_>) -> PResult<ast::MatchArm> {
+    combinator::trace("match arm",|input: &mut Stream<'_>| {
+    
+    let (loc, _, pat) = ("|".span(), ascii::space0.void(), pattern).parse_next(input)?;
+    let block = combinator::preceded(
+        (ascii::space0, "->", ascii::space0),
+        combinator::alt((
+            combinator::preceded((ascii::space0, ascii::line_ending), block),
+            combinator::terminated(
+                expr,
+                (ascii::space0, ',', ascii::space0, ascii::line_ending),
+            )
+            .map(|expr| ast::Block {
+                statements: Vec::new(),
+                implicit_ret: Some(expr.into()),
+            }),
+        )),
+    )
+    .parse_next(input)?;
+    Ok(ast::MatchArm {
+        block,
+        cond: pat,
+        loc: (loc.start, loc.end),
+    })
+    }).parse_next(input)
+}
 
-        if expect_block {
-            if let Some((Token::EndBlock, _)) = self.stream.peek() {
-                let _ = self.stream.next();
-            } else {
-                println!(
-                    "did you mean next_toplevel go back next_toplevel the containing block level?"
-                );
-            }
-        }
-
-        ParserReturns {
-            ast: Match {
-                loc: match_loc,
-                on: on.into(),
-                arms,
-            },
-            loc: match_loc,
-            warnings,
-            errors,
-        }
-    }
-
-    fn collect_pattern(&mut self) -> ParserReturns<Pattern> {
-        let mut warnings = Vec::new();
-        let mut errors = Vec::new();
-        // op should poped beffore this.
-        let (pattern, loc) = match self.stream.clone().next() {
-            Some((Token::CurlOpen, loc)) => {
-                let _curl = self.stream.next();
-                let mut fields = HashMap::new();
-                while let Some((Token::Ident(_), _)) = self.stream.clone().next() {
-                    let Some((Token::Ident(field_name), loc)) = self.stream.next() else {
-                        unreachable!()
-                    };
-                    if let Some((Token::Colon, _)) = self.stream.clone().next() {
-                        let Some((Token::Colon, _)) = self.stream.next() else {
-                            unreachable!()
-                        };
-                        let sub_pattern = self.collect_pattern();
-                        warnings.extend(sub_pattern.warnings);
-                        errors.extend(sub_pattern.errors);
-                        fields.insert(field_name, sub_pattern.ast);
-                    } else {
-                        fields.insert(field_name.clone(), Pattern::Read(field_name, loc));
-                    }
-                    if let Some((Token::Comma, _)) = self.stream.clone().next() {
-                        let _comma = self.stream.next();
-                    } else {
-                        break;
-                    }
-                }
-                if let Some((Token::CurlClose, _)) = self.stream.clone().next() {
-                    let _curl = self.stream.next();
-                } else {
-                    //todo! recovery.
-                }
-                (
-                    Pattern::Destructure(PatternDestructure::Struct {
-                        base_ty: None,
-                        fields,
-                    }),
-                    loc,
-                )
-            }
-            Some((Token::Ident(_), _)) => {
-                let Some((Token::Ident(name), loc)) = self.stream.next() else {
-                    unreachable!()
-                };
-                match self.stream.clone().next() {
-                    Some((Token::Scope, _)) => {
-                        let enum_name = name;
-                        let Some((_scope, scope_loc)) = self.stream.next() else {
-                            unreachable!()
-                        };
-                        if let Some((Token::Ident(_), _)) = self.stream.clone().next() {
-                            let Some((Token::Ident(variant), _)) = self.stream.next() else {
-                                unreachable!()
-                            };
-                            let pattern = match self.stream.clone().next() {
-                                Some((
-                                    Token::CurlOpen
-                                    | Token::GroupOpen
-                                    | Token::Ident(_)
-                                    | Token::BracketOpen
-                                    | Token::Integer(_, _)
-                                    | Token::FloatingPoint(_, _),
-                                    _,
-                                )) => {
-                                    let sub_pattern = self.collect_pattern();
-                                    warnings.extend(sub_pattern.warnings);
-                                    errors.extend(sub_pattern.errors);
-                                    Some(sub_pattern.ast.into())
-                                }
-                                _ => None,
-                            };
-                            (
-                                Pattern::EnumVariant {
-                                    ty: Some(enum_name),
-                                    variant,
-                                    pattern,
-                                    loc,
-                                },
-                                loc,
-                            )
-                        } else {
-                            errors.push(ParseError {
-                                span: scope_loc,
-                                reason: ParseErrorReason::UnexpectedToken,
-                            });
-                            (Pattern::Error, loc)
-                        }
-                    }
-                    Some((Token::CurlOpen, _)) => {
-                        let mut sub_pattern = self.collect_pattern();
-                        warnings.extend(sub_pattern.warnings);
-                        errors.extend(sub_pattern.errors);
-                        let Pattern::Destructure(PatternDestructure::Struct { base_ty, .. }) =
-                            &mut sub_pattern.ast
-                        else {
-                            unreachable!()
-                        };
-                        *base_ty = Some(name);
-                        (sub_pattern.ast, loc)
-                    }
-                    Some((
-                        Token::GroupOpen
-                        | Token::Ident(_)
-                        | Token::BracketOpen
-                        | Token::Integer(_, _)
-                        | Token::FloatingPoint(_, _),
-                        _,
-                    )) => {
-                        let sub_pattern = self.collect_pattern();
-                        warnings.extend(sub_pattern.warnings);
-                        errors.extend(sub_pattern.errors);
-                        (
-                            Pattern::EnumVariant {
-                                ty: None,
-                                variant: name,
-                                pattern: Some(sub_pattern.ast.into()),
-                                loc,
-                            },
-                            loc,
-                        )
-                    }
-                    _ => {
-                        if name == "_" {
-                            (Pattern::Default, loc)
-                        } else {
-                            // TODO! pattern detection of enum varaints.
-                            (Pattern::Read(name, loc), loc)
-                        }
-                    }
-                }
-            }
-            Some((Token::Integer(_, _), _)) => {
-                let Some((Token::Integer(signed, value), loc)) = self.stream.next() else {
-                    unreachable!()
-                };
-                (
-                    Pattern::ConstNumber(format!("{}{}", if signed { "-" } else { "" }, value)),
-                    loc,
-                )
-            }
-            Some((Token::FloatingPoint(_, _), _)) => {
-                let Some((Token::FloatingPoint(signed, value), loc)) = self.stream.next() else {
-                    unreachable!()
-                };
-
-                (
-                    Pattern::ConstNumber(format!("{}{}", if signed { "-" } else { "" }, value)),
-                    loc,
-                )
-            }
-            Some((Token::CharLiteral(_), _)) => {
-                let Some((Token::CharLiteral(c), loc)) = self.stream.next() else {
-                    unreachable!()
-                };
-                (Pattern::ConstChar(c), loc)
-            }
-            Some((Token::StringLiteral(_), _)) => {
-                let Some((Token::StringLiteral(c), loc)) = self.stream.next() else {
-                    unreachable!()
-                };
-                (Pattern::ConstStr(c), loc)
-            }
-            Some((Token::True, _)) => {
-                let Some((_, loc)) = self.stream.next() else {
-                    unreachable!()
-                };
-                (Pattern::ConstBool(true), loc)
-            }
-            Some((Token::False, _)) => {
-                let Some((_, loc)) = self.stream.next() else {
-                    unreachable!()
-                };
-                (Pattern::ConstBool(false), loc)
-            }
-
-            Some((Token::GroupOpen, _)) => {
-                let Some((Token::GroupOpen, loc)) = self.stream.next() else {
-                    unreachable!()
-                };
-                if let Some((Token::GroupClose, _)) = self.stream.clone().next() {
-                    let _ = self.stream.next();
-                    (Pattern::Destructure(PatternDestructure::Unit), loc)
-                } else {
-                    let first = self.collect_pattern();
-                    warnings.extend(first.warnings);
-                    errors.extend(first.errors);
-                    let first_loc = first.loc;
-                    let mut patterns = vec![first.ast];
-                    loop {
-                        match self.stream.clone().next() {
-                            Some((Token::Comma, _)) => {
-                                let _ = self.stream.next();
-                                let next = self.collect_pattern();
-                                warnings.extend(next.warnings);
-                                errors.extend(next.errors);
-                                patterns.push(next.ast);
-                            }
-                            Some((Token::GroupClose, _)) => {
-                                break;
-                            }
-                            Some((Token::EoF, _)) | None => {
-                                let _ = self.stream.next();
-                                errors.push(ParseError {
-                                    span: loc,
-                                    reason: ParseErrorReason::UnexpectedEndOfFile,
-                                });
-                                break;
-                            }
-                            Some((t, loc)) => {
-                                let _ = self.stream.next();
-                                errors.push(ParseError {
-                                    span: loc,
-                                    reason: ParseErrorReason::UnexpectedToken,
-                                });
-                                break;
-                            }
-                        }
-                    }
-                    match self.stream.clone().next() {
-                        Some((Token::GroupClose, _)) => {
-                            let _ = self.stream.next();
-                        }
-                        Some((Token::EoF, _)) | None => {
-                            let _ = self.stream.next();
-                            errors.push(ParseError {
-                                span: loc,
-                                reason: ParseErrorReason::UnexpectedEndOfFile,
-                            });
-                        }
-                        Some((t, loc)) => {
-                            let n = self
-                                .stream
-                                .clone()
-                                .peeking_take_while(|(t, _)| match t {
-                                    Token::Comma | Token::EndBlock => false,
-                                    Token::Op(op) => op != "|",
-                                    _ => true,
-                                })
-                                .collect_vec()
-                                .len();
-                            for _ in 0..n {
-                                let _ = self.stream.next();
-                            }
-                            errors.push(ParseError {
-                                span: loc,
-                                reason: ParseErrorReason::UnexpectedToken,
-                            });
-                        }
-                    }
-                    if patterns.len() == 1 {
-                        (patterns.pop().unwrap(), first_loc)
-                    } else {
-                        (
-                            Pattern::Destructure(PatternDestructure::Tuple(patterns)),
-                            loc,
-                        )
-                    }
-                }
-            }
-            Some((Token::EoF, _)) | None => {
-                let _ = self.stream.next();
-                errors.push(ParseError {
-                    span: (0, 0),
-                    reason: ParseErrorReason::UnexpectedEndOfFile,
-                });
-                (Pattern::Error, (0, 0))
-            }
-            Some((t, loc)) => {
-                errors.push(ParseError {
-                    span: loc,
-                    reason: ParseErrorReason::UnexpectedToken,
-                });
-                let n = self
-                    .stream
-                    .clone()
-                    .peeking_take_while(|(t, _)| match t {
-                        Token::Comma | Token::EndBlock => false,
-                        Token::Op(op) => op != "|",
-                        _ => true,
-                    })
-                    .collect_vec()
-                    .len();
-                for _ in 0..n {
-                    let _ = self.stream.next();
-                }
-                (Pattern::Error, loc)
-            }
-        };
-        let pattern = if let Some((Token::Op(op), _)) = self.stream.peek() {
-            if op == "|" {
-                let _ = self.stream.next();
-                let next = self.collect_pattern();
-                warnings.extend(next.warnings);
-                errors.extend(next.errors);
-                Pattern::Or(pattern.into(), next.ast.into())
-            } else {
+fn pattern(input: &mut Stream<'_>) -> PResult<ast::Pattern> {
+    combinator::trace("pattern", |input: &mut Stream<'_>| {
+        let base = combinator::alt((
+            // axioms
+            "_".map(|_| ast::Pattern::Default),
+            ascii::dec_int.map(|it: i128| ast::Pattern::ConstNumber(it.to_string())),
+            ascii::float.map(|it: f64| ast::Pattern::ConstNumber(it.to_string())),
+            "true".map(|_| ast::Pattern::ConstBool(true)),
+            "false".map(|_| ast::Pattern::ConstBool(false)),
+            string_lit.map(ast::Pattern::ConstStr),
+            char_lit.map(ast::Pattern::ConstChar),
+            combinator::separated_pair(
+                ident.with_span(),
+                ascii::space1,
                 pattern
-            }
-        } else {
-            pattern
-        };
-        ParserReturns {
-            ast: pattern,
-            loc,
-            warnings,
-            errors,
-        }
-    }
-
-    fn array_literal(&mut self) -> ParserReturns<Expr> {
-        let Some((Token::BracketOpen, loc)) = self.stream.next() else {
-            unreachable!()
-        };
-        let mut values = Vec::new();
-        let mut warnings = Vec::new();
-        let mut errors = Vec::new();
-        let expect_block = if let Some((Token::BeginBlock, _)) = self.stream.peek() {
-            let _ = self.stream.next();
-            true
-        } else {
-            false
-        };
-        loop {
-            let ParserReturns {
-                ast: expr,
-                loc: _,
-                warnings: new_warnings,
-                errors: new_errors,
-            } = self.next_expr();
-            warnings.extend(new_warnings);
-            errors.extend(new_errors);
-            values.push(expr);
-            match self.stream.clone().next() {
-                Some((Token::Comma, _)) => {
-                    let _ = self.stream.next();
-                    continue;
-                }
-                Some(_) => break,
-                None => {
-                    unreachable!("somehow not even got EoF");
-                }
-            }
-        }
-
-        if expect_block {
-            if let Some((Token::EndBlock, _)) = self.stream.peek() {
-                let _ = self.stream.next();
-            } else {
-                println!("did you mean next_toplevel have the closing ] on the same level as the opening?")
-            }
-        }
-
-        if let Some((Token::BracketClose, _)) = self.stream.peek() {
-            let _ = self.stream.next();
-        } else {
-            errors.push(ParseError {
-                span: loc,
-                reason: ParseErrorReason::UnbalancedBraces,
-            });
-            values.push(ast::Expr::Error);
-        }
-        ParserReturns {
-            ast: ast::Expr::ArrayLiteral {
-                contents: values,
-                loc,
-            },
-            loc,
-            warnings,
-            errors,
-        }
-    }
-}
-
-fn make_literal(token: Token, span: (usize, usize)) -> Result<crate::ast::Expr, ParseError> {
-    match token {
-        Token::CharLiteral(ch) => Ok(ast::Expr::CharLiteral(ch)),
-        Token::StringLiteral(src) => {
-            let mut value = String::with_capacity(src.len());
-            let mut s = src.chars();
-            while let Some(c) = s.next() {
-                if c == '\\' {
-                    let next = match s.next() {
-                        Some('n') => '\n',
-                        Some('\\') => '\\',
-                        Some('r') => '\r',
-                        Some('t') => '\t',
-                        Some('"') => '"',
-                        Some('\'') => '\'',
-                        Some(_) => {
-                            return Err(ParseError {
-                                span,
-                                reason: ParseErrorReason::UnsupportedEscape,
-                            })
-                        }
-                        None => unreachable!(),
-                    };
-                    value.push(next);
+            ).map(|((ident,span),pat)| {
+                let (ty, variant) = if let Some((ty,variant)) = ident.rsplit_once("::") {
+                    (Some(ty.into()),variant.into())
                 } else {
-                    value.push(c);
-                }
-            }
-            Ok(ast::Expr::StringLiteral(value))
+                    (None,ident)
+                };
+                ast::Pattern::EnumVariant { ty, variant, pattern: Some(pat.into()), loc: (span.start,span.end) }
+            }),
+            // todo struct destructureing
+            (
+                ident,
+                combinator::delimited(
+                    (ascii::space0, '{', ascii::multispace0),
+                    combinator::separated(
+                        0..,
+                        combinator::alt((
+                            combinator::separated_pair(
+                                simple_ident.map(Into::into),
+                                (ascii::space0, ':', ascii::space0),
+                                combinator::cut_err(pattern),
+                            ),
+                            simple_ident.with_span().map(|(ident, span)| {
+                                (
+                                    ident.clone().into(),
+                                    ast::Pattern::Read(ident.into(), (span.start, span.end)),
+                                )
+                            }),
+                        )),
+                        (ascii::multispace0, ',', ascii::multispace0),
+                    ),
+                    (ascii::multispace0, '}'),
+                ),
+            )
+                .map(|(ident, fields)| {
+                    ast::Pattern::Destructure(ast::PatternDestructure::Struct {
+                        base_ty: Some(ident),
+                        fields,
+                    })
+                }),
+            ident.with_span().verify(|(it,_)| it.contains("::")).map(|(ident,span)| {
+                let Some((ty,variant)) = ident.rsplit_once("::") else {unreachable!()};
+                ast::Pattern::EnumVariant { ty: Some(ty.into()), variant: variant.into(), pattern:None, loc: (span.start,span.end) }
+            }),
+            simple_ident
+                .with_span()
+                .map(|(ident, loc)| ast::Pattern::Read(ident.into(), (loc.start, loc.end))),
+            // more complex
+            parens(combinator::separated(
+                2..,
+                pattern,
+                (ascii::space0, ',', ascii::space0),
+            ))
+            .map(|contents| ast::Pattern::Destructure(ast::PatternDestructure::Tuple(contents))),
+            parens(pattern),
+        ))
+        .parse_next(input)?;
+        if let Some(rhs) = combinator::opt(combinator::preceded(
+            (ascii::space0, "|", ascii::space0),
+            pattern,
+        ))
+        .parse_next(input)?
+        {
+            Ok(ast::Pattern::Or(base.into(), rhs.into()))
+        } else {
+            Ok(base)
         }
-        Token::Integer(is_neg, value) | Token::FloatingPoint(is_neg, value) => {
-            Ok(Expr::NumericLiteral {
-                value: if is_neg {
-                    "-".to_owned() + &value
-                } else {
-                    value
-                },
-            })
-        }
-        Token::True => Ok(Expr::BoolLiteral(true, span)),
-        Token::False => Ok(Expr::BoolLiteral(false, span)),
-        _ => Err(ParseError {
-            span,
-            reason: ParseErrorReason::UnknownError,
-        }),
-    }
-}
-fn type_from_string(name: &str, generics: Vec<ResolvedType>, loc: crate::Location) -> ResolvedType {
-    match name {
-        "str" => types::STR,
-        "char" => types::CHAR,
-        "bool" => types::BOOL,
-        ty if ty.starts_with("int") => {
-            let size = ty.strip_prefix("int");
-            match size {
-                Some("8") => types::INT8,
-                Some("16") => types::INT16,
-                Some("32") => types::INT32,
-                Some("64") => types::INT64,
-                _ => ResolvedType::User {
-                    name: ty.to_string(),
-                    generics: Vec::new(),
-                    loc,
-                },
-            }
-        }
-        ty if ty.starts_with("float") => {
-            let size = ty.strip_prefix("float");
-            match size {
-                Some("32") => types::FLOAT32,
-                Some("64") => types::FLOAT64,
-                _ => ResolvedType::User {
-                    name: ty.to_string(),
-                    generics: Vec::new(),
-                    loc,
-                },
-            }
-        }
-        _ => ResolvedType::User {
-            name: name.to_string(),
-            generics,
-            loc,
-        },
-    }
-}
-#[allow(unused)]
-// TODO use for generating [`crate::ast::Expr::PipeExpr`]
-fn is_pipe_op(op: &str) -> bool {
-    op.ends_with('>') && op[..op.len() - 2].chars().all(|c| c == '|')
-}
-
-enum ShuntingYardOptions {
-    Expr((ast::Expr, crate::Location)),
-    Op((String, crate::Location)),
-}
-impl std::fmt::Debug for ShuntingYardOptions {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Expr(arg0) => f.debug_tuple("Expr").field(&arg0.0).finish(),
-            Self::Op(arg0) => f.debug_tuple("Op").field(&arg0.0).finish(),
-        }
-    }
+    })
+    .parse_next(input)
 }
 
+const KEYWORDS: &[&'static str] = &[
+    "for",
+    "let",
+    "true",
+    "false",
+    "type",
+    "mod",
+    "implements",
+    "enum",
+    "return",
+    "where",
+    "if",
+    "then",
+    "else",
+];
 #[cfg(test)]
 mod tests {
-    use crate::{
-        ast::{
-            ArgDeclaration, EnumDeclaration, EnumVariant, IfBranching, IfExpr, MatchArm,
-            StructDefinition, TopLevelDeclaration,
-        },
-        types::ResolvedType,
-    };
+    use std::collections::HashMap;
+
+    use super::*;
     use pretty_assertions::assert_eq;
+    use winnow::error::InputError;
+
+    fn from_source(src: &'static str) -> Stream<'static> {
+        Stateful {
+            input:Located::new(StrippedParser {
+                src,
+                
+                state: Default::default(),
+            }),
+            
+            state: Default::default(), 
+        }
+    }
 
     #[test]
-    fn types() {
+    fn if_statements() {
+        let mut src = from_source(r#"
+if a then
+    return 0;"#);
+        ignore_blank_lines(&mut src).unwrap();
         assert_eq!(
-            Parser::from_source("int64").collect_type().ast,
-            types::INT64
-        );
-        assert_eq!(
-            Parser::from_source("int32").collect_type().ast,
-            types::INT32
-        );
-        assert_eq!(
-            Parser::from_source("int16").collect_type().ast,
-            types::INT16
-        );
-        assert_eq!(Parser::from_source("int8").collect_type().ast, types::INT8);
-        assert_eq!(Parser::from_source("str").collect_type().ast, types::STR);
-        assert_eq!(Parser::from_source("char").collect_type().ast, types::CHAR);
-        assert_eq!(
-            Parser::from_source("float64").collect_type().ast,
-            types::FLOAT64
-        );
-        assert_eq!(
-            Parser::from_source("float32").collect_type().ast,
-            types::FLOAT32
-        );
-        assert_eq!(Parser::from_source("()").collect_type().ast, types::UNIT);
+            Ok(ast::If { 
+                loc: (1,3),
+                cond: ast::Expr::ValueRead("a".into(), (4,5)).into(), 
+                true_branch: ast::Block {
+                    statements:vec![
+                        ast::Statement::Return(ast::Expr::NumericLiteral { value: "0".into() }, (15,21)),
+                    ],
+                    implicit_ret:None,
+                }, 
+                else_branch: None,
+            }),
+            if_statement(&mut src),
+        )
+    }
 
+    #[test]
+    #[ignore = "for debuging small test cases"]
+    fn debugging() {
+        let mut src = from_source(r#"if a then 0 else 1;"#);
+        
+        let x = expr(&mut src);
+        println!("{x:#?}");
+        // println!("{src}");
+        assert!(false);
+    }
+
+    #[test] 
+    fn type_parsing() {
+        use types::ResolvedType;
+        let mut src = from_source("int64");
+        assert_eq!(type_(&mut src).unwrap(), types::INT64);
+        let mut src = from_source("int32");
+        assert_eq!(type_(&mut src).unwrap(), types::INT32);
+        let mut src = from_source("int16");
+        assert_eq!(type_(&mut src).unwrap(), types::INT16);
+        let mut src = from_source("int8");
+        assert_eq!(type_(&mut src).unwrap(), types::INT8);
+        let mut src = from_source("str");
+        assert_eq!(type_(&mut src).unwrap(), types::STR);
+        let mut src = from_source("char");
+        assert_eq!(type_(&mut src).unwrap(), types::CHAR);
+        let mut src = from_source("float64");
+        assert_eq!(type_(&mut src).unwrap(), types::FLOAT64);
+        let mut src = from_source("float32");
+        assert_eq!(type_(&mut src).unwrap(), types::FLOAT32);
+        let mut src = from_source("()");
+        assert_eq!(type_(&mut src).unwrap(), types::UNIT);
+        let mut src = from_source("[int32;5]");
         assert_eq!(
-            Parser::from_source("[int32;5]").collect_type().ast,
+            type_(&mut src).unwrap(),
             ResolvedType::Array {
                 underlining: types::INT32.into(),
                 size: 5
             }
         );
 
-        //fuctions
+        let mut src = from_source("(int32,int32)");
         assert_eq!(
-            Parser::from_source("int32->int32").collect_type().ast,
+            type_(&mut src),
+            Ok(ResolvedType::Tuple {
+                underlining: vec![types::INT32, types::INT32],
+                loc: (0, 0)
+            })
+        );
+
+        //fuctions
+        let mut src = from_source("int32->int32");
+        assert_eq!(
+            type_(&mut src).unwrap(),
             ResolvedType::Function {
                 arg: types::INT32.into(),
                 returns: types::INT32.into(),
                 loc: (0, 0),
             }
         );
+        let mut src = from_source("int32->int32->int32");
         assert_eq!(
-            Parser::from_source("int32->int32->int32")
-                .collect_type()
-                .ast,
+            type_(&mut src).unwrap(),
             ResolvedType::Function {
                 arg: types::INT32.into(),
                 returns: ResolvedType::Function {
@@ -4021,10 +1493,9 @@ mod tests {
                 loc: (0, 0),
             }
         );
+        let mut src = from_source("int32->(int32->int32)");
         assert_eq!(
-            Parser::from_source("int32->(int32->int32)")
-                .collect_type()
-                .ast,
+            type_(&mut src).unwrap(),
             ResolvedType::Function {
                 arg: types::INT32.into(),
                 returns: ResolvedType::Function {
@@ -4036,10 +1507,9 @@ mod tests {
                 loc: (0, 0),
             }
         );
+        let mut src = from_source("(int32->int32)->int32");
         assert_eq!(
-            Parser::from_source("(int32->int32)->int32")
-                .collect_type()
-                .ast,
+            type_(&mut src).unwrap(),
             ResolvedType::Function {
                 arg: ResolvedType::Function {
                     arg: types::INT32.into(),
@@ -4051,338 +1521,99 @@ mod tests {
                 loc: (0, 0),
             }
         );
-    }
-
-    use super::*;
-    #[test]
-    #[ignore = "This is for singled out tests"]
-    fn for_debugging_only() {
-        let mut parser = Parser::from_source(
-            "enum Testing = | One (int8,int8) | Two
-let fun test = match test where
-| Testing::One (0,1) -> 0,
-| Testing::One ((1|0),a) -> a,
-| Testing::One _ -> -1,
-| Testing::Two -> -2, ",
-        );
-        let module = parser.module("".to_string());
-        println!("{module:#?}")
-    }
-    #[test]
-    fn individual_simple_expressions() {
-        let mut parser = Parser::from_source("let foo : int32 = 5;");
-
+        let mut src = from_source("Generic<int32>");
         assert_eq!(
-            Statement::Declaration(ValueDeclaration {
-                loc: (0, 4),
-                is_op: false,
-                target: ast::Pattern::Read("foo".to_owned(), (0, 4)),
-                ty: Some(types::INT32),
-                args: Vec::new(),
-                value: ValueType::Expr(Expr::NumericLiteral {
-                    value: "5".to_string(),
-                }),
-                generictypes: None,
-                abi: None
-            }),
-            parser.next_statement().ast
-        );
-        let mut parser = Parser::from_source(
-            r#"let foo _ : int32 -> int32 =
-    return 5;
-"#,
-        );
-        assert_eq!(
-            ast::TopLevelDeclaration::Value(TopLevelValue {
-                loc: (0, 4),
-                is_op: false,
-                ident: "foo".to_owned(),
-                ty: Some(ResolvedType::Function {
-                    arg: types::INT32.into(),
-                    returns: types::INT32.into(),
-                    loc: (0, 18)
-                }),
-                args: vec![ArgDeclaration::Discard {
-                    ty: None,
-                    loc: (0, 8)
-                }],
-                value: ValueType::Function(vec![Statement::Return(
-                    Expr::NumericLiteral {
-                        value: "5".to_string(),
-                    },
-                    (1, 4)
-                )]),
-                generics: None,
-                abi: None,
-            }),
-            parser.next_toplevel().ast
+            type_(&mut src).unwrap(),
+            ResolvedType::User{ 
+                name: "Generic".into(), 
+                generics: vec![types::INT32], 
+                loc: (0,0),
+            }
         )
     }
 
     #[test]
-    fn higher_kinded() {
-        const ARG: &'static str = r#"
-let foo _ : ( int32 -> int32 ) -> int32 =
-    return 0;
-"#;
-        let mut parser = Parser::from_source(ARG);
+    fn expressions() {
+        let mut src = from_source("1");
         assert_eq!(
-            Statement::Declaration(ValueDeclaration {
-                loc: (1, 4),
-                is_op: false,
-                target: ast::Pattern::Read("foo".to_owned(), (1, 4)),
-                ty: Some(ResolvedType::Function {
-                    arg: ResolvedType::Function {
-                        arg: types::INT32.into(),
-                        returns: types::INT32.into(),
-                        loc: (1, 20)
-                    }
-                    .into(),
-                    returns: types::INT32.into(),
-                    loc: (1, 31)
-                }),
-                args: vec![ast::ArgDeclaration::Discard {
-                    ty: None,
-                    loc: (1, 8)
-                }],
-                value: ValueType::Function(vec![Statement::Return(
-                    Expr::NumericLiteral {
-                        value: "0".to_string(),
-                    },
-                    (2, 4)
-                )]),
-                generictypes: None,
-                abi: None,
-            }),
-            parser.next_statement().ast,
-            "function as arg"
+            ast::Expr::NumericLiteral { value: "1".into() },
+            expr(&mut src).unwrap()
         );
-        const RT: &'static str = r#"
-let foo _ : int32 -> ( int32 -> int32 ) =
-    return 0;
-"#;
-        let mut parser = Parser::from_source(RT);
+        let mut src = from_source("a");
+
+        let read_a = expr(&mut src).unwrap();
+        assert_eq!(ast::Expr::ValueRead("a".into(), (0, 1)), read_a);
+
+        let mut src = from_source("(a)");
         assert_eq!(
-            Statement::Declaration(ValueDeclaration {
-                loc: (1, 4),
-                is_op: false,
-                target: ast::Pattern::Read("foo".to_owned(), (1, 4)),
-                ty: Some(ResolvedType::Function {
-                    arg: types::INT32.into(),
-                    returns: ResolvedType::Function {
-                        arg: types::INT32.into(),
-                        returns: types::INT32.into(),
-                        loc: (1, 29)
-                    }
-                    .into(),
-                    loc: (1, 18)
-                }),
-                args: vec![ast::ArgDeclaration::Discard {
-                    ty: None,
-                    loc: (1, 8)
-                }],
-                value: ValueType::Function(vec![Statement::Return(
-                    Expr::NumericLiteral {
-                        value: "0".to_owned(),
-                    },
-                    (2, 4)
-                )]),
-                generictypes: None,
-                abi: None,
-            }),
-            parser.next_statement().ast,
-            "function as rt"
+            expr(&mut src).unwrap(),
+            ast::Expr::ValueRead("a".into(), (1, 2)),
+            "`(a)` should be the same `a`"
+        );
+
+        let mut src = from_source(r#""merp\"\\""#);
+        assert_eq!(
+            r#"merp"\"#,
+            string_lit(&mut src).unwrap(),
+            "string literal with escapes"
+        );
+
+        let mut src = from_source("a b c");
+        assert_eq!(
+            expr(&mut src),
+            Ok(ast::Expr::FnCall(ast::FnCall{ 
+                loc: (0,1), 
+                value: ast::Expr::FnCall(ast::FnCall{ 
+                    loc: (0,1), 
+                    value: ast::Expr::ValueRead("a".into(), (0,1)).into(), 
+                    arg: Some(ast::Expr::ValueRead("b".into(), (2,3)).into())
+                }).into(), 
+                arg: Some(ast::Expr::ValueRead("c".into(), (4,5)).into()) 
+            }))
+        );
+
+
+        let mut src = from_source("a (b c)");
+        assert_eq!(
+            expr(&mut src),
+            Ok(ast::Expr::FnCall(ast::FnCall{ 
+                loc: (0,1), 
+                value: ast::Expr::ValueRead("a".into(), (0,1)).into(), 
+                arg: Some(ast::Expr::FnCall(ast::FnCall{ 
+                    loc: (3,4),
+                    value: (ast::Expr::ValueRead("b".into(), (3,4)).into()),
+                    arg: Some(ast::Expr::ValueRead("c".into(), (5,6)).into()) 
+                }).into()), 
+            }))
         );
     }
-
-    #[test]
-    fn multiple_statements() {
-        const SRC: &'static str = include_str!("../../samples/test.fb");
-        let mut parser = Parser::from_source(SRC);
-        assert_eq!(
-            ast::TopLevelDeclaration::Value(TopLevelValue {
-                loc: (0, 4),
-                is_op: false,
-                ident: "foo".to_owned(),
-                ty: Some(types::INT32),
-                args: Vec::new(),
-                value: ValueType::Expr(Expr::NumericLiteral {
-                    value: "3".to_owned(),
-                }),
-                generics: None,
-                abi: None,
-            }),
-            parser.next_toplevel().ast,
-            "simple declaration"
-        );
-        assert_eq!(
-            ast::TopLevelDeclaration::Value(TopLevelValue {
-                loc: (2, 4),
-                is_op: false,
-                ident: "bar".to_owned(),
-                ty: Some(ResolvedType::Function {
-                    arg: types::INT32.into(),
-                    returns: types::INT32.into(),
-                    loc: (2, 20)
-                }),
-                args: vec![ast::ArgDeclaration::Simple {
-                    ident: "quz".to_string(),
-                    loc: (2, 8),
-                    ty: None,
-                }],
-                value: ValueType::Function(vec![
-                    Statement::Declaration(ValueDeclaration {
-                        loc: (3, 8),
-                        is_op: false,
-                        target: Pattern::Read("baz".to_owned(), (3, 8)),
-                        ty: Some(types::STR),
-                        args: Vec::new(),
-                        value: ValueType::Expr(Expr::StringLiteral(r#"merp " yes"#.to_string())),
-                        generictypes: None,
-                        abi: None,
-                    }),
-                    Statement::Return(
-                        Expr::NumericLiteral {
-                            value: "2".to_owned(),
-                        },
-                        (4, 4)
-                    )
-                ]),
-                generics: None,
-                abi: None,
-            }),
-            parser.next_toplevel().ast,
-            "declaration with block"
-        );
-        assert_eq!(
-            ast::TopLevelDeclaration::Value(TopLevelValue {
-                loc: (6, 4),
-                is_op: true,
-
-                ident: "^^".to_owned(),
-                ty: Some(ResolvedType::Function {
-                    arg: types::INT32.into(),
-                    returns: ResolvedType::Function {
-                        arg: types::INT32.into(),
-                        returns: types::INT32.into(),
-                        loc: (6, 32)
-                    }
-                    .into(),
-                    loc: (6, 23)
-                }),
-                args: vec![
-                    ast::ArgDeclaration::Simple {
-                        ident: "lhs".to_string(),
-                        loc: (6, 7),
-                        ty: None,
-                    },
-                    ast::ArgDeclaration::Simple {
-                        ident: "rhs".to_string(),
-                        loc: (6, 11),
-                        ty: None,
-                    },
-                ],
-                value: ValueType::Function(vec![
-                    Statement::FnCall(FnCall {
-                        loc: (7, 4),
-                        value: Expr::ValueRead("bar".to_string(), (7, 4)).into(),
-                        arg: Some(Expr::ValueRead("foo".to_string(), (7, 8)).into()),
-                    }),
-                    Statement::Return(
-                        Expr::NumericLiteral {
-                            value: "1".to_owned(),
-                        },
-                        (8, 4)
-                    )
-                ]),
-                generics: None,
-                abi: None,
-            }),
-            parser.next_toplevel().ast,
-            "operator declaration w/ function call",
-        );
-    }
-
-    #[test]
-    fn fn_chain() {
-        const SRC: &'static str = r#"
-let main _ : int32 -> int32 = 
-    put_int32 100;
-    print_str "v";
-    return 32;
-"#;
-        let mut parser = Parser::from_source(SRC);
-        assert_eq!(
-            Statement::Declaration(ValueDeclaration {
-                loc: (1, 4),
-                is_op: false,
-
-                target: Pattern::Read("main".to_owned(), (1, 4)),
-                ty: Some(ResolvedType::Function {
-                    arg: types::INT32.into(),
-                    returns: types::INT32.into(),
-                    loc: (1, 19)
-                }),
-                args: vec![ast::ArgDeclaration::Discard {
-                    ty: None,
-                    loc: (1, 9)
-                }],
-                value: ValueType::Function(vec![
-                    Statement::FnCall(FnCall {
-                        loc: (2, 4),
-                        value: Expr::ValueRead("put_int32".to_string(), (2, 4)).into(),
-                        arg: Some(
-                            Expr::NumericLiteral {
-                                value: "100".to_owned(),
-                            }
-                            .into()
-                        )
-                    }),
-                    Statement::FnCall(FnCall {
-                        loc: (3, 4),
-                        value: Expr::ValueRead("print_str".to_string(), (3, 4)).into(),
-                        arg: Some(Expr::StringLiteral("v".to_string()).into())
-                    }),
-                    Statement::Return(
-                        Expr::NumericLiteral {
-                            value: "32".to_string(),
-                        },
-                        (4, 4)
-                    )
-                ]),
-                generictypes: None,
-                abi: None,
-            }),
-            parser.next_statement().ast,
-        )
-    }
-
     #[test]
     fn ops() {
+        use ast::*;
         const SRC_S: &'static str = "100 + 100 * foo * ( 10 - 1 )";
-        let mut parser = Parser::from_source(SRC_S);
+        let mut parser = from_source(SRC_S);
 
         assert_eq!(
             Expr::BinaryOpCall(BinaryOpCall {
-                loc: (0, 4),
+                loc: (4, 5),
                 lhs: Expr::NumericLiteral {
                     value: "100".to_string(),
                 }
                 .into(),
                 rhs: Expr::BinaryOpCall(BinaryOpCall {
-                    loc: (0, 16),
+                    loc: (16, 17),
                     lhs: Expr::BinaryOpCall(BinaryOpCall {
-                        loc: (0, 10),
+                        loc: (10, 11),
                         lhs: Expr::NumericLiteral {
                             value: "100".to_string(),
                         }
                         .into(),
-                        rhs: Expr::ValueRead("foo".to_string(), (0, 12)).into(),
+                        rhs: Expr::ValueRead("foo".to_string(), (12, 15)).into(),
                         operator: "*".to_string()
                     })
                     .into(),
                     rhs: Expr::BinaryOpCall(BinaryOpCall {
-                        loc: (0, 23),
+                        loc: (23, 24),
                         lhs: Expr::NumericLiteral {
                             value: "10".to_string(),
                         }
@@ -4399,66 +1630,70 @@ let main _ : int32 -> int32 =
                 .into(),
                 operator: "+".to_string()
             }),
-            parser.next_expr().ast
+            expr(&mut parser).unwrap()
         );
         const SRC: &'static str = r#"let main _ =
-    print_int32 100 + 100;
-    return 0;"#;
-        let mut parser = Parser::from_source(SRC);
+    print_int32 (100 + 100);
+    return 0;
+"#;
+        let mut parser = from_source(SRC);
         assert_eq!(
-            Statement::Declaration(ValueDeclaration {
-                loc: (0, 4),
+            TopLevelValue {
+                loc: (4, 8),
                 is_op: false,
-                target: Pattern::Read("main".to_owned(), (0, 4)),
+                ident: "main".to_owned(),
                 ty: None,
                 args: vec![ast::ArgDeclaration::Discard {
                     ty: None,
-                    loc: (0, 9)
+                    loc: (9, 10)
                 }],
-                value: ValueType::Function(vec![
-                    Statement::FnCall(FnCall {
-                        loc: (1, 4),
-                        value: Expr::ValueRead("print_int32".to_owned(), (1, 4)).into(),
-                        arg: Some(
-                            Expr::BinaryOpCall(BinaryOpCall {
-                                loc: (1, 20),
-                                operator: "+".to_owned(),
-                                lhs: Expr::NumericLiteral {
-                                    value: "100".to_owned(),
-                                }
-                                .into(),
-                                rhs: Expr::NumericLiteral {
-                                    value: "100".to_owned(),
-                                }
+                value: ValueType::Function(Block {
+                    statements: vec![
+                        Statement::Expr(Expr::FnCall(FnCall {
+                            loc: (17, 28),
+                            value: Expr::ValueRead("print_int32".to_owned(), (17, 28)).into(),
+                            arg: Some(
+                                Expr::BinaryOpCall(BinaryOpCall {
+                                    loc: (34, 35),
+                                    operator: "+".to_owned(),
+                                    lhs: Expr::NumericLiteral {
+                                        value: "100".to_owned(),
+                                    }
+                                    .into(),
+                                    rhs: Expr::NumericLiteral {
+                                        value: "100".to_owned(),
+                                    }
+                                    .into()
+                                })
                                 .into()
-                            })
-                            .into()
+                            )
+                        })),
+                        Statement::Return(
+                            Expr::NumericLiteral {
+                                value: "0".to_owned(),
+                            },
+                            (46, 52)
                         )
-                    }),
-                    Statement::Return(
-                        Expr::NumericLiteral {
-                            value: "0".to_owned(),
-                        },
-                        (2, 4)
-                    )
-                ]),
-                generictypes: None,
+                    ],
+                    implicit_ret: None
+                }),
+                generics: None,
                 abi: None,
-            }),
-            parser.next_statement().ast
+            },
+            top_level_value(&mut parser).unwrap()
         );
         //a b . 2 + c d . -
         const SRC_MEMBER_ACCESS: &'static str = "a.b + 2 - c.d";
-        let mut parser = Parser::from_source(SRC_MEMBER_ACCESS);
+        let mut parser = from_source(SRC_MEMBER_ACCESS);
         assert_eq!(
             ast::Expr::BinaryOpCall(BinaryOpCall {
-                loc: (0, 8),
+                loc: (8, 9),
                 lhs: ast::Expr::BinaryOpCall(BinaryOpCall {
-                    loc: (0, 4),
+                    loc: (4, 5),
                     lhs: ast::Expr::BinaryOpCall(BinaryOpCall {
-                        loc: (0, 1),
-                        lhs: ast::Expr::ValueRead("a".to_string(), (0, 0)).into(),
-                        rhs: ast::Expr::ValueRead("b".to_string(), (0, 2)).into(),
+                        loc: (1, 2),
+                        lhs: ast::Expr::ValueRead("a".to_string(), (0, 1)).into(),
+                        rhs: ast::Expr::ValueRead("b".to_string(), (2, 3)).into(),
                         operator: ".".to_string()
                     })
                     .into(),
@@ -4470,74 +1705,275 @@ let main _ : int32 -> int32 =
                 })
                 .into(),
                 rhs: ast::Expr::BinaryOpCall(BinaryOpCall {
-                    loc: (0, 11),
-                    lhs: ast::Expr::ValueRead("c".to_string(), (0, 10)).into(),
-                    rhs: ast::Expr::ValueRead("d".to_string(), (0, 12)).into(),
+                    loc: (11, 12),
+                    lhs: ast::Expr::ValueRead("c".to_string(), (10, 11)).into(),
+                    rhs: ast::Expr::ValueRead("d".to_string(), (12, 13)).into(),
                     operator: ".".to_string()
                 })
                 .into(),
                 operator: "-".to_string()
             }),
-            parser.next_expr().ast,
+            expr(&mut parser).unwrap(),
         );
 
-        let mut parser = Parser::from_source("(foo bar) && (baz quz)");
+        let mut parser = from_source("(foo bar) && (baz quz)");
         assert_eq!(
             ast::Expr::BinaryOpCall(BinaryOpCall {
-                loc: (0, 10),
+                loc: (10, 12),
                 lhs: ast::Expr::FnCall(FnCall {
-                    loc: (0, 1),
-                    value: ast::Expr::ValueRead("foo".to_string(), (0, 1)).into(),
-                    arg: Some(ast::Expr::ValueRead("bar".to_string(), (0, 5)).into())
+                    loc: (1, 4),
+                    value: ast::Expr::ValueRead("foo".to_string(), (1, 4)).into(),
+                    arg: Some(ast::Expr::ValueRead("bar".to_string(), (5, 8)).into())
                 })
                 .into(),
                 rhs: ast::Expr::FnCall(FnCall {
-                    loc: (0, 14),
-                    value: ast::Expr::ValueRead("baz".to_string(), (0, 14)).into(),
-                    arg: Some(ast::Expr::ValueRead("quz".to_string(), (0, 18)).into())
+                    loc: (14, 17),
+                    value: ast::Expr::ValueRead("baz".to_string(), (14, 17)).into(),
+                    arg: Some(ast::Expr::ValueRead("quz".to_string(), (18, 21)).into())
                 })
                 .into(),
                 operator: "&&".to_string()
             }),
-            parser.next_expr().ast,
+            expr(&mut parser).unwrap(),
             "(foo bar) && (baz quz)"
         );
     }
 
     #[test]
-    fn generics() {
-        let mut parser = Parser::from_source("for<T> let test a : T -> T = a");
+    fn block_() {
+        let mut src = from_source(
+            r"
+    let x = 0;
+    x",
+        );
+        ignore_blank_lines(&mut src).unwrap();
         assert_eq!(
-            ast::TopLevelDeclaration::Value(TopLevelValue {
-                loc: (0, 11),
+            block(&mut src).unwrap(),
+            ast::Block {
+                statements: vec![ast::Statement::Declaration(ast::ValueDeclaration {
+                    loc: (9, 10),
+                    is_op: false,
+                    target: ast::Pattern::Read("x".into(), (9, 10)),
+                    args: Vec::new(),
+                    ty: None,
+                    value: ast::ValueType::Expr(ast::Expr::NumericLiteral { value: "0".into() }),
+                    generictypes: None,
+                    abi: None
+                }),],
+                implicit_ret: Some(ast::Expr::ValueRead("x".into(), (20, 21)).into())
+            }
+        )
+    }
+
+    #[test]
+    fn statements() {
+        const SRC: &'static str = include_str!("../../samples/test.fb");
+        let mut input = from_source(SRC);
+        assert_eq!(
+            ast::TopLevelValue {
+                loc: (4, 7),
+                is_op: false,
+                ident: "foo".to_owned(),
+                ty: Some(types::INT32),
+                args: Vec::new(),
+                value: ast::ValueType::Expr(ast::Expr::NumericLiteral {
+                    value: "3".to_owned(),
+                }),
+                generics: None,
+                abi: None,
+            },
+            top_level_value(&mut input).unwrap(),
+            "simple declaration"
+        );
+        ignore_blank_lines(&mut input).unwrap();
+        assert_eq!(
+            ast::TopLevelValue {
+                loc: (26, 29),
+                is_op: false,
+                ident: "bar".to_owned(),
+                ty: Some(types::ResolvedType::Function {
+                    arg: types::INT32.into(),
+                    returns: types::INT32.into(),
+                    loc: (2, 20)
+                }),
+                args: vec![ast::ArgDeclaration::Simple {
+                    ident: "quz".to_string(),
+                    loc: (30, 33),
+                    ty: None,
+                }],
+                value: ast::ValueType::Function(ast::Block {
+                    statements: vec![
+                        ast::Statement::Declaration(ast::ValueDeclaration {
+                            loc: (62, 65),
+                            is_op: false,
+                            target: ast::Pattern::Read("baz".to_owned(), (62, 65)),
+                            ty: Some(types::STR),
+                            args: Vec::new(),
+                            value: ast::ValueType::Expr(ast::Expr::StringLiteral(
+                                r#"merp " yes"#.to_string()
+                            )),
+                            generictypes: None,
+                            abi: None,
+                        }),
+                        ast::Statement::Return(
+                            ast::Expr::NumericLiteral {
+                                value: "2".to_owned(),
+                            },
+                            (93, 99)
+                        )
+                    ],
+                    implicit_ret: None
+                }),
+                generics: None,
+                abi: None,
+            },
+            top_level_value(&mut input).unwrap(),
+            "declaration with block"
+        );
+        ignore_blank_lines(&mut input).unwrap();
+        assert_eq!(
+            ast::TopLevelValue {
+                loc: (108, 112),
+                is_op: true,
+
+                ident: "^^".to_owned(),
+                ty: Some(types::ResolvedType::Function {
+                    arg: types::INT32.into(),
+                    returns: types::ResolvedType::Function {
+                        arg: types::INT32.into(),
+                        returns: types::INT32.into(),
+                        loc: (6, 32)
+                    }
+                    .into(),
+                    loc: (6, 23)
+                }),
+                args: vec![
+                    ast::ArgDeclaration::Simple {
+                        ident: "lhs".to_string(),
+                        loc: (113, 116),
+                        ty: None,
+                    },
+                    ast::ArgDeclaration::Simple {
+                        ident: "rhs".to_string(),
+                        loc: (117, 120),
+                        ty: None,
+                    },
+                ],
+                value: ast::ValueType::Function(ast::Block {
+                    statements: vec![
+                        ast::Statement::Expr(ast::Expr::FnCall(ast::FnCall {
+                            loc: (153, 156),
+                            value: ast::Expr::ValueRead("bar".to_string(), (153, 156)).into(),
+                            arg: Some(ast::Expr::ValueRead("foo".to_string(), (157, 160)).into()),
+                        })),
+                        ast::Statement::Return(
+                            ast::Expr::NumericLiteral {
+                                value: "1".to_owned(),
+                            },
+                            (166, 172)
+                        )
+                    ],
+                    implicit_ret: None,
+                }),
+                generics: None,
+                abi: None,
+            },
+            top_level_value(&mut input).unwrap(),
+            "operator declaration w/ function call",
+        );
+    }
+
+    #[test]
+    fn fn_chain() {
+        const SRC: &'static str = r#"let main _ : int32 -> int32 = 
+    put_int32 100;
+    print_str "v";
+    return 32;
+"#;
+        let mut parser = from_source(SRC);
+
+        assert_eq!(
+            ast::TopLevelValue {
+                loc: (4, 8),
+                is_op: false,
+
+                ident: "main".to_owned(),
+                ty: Some(types::ResolvedType::Function {
+                    arg: types::INT32.into(),
+                    returns: types::INT32.into(),
+                    loc: (19, 21)
+                }),
+                args: vec![ast::ArgDeclaration::Discard {
+                    ty: None,
+                    loc: (9, 10)
+                }],
+                value: ast::ValueType::Function(ast::Block {
+                    statements: vec![
+                        ast::Statement::Expr(ast::Expr::FnCall(ast::FnCall {
+                            loc: (35, 44),
+                            value: ast::Expr::ValueRead("put_int32".to_string(), (35, 44)).into(),
+                            arg: Some(
+                                ast::Expr::NumericLiteral {
+                                    value: "100".to_owned(),
+                                }
+                                .into()
+                            )
+                        })),
+                        ast::Statement::Expr(ast::Expr::FnCall(ast::FnCall {
+                            loc: (54, 63),
+                            value: ast::Expr::ValueRead("print_str".to_string(), (54, 63)).into(),
+                            arg: Some(ast::Expr::StringLiteral("v".to_string()).into())
+                        })),
+                        ast::Statement::Return(
+                            ast::Expr::NumericLiteral {
+                                value: "32".to_string(),
+                            },
+                            (73, 79)
+                        )
+                    ],
+                    implicit_ret: None
+                }),
+                generics: None,
+                abi: None,
+            },
+            top_level_value(&mut parser).unwrap(),
+        );
+    }
+
+    #[test]
+    fn generics() {
+        let mut parser = from_source("for<T> let test a : T -> T = a;");
+        assert_eq!(
+            ast::TopLevelValue {
+                loc: (11, 15),
                 is_op: false,
                 ident: "test".to_owned(),
                 args: vec![ast::ArgDeclaration::Simple {
-                    loc: (0, 16),
+                    loc: (16, 17),
                     ident: "a".to_string(),
                     ty: None,
                 }],
-                ty: Some(ResolvedType::Function {
-                    arg: ResolvedType::Generic {
+                ty: Some(types::ResolvedType::Function {
+                    arg: types::ResolvedType::Generic {
                         name: "T".to_string(),
-                        loc: (0, 20)
+                        loc: (20, 21)
                     }
                     .into(),
-                    returns: ResolvedType::Generic {
+                    returns: types::ResolvedType::Generic {
                         name: "T".to_string(),
-                        loc: (0, 25)
+                        loc: (25, 26)
                     }
                     .into(),
-                    loc: (0, 22)
+                    loc: (22, 24)
                 }),
-                value: ast::ValueType::Expr(ast::Expr::ValueRead("a".to_string(), (0, 29))),
+                value: ast::ValueType::Expr(ast::Expr::ValueRead("a".to_string(), (29, 30))),
                 generics: Some(ast::GenericsDecl {
-                    for_loc: (0, 0),
-                    decls: [((0, 4), "T".to_string())].into_iter().collect(),
+                    for_loc: (0, 3),
+                    decls: [((4, 5), "T".to_string())].into_iter().collect(),
                 }),
                 abi: None,
-            }),
-            parser.next_toplevel().ast,
+            },
+            top_level_value(&mut parser).unwrap(),
         )
     }
 
@@ -4550,53 +1986,54 @@ for<T,U> type Tuple = {
     first : T,
     second : U
 }"#;
-        let mut parser = Parser::from_source(SRC);
+        let mut parser = from_source(SRC);
         assert_eq!(
             ast::TopLevelDeclaration::TypeDefinition(ast::TypeDefinition::Struct(
-                StructDefinition {
+                ast::StructDefinition {
                     ident: "Foo".to_string(),
                     generics: None,
                     values: vec![ast::FieldDecl {
                         name: "a".to_string(),
                         ty: types::INT32,
-                        loc: (1, 4),
+                        loc: (17, 18),
                     }],
-                    loc: (0, 5)
+                    loc: (5, 8)
                 },
             )),
-            parser.next_toplevel().ast,
+            top_level_decl(&mut parser).unwrap(),
             "basic"
         );
+        ignore_blank_lines(&mut parser).unwrap();
         assert_eq!(
             ast::TopLevelDeclaration::TypeDefinition(ast::TypeDefinition::Struct(
-                StructDefinition {
+                ast::StructDefinition {
                     ident: "Tuple".to_string(),
                     generics: Some(ast::GenericsDecl {
-                        for_loc: (3, 0),
-                        decls: vec![((3, 4), "T".to_string()), ((3, 6), "U".to_string())],
+                        for_loc: (29, 32),
+                        decls: vec![((33, 34), "T".to_string()), ((35, 36), "U".to_string())],
                     }),
                     values: vec![
                         ast::FieldDecl {
                             name: "first".to_string(),
-                            ty: ResolvedType::Generic {
+                            ty: types::ResolvedType::Generic {
                                 name: "T".to_string(),
-                                loc: (4, 12),
+                                loc: (65, 66),
                             },
-                            loc: (4, 4)
+                            loc: (57, 62)
                         },
                         ast::FieldDecl {
                             name: "second".to_string(),
-                            ty: ResolvedType::Generic {
+                            ty: types::ResolvedType::Generic {
                                 name: "U".to_string(),
-                                loc: (5, 13)
+                                loc: (81, 82)
                             },
-                            loc: (5, 4)
+                            loc: (72, 78)
                         },
                     ],
-                    loc: (3, 14)
+                    loc: (43, 48)
                 }
             )),
-            parser.next_toplevel().ast,
+            top_level_decl(&mut parser).unwrap(),
             "generic"
         )
     }
@@ -4604,725 +2041,510 @@ for<T,U> type Tuple = {
     #[test]
     fn generic_use_types() {
         const SRC: &'static str = r"let foo a b : Bar<int32> -> Baz<int32,float64> -> int32 =
-    return 0        
+    return 0; 
 ";
-        let mut parser = Parser::from_source(SRC);
+        let mut parser = from_source(SRC);
         assert_eq!(
-            ast::TopLevelDeclaration::Value(TopLevelValue {
-                loc: (0, 4),
+            ast::TopLevelDeclaration::Value(ast::TopLevelValue {
+                loc: (4, 7),
                 is_op: false,
                 ident: "foo".to_owned(),
                 args: vec![
-                    ArgDeclaration::Simple {
-                        loc: (0, 8),
+                    ast::ArgDeclaration::Simple {
+                        loc: (8, 9),
                         ident: "a".to_string(),
                         ty: None,
                     },
-                    ArgDeclaration::Simple {
-                        loc: (0, 10),
+                    ast::ArgDeclaration::Simple {
+                        loc: (10, 11),
                         ident: "b".to_string(),
                         ty: None,
                     },
                 ],
-                ty: Some(ResolvedType::Function {
-                    arg: ResolvedType::User {
+                ty: Some(types::ResolvedType::Function {
+                    arg: types::ResolvedType::User {
                         name: "Bar".to_string(),
                         generics: vec![types::INT32],
-                        loc: (0, 14)
+                        loc: (14, 25)
                     }
                     .into(),
-                    returns: ResolvedType::Function {
-                        arg: ResolvedType::User {
+                    returns: types::ResolvedType::Function {
+                        arg: types::ResolvedType::User {
                             name: "Baz".to_string(),
                             generics: vec![types::INT32, types::FLOAT64],
-                            loc: (0, 28)
+                            loc: (28, 47)
                         }
                         .into(),
                         returns: types::INT32.into(),
-                        loc: (0, 47)
+                        loc: (47, 49)
                     }
                     .into(),
-                    loc: (0, 25)
+                    loc: (25, 27)
                 }),
-                value: ValueType::Function(vec![Statement::Return(
-                    Expr::NumericLiteral {
-                        value: "0".to_string(),
-                    },
-                    (1, 4)
-                )]),
+                value: ast::ValueType::Function(ast::Block {
+                    statements: vec![ast::Statement::Return(
+                        ast::Expr::NumericLiteral {
+                            value: "0".to_string(),
+                        },
+                        (62, 68)
+                    )],
+                    implicit_ret: None
+                }),
                 generics: None,
                 abi: None,
             }),
-            parser.next_toplevel().ast
-        )
+            top_level_decl(&mut parser).unwrap()
+        );
     }
 
     #[test]
     fn struct_construction() {
         const SRC: &'static str = "Foo { a : 0 }";
-        let mut parser = Parser::from_source(SRC);
+        let mut parser = from_source(SRC);
         assert_eq!(
-            ast::Expr::StructConstruction(StructConstruction {
-                loc: (0, 4),
+            ast::Expr::StructConstruction(ast::StructConstruction {
+                loc: (0, 3),
                 fields: HashMap::from([(
                     "a".to_string(),
                     (
-                        Expr::NumericLiteral {
+                        ast::Expr::NumericLiteral {
                             value: "0".to_string(),
                         },
-                        (0, 6)
+                        (0, 0)
                     )
                 )]),
                 generics: Vec::new(),
                 ident: "Foo".to_string()
             }),
-            parser.next_expr().ast
+            expr(&mut parser).unwrap()
         );
+        let mut parser = from_source("Generic<int32>{ a:0 }");
         assert_eq!(
-            ast::Expr::StructConstruction(StructConstruction {
+            ast::Expr::StructConstruction(ast::StructConstruction {
                 loc: (0, 14),
                 fields: HashMap::from([(
                     "a".to_string(),
                     (
-                        Expr::NumericLiteral {
+                        ast::Expr::NumericLiteral {
                             value: "0".to_string(),
                         },
-                        (0, 16)
+                        (0, 0)
                     )
                 )]),
                 generics: vec![types::INT32],
                 ident: "Generic".to_string()
             }),
-            Parser::from_source("Generic<int32>{ a:0 }").next_expr().ast
+            expr(&mut parser).unwrap()
         )
     }
 
     #[test]
-    fn control_flow_if() {
-        let mut parser = Parser::from_source(include_str!("../../samples/control_flow_if.fb"));
-        assert_eq!(
-            ast::TopLevelDeclaration::Value(TopLevelValue {
-                loc: (0, 4),
-                is_op: false,
-                ident: "inline_expr".to_owned(),
-                args: vec![ast::ArgDeclaration::Simple {
-                    ident: "a".to_string(),
-                    loc: (0, 16),
-                    ty: None,
-                }],
-                ty: Some(ResolvedType::Function {
-                    arg: types::BOOL.into(),
-                    returns: types::INT32.into(),
-                    loc: (0, 25)
-                }),
-                value: ast::ValueType::Expr(ast::Expr::If(IfExpr {
-                    cond: ast::Expr::ValueRead("a".to_string(), (0, 39)).into(),
-                    true_branch: (
-                        Vec::new(),
-                        ast::Expr::NumericLiteral {
-                            value: "0".to_string(),
-                        }
-                        .into()
-                    ),
-                    else_ifs: Vec::new(),
-                    else_branch: (
-                        Vec::new(),
-                        ast::Expr::NumericLiteral {
-                            value: "1".to_string(),
-                        }
-                        .into()
-                    ),
-                    loc: (0, 36)
-                })),
-                generics: None,
-                abi: None,
-            }),
-            parser.next_toplevel().ast,
-            "inline_expr"
-        );
+    fn abi() {
+        const SRC: &'static str = r#"extern "C" let putchar : int32 -> int32;
+extern "C" let ex (a:int32) b = a + b;
+"#;
+        let mut parser = from_source(SRC);
+        let putchar = top_level_decl(&mut parser).unwrap();
 
+        ignore_blank_lines(&mut parser).unwrap();
+        let ex = top_level_decl(&mut parser).unwrap();
         assert_eq!(
-            ast::TopLevelDeclaration::Value(TopLevelValue {
-                loc: (2, 4),
+            ast::TopLevelDeclaration::Value(ast::TopLevelValue {
+                loc: (15, 22),
                 is_op: false,
-                ident: "out_of_line_expr".to_owned(),
-                args: vec![ast::ArgDeclaration::Simple {
-                    ident: "a".to_string(),
-                    loc: (2, 21),
-                    ty: None,
-                }],
-                ty: Some(ResolvedType::Function {
-                    arg: types::BOOL.into(),
-                    returns: types::INT32.into(),
-                    loc: (2, 30)
-                }),
-                value: ast::ValueType::Expr(ast::Expr::If(IfExpr {
-                    cond: ast::Expr::ValueRead("a".to_string(), (2, 44)).into(),
-                    true_branch: (
-                        Vec::new(),
-                        ast::Expr::FnCall(ast::FnCall {
-                            loc: (3, 8),
-                            value: ast::Expr::ValueRead("fun".to_string(), (3, 8)).into(),
-                            arg: Some(
-                                ast::Expr::NumericLiteral {
-                                    value: "0".to_string(),
-                                }
-                                .into()
-                            ),
-                        })
-                        .into()
-                    ),
-                    else_ifs: Vec::new(),
-                    else_branch: (
-                        Vec::new(),
-                        ast::Expr::NumericLiteral {
-                            value: "1".to_string(),
-                        }
-                        .into()
-                    ),
-                    loc: (2, 41)
-                })),
+                ident: "putchar".to_owned(),
+                args: Vec::new(),
+                ty: Some(types::INT32.fn_ty(&types::INT32)),
+                value: ast::ValueType::External,
                 generics: None,
-                abi: None,
-            }),
-            parser.next_toplevel().ast,
-            "out_of_line_expr"
-        );
-
-        assert_eq!(
-            ast::TopLevelDeclaration::Value(TopLevelValue {
-                loc: (7, 4),
-                is_op: false,
-                ident: "expr_with_statement".to_owned(),
-                args: vec![ast::ArgDeclaration::Simple {
-                    loc: (7, 24),
-                    ident: "a".to_string(),
-                    ty: None,
-                }],
-                ty: Some(ResolvedType::Function {
-                    arg: types::BOOL.into(),
-                    returns: types::INT32.into(),
-                    loc: (7, 33)
+                abi: Some(ast::Abi {
+                    loc: (7, 10),
+                    identifier: "C".to_string(),
                 }),
-                value: ast::ValueType::Expr(ast::Expr::If(IfExpr {
-                    cond: ast::Expr::ValueRead("a".to_string(), (7, 47)).into(),
-                    true_branch: (
-                        vec![ast::Statement::FnCall(FnCall {
-                            loc: (8, 8),
-                            value: ast::Expr::ValueRead("bar".to_string(), (8, 8)).into(),
-                            arg: Some(
-                                ast::Expr::NumericLiteral {
-                                    value: "3".to_string(),
-                                }
-                                .into()
-                            ),
-                        })],
-                        ast::Expr::NumericLiteral {
-                            value: "0".to_string(),
-                        }
-                        .into()
-                    ),
-                    else_ifs: Vec::new(),
-                    else_branch: (
-                        vec![ast::Statement::FnCall(FnCall {
-                            loc: (11, 8),
-                            value: ast::Expr::ValueRead("baz".to_string(), (11, 8)).into(),
-                            arg: Some(
-                                ast::Expr::NumericLiteral {
-                                    value: "4".to_string(),
-                                }
-                                .into()
-                            ),
-                        })],
-                        ast::Expr::NumericLiteral {
-                            value: "1".to_string(),
-                        }
-                        .into()
-                    ),
-                    loc: (7, 44)
-                })),
-                generics: None,
-                abi: None,
             }),
-            parser.next_toplevel().ast,
-            "expr_with_statement"
+            putchar,
+            "input function"
         );
-
         assert_eq!(
-            ast::TopLevelDeclaration::Value(TopLevelValue {
-                loc: (14, 4),
+            ast::TopLevelDeclaration::Value(ast::TopLevelValue {
+                loc: (56, 58),
                 is_op: false,
-                ident: "expr_with_else_if".to_owned(),
+                ident: "ex".to_owned(),
                 args: vec![
                     ast::ArgDeclaration::Simple {
-                        loc: (14, 22),
+                        loc: (60, 61),
                         ident: "a".to_string(),
-                        ty: None,
+                        ty: Some(types::INT32),
                     },
                     ast::ArgDeclaration::Simple {
-                        loc: (14, 24),
+                        loc: (69, 70),
                         ident: "b".to_string(),
                         ty: None,
                     },
                 ],
-                ty: Some(ResolvedType::Function {
-                    arg: types::BOOL.into(),
-                    returns: ResolvedType::Function {
-                        arg: types::BOOL.into(),
-                        returns: types::INT32.into(),
-                        loc: (14, 41)
-                    }
-                    .into(),
-                    loc: (14, 33)
-                }),
-                value: ValueType::Expr(ast::Expr::If(IfExpr {
-                    cond: ast::Expr::ValueRead("a".to_string(), (14, 55)).into(),
-                    true_branch: (
-                        Vec::new(),
-                        ast::Expr::NumericLiteral {
-                            value: "0".to_string(),
-                        }
-                        .into()
-                    ),
-                    else_ifs: vec![(
-                        ast::Expr::ValueRead("b".to_string(), (14, 72)).into(),
-                        Vec::new(),
-                        ast::Expr::NumericLiteral {
-                            value: "1".to_string(),
-                        }
-                        .into()
-                    ),],
-                    else_branch: (
-                        Vec::new(),
-                        ast::Expr::NumericLiteral {
-                            value: "2".to_string(),
-                        }
-                        .into()
-                    ),
-                    loc: (14, 52)
+                ty: None,
+                value: ast::ValueType::Expr(ast::Expr::BinaryOpCall(ast::BinaryOpCall {
+                    loc: (75, 76),
+                    lhs: ast::Expr::ValueRead("a".to_string(), (73, 74)).into(),
+                    rhs: ast::Expr::ValueRead("b".to_string(), (77, 78)).into(),
+                    operator: "+".to_string()
                 })),
+                generics: None,
+                abi: Some(ast::Abi {
+                    loc: (48, 51),
+                    identifier: "C".to_string(),
+                }),
+            }),
+            ex,
+            "output function."
+        )
+    }
+
+    #[test]
+    fn tuples() {
+        const SRC: &'static str = "let ty _ : (int32,int32)->int32 = 0;
+
+let cons a : int32 -> (int32,int32) = (a,0);
+";
+        let mut src = from_source(SRC);
+        let module = top_level_block(&mut src).unwrap();
+        let [ty, cons] = &module[..] else {
+            unreachable!()
+        };
+        assert_eq!(
+            &ast::TopLevelDeclaration::Value(ast::TopLevelValue {
+                loc: (4, 6),
+                is_op: false,
+                ident: "ty".to_owned(),
+                args: vec![ast::ArgDeclaration::Discard {
+                    ty: None,
+                    loc: (7, 8)
+                }],
+                ty: Some(
+                    types::ResolvedType::Tuple {
+                        underlining: vec![types::INT32, types::INT32],
+                        loc: (0, 0)
+                    }
+                    .fn_ty(&types::INT32)
+                ),
+                value: ast::ValueType::Expr(ast::Expr::NumericLiteral {
+                    value: "0".to_string()
+                }),
                 generics: None,
                 abi: None,
             }),
-            parser.next_toplevel().ast,
-            "expr with else if"
+            ty
         );
 
         assert_eq!(
-            ast::TopLevelDeclaration::Value(TopLevelValue {
-                loc: (16, 4),
+            &ast::TopLevelDeclaration::Value(ast::TopLevelValue {
+                loc: (42, 46),
                 is_op: false,
-                ident: "statement".to_owned(),
+                ident: "cons".to_owned(),
                 args: vec![ast::ArgDeclaration::Simple {
-                    loc: (16, 14),
+                    loc: (47, 48),
                     ident: "a".to_string(),
-                    ty: None,
+                    ty: None
                 }],
-                ty: Some(ResolvedType::Function {
-                    arg: types::BOOL.into(),
-                    returns: types::INT32.into(),
-                    loc: (16, 23)
-                }),
-                value: ast::ValueType::Function(vec![ast::Statement::IfStatement(IfBranching {
-                    cond: ast::Expr::ValueRead("a".to_string(), (17, 7)).into(),
-                    true_branch: vec![
-                        ast::Statement::FnCall(FnCall {
-                            loc: (18, 8),
-                            value: ast::Expr::ValueRead("foo".to_string(), (18, 8)).into(),
-                            arg: Some(
-                                ast::Expr::NumericLiteral {
-                                    value: "3".to_string(),
-                                }
-                                .into()
-                            )
-                        }),
-                        ast::Statement::Return(
-                            ast::Expr::NumericLiteral {
-                                value: "0".to_string(),
-                            },
-                            (19, 8)
-                        ),
+                ty: Some(types::INT32.fn_ty(&types::ResolvedType::Tuple {
+                    underlining: vec![types::INT32, types::INT32],
+                    loc: (0, 0)
+                })),
+                value: ast::ValueType::Expr(ast::Expr::TupleLiteral {
+                    contents: vec![
+                        ast::Expr::ValueRead("a".to_string(), (77, 78)),
+                        ast::Expr::NumericLiteral {
+                            value: "0".to_string()
+                        }
                     ],
-                    else_ifs: Vec::new(),
-                    else_branch: vec![
-                        ast::Statement::FnCall(FnCall {
-                            loc: (21, 8),
-                            value: ast::Expr::ValueRead("bar".to_string(), (21, 8)).into(),
-                            arg: Some(
-                                ast::Expr::NumericLiteral {
-                                    value: "4".to_string(),
-                                }
-                                .into()
-                            )
-                        }),
-                        ast::Statement::Return(
-                            ast::Expr::NumericLiteral {
-                                value: "1".to_string(),
-                            },
-                            (22, 8)
-                        ),
-                    ],
-                    loc: (17, 4)
-                })]),
-                generics: None,
-                abi: None,
-            }),
-            parser.next_toplevel().ast,
-            "statement"
-        );
-
-        assert_eq!(
-            ast::TopLevelDeclaration::Value(TopLevelValue {
-                loc: (24, 4),
-                is_op: false,
-                ident: "statement_with_else_if".to_owned(),
-                args: vec![
-                    ast::ArgDeclaration::Simple {
-                        loc: (24, 27),
-                        ident: "a".to_string(),
-                        ty: None,
-                    },
-                    ast::ArgDeclaration::Simple {
-                        loc: (24, 29),
-                        ident: "b".to_string(),
-                        ty: None,
-                    },
-                ],
-                ty: Some(ResolvedType::Function {
-                    arg: types::BOOL.into(),
-                    returns: ResolvedType::Function {
-                        arg: types::BOOL.into(),
-                        returns: types::INT32.into(),
-                        loc: (24, 46)
-                    }
-                    .into(),
-                    loc: (24, 38)
+                    loc: (76, 81)
                 }),
-                value: ast::ValueType::Function(vec![ast::Statement::IfStatement(IfBranching {
-                    cond: ast::Expr::ValueRead("a".to_string(), (25, 7)).into(),
-                    true_branch: vec![ast::Statement::Return(
-                        ast::Expr::NumericLiteral {
-                            value: "0".to_string(),
-                        },
-                        (26, 8)
-                    )],
-                    else_ifs: vec![(
-                        ast::Expr::ValueRead("b".to_string(), (27, 12)).into(),
-                        vec![ast::Statement::Return(
-                            ast::Expr::NumericLiteral {
-                                value: "1".to_string(),
-                            },
-                            (28, 8)
-                        )]
-                    )],
-                    else_branch: vec![ast::Statement::Return(
-                        ast::Expr::NumericLiteral {
-                            value: "2".to_string(),
-                        },
-                        (30, 8)
-                    )],
-                    loc: (25, 4),
-                })]),
                 generics: None,
-                abi: None,
+                abi: None
             }),
-            parser.next_toplevel().ast,
-            "statement_with_else_if"
-        );
-
-        assert_eq!(
-            ast::TopLevelDeclaration::Value(TopLevelValue {
-                loc: (32, 4),
-                is_op: false,
-                ident: "expr_multi_with_elseif".to_owned(),
-                args: vec![
-                    ast::ArgDeclaration::Simple {
-                        loc: (32, 27),
-                        ident: "a".to_string(),
-                        ty: None,
-                    },
-                    ast::ArgDeclaration::Simple {
-                        loc: (32, 29),
-                        ident: "b".to_string(),
-                        ty: None,
-                    },
-                ],
-                ty: Some(ResolvedType::Function {
-                    arg: types::BOOL.into(),
-                    returns: ResolvedType::Function {
-                        arg: types::BOOL.into(),
-                        returns: types::INT32.into(),
-                        loc: (32, 46)
-                    }
-                    .into(),
-                    loc: (32, 38)
-                }),
-                value: ValueType::Expr(ast::Expr::If(IfExpr {
-                    cond: ast::Expr::ValueRead("a".to_string(), (32, 60)).into(),
-                    true_branch: (
-                        Vec::new(),
-                        ast::Expr::NumericLiteral {
-                            value: "0".to_string(),
-                        }
-                        .into(),
-                    ),
-                    else_ifs: vec![(
-                        ast::Expr::ValueRead("b".to_string(), (34, 12)).into(),
-                        Vec::new(),
-                        ast::Expr::NumericLiteral {
-                            value: "1".to_string(),
-                        }
-                        .into(),
-                    )],
-                    else_branch: (
-                        Vec::new(),
-                        ast::Expr::NumericLiteral {
-                            value: "2".to_string(),
-                        }
-                        .into(),
-                    ),
-                    loc: (32, 57)
-                })),
-                generics: None,
-                abi: None,
-            }),
-            parser.next_toplevel().ast,
-            "multi line expr with else if"
+            cons
         );
     }
 
     #[test]
-    fn control_flow_match() {
-        let mut parser = Parser::from_source(include_str!("../../samples/control_flow_match.fb"));
+    fn match_patterns() {
+        let mut src = from_source("a");
+        let pattern_ = pattern(&mut src).unwrap();
+        assert_eq!(ast::Pattern::Read("a".to_string(), (0, 1)), pattern_, "a");
+        let mut src = from_source("_");
+        let pattern_ = pattern(&mut src).unwrap();
+        assert_eq!(ast::Pattern::Default, pattern_, "_");
+        let mut src = from_source("(a,b)");
         assert_eq!(
-            ast::TopLevelDeclaration::Value(TopLevelValue {
-                loc: (0, 4),
-                is_op: false,
-                ident: "match_expr_ints".to_owned(),
-                args: vec![ast::ArgDeclaration::Simple {
-                    loc: (0, 20),
-                    ident: "x".to_string(),
-                    ty: None,
-                }],
-                ty: Some(ResolvedType::Function {
-                    arg: types::INT32.into(),
-                    returns: types::INT32.into(),
-                    loc: (0, 30)
-                }),
-                value: ast::ValueType::Expr(ast::Expr::Match(Match {
-                    loc: (0, 41),
-                    on: ast::Expr::ValueRead("x".to_string(), (0, 47)).into(),
-                    arms: vec![
-                        MatchArm {
-                            block: Vec::new(),
-                            ret: Some(
-                                ast::Expr::NumericLiteral {
-                                    value: "1".to_string(),
-                                }
-                                .into()
-                            ),
-                            cond: Pattern::ConstNumber("1".to_string()),
-                            loc: (1, 6)
-                        },
-                        MatchArm {
-                            block: Vec::new(),
-                            ret: Some(
-                                ast::Expr::NumericLiteral {
-                                    value: "3".to_string(),
-                                }
-                                .into()
-                            ),
-                            cond: Pattern::ConstNumber("2".to_string()),
-                            loc: (2, 6)
-                        },
-                        MatchArm {
-                            block: Vec::new(),
-                            ret: Some(
-                                ast::Expr::NumericLiteral {
-                                    value: "4".to_string(),
-                                }
-                                .into()
-                            ),
-                            cond: Pattern::Default,
-                            loc: (3, 6)
-                        },
-                    ]
-                })),
-                generics: None,
-                abi: None,
-            }),
-            parser.next_toplevel().ast,
-            "match_expr_ints"
+            ast::Pattern::Destructure(ast::PatternDestructure::Tuple(vec![
+                ast::Pattern::Read("a".to_string(), (1, 2)),
+                ast::Pattern::Read("b".to_string(), (3, 4)),
+            ])),
+            pattern(&mut src).unwrap(),
+            "destruct tuple"
         );
-
+        let mut src = from_source("0 | 1");
         assert_eq!(
-            ast::TopLevelDeclaration::Value(TopLevelValue {
-                loc: (5, 4),
-                is_op: false,
-                ident: "match_expr_with_block".to_owned(),
-                args: vec![ArgDeclaration::Simple {
-                    loc: (5, 26),
-                    ident: "x".to_string(),
-                    ty: None,
-                },],
-                ty: Some(ResolvedType::Function {
-                    arg: types::INT32.into(),
-                    returns: types::INT32.into(),
-                    loc: (5, 36)
-                }),
-                value: ValueType::Expr(ast::Expr::Match(Match {
-                    loc: (5, 47),
-                    on: ast::Expr::ValueRead("x".to_string(), (5, 53)).into(),
-                    arms: vec![
-                        MatchArm {
-                            loc: (6, 6),
-                            block: vec![ast::Statement::Declaration(ValueDeclaration {
-                                loc: (7, 12),
-                                is_op: false,
-                                target: Pattern::Read("a".to_owned(), (7, 12)),
-                                args: Vec::new(),
-                                ty: Some(types::INT32),
-                                value: ValueType::Expr(ast::Expr::NumericLiteral {
-                                    value: "2".to_string(),
-                                }),
-                                generictypes: None,
-                                abi: None,
-                            })],
-                            ret: Some(
-                                ast::Expr::BinaryOpCall(BinaryOpCall {
-                                    loc: (8, 9),
-                                    lhs: ast::Expr::ValueRead("a".to_string(), (8, 8)).into(),
-                                    rhs: ast::Expr::NumericLiteral {
-                                        value: "3".to_string(),
-                                    }
-                                    .into(),
-                                    operator: "*".to_string()
-                                })
-                                .into()
-                            ),
-                            cond: Pattern::ConstNumber("1".to_string()),
-                        },
-                        MatchArm {
-                            block: Vec::new(),
-                            ret: Some(
-                                ast::Expr::NumericLiteral {
-                                    value: "2".to_string(),
-                                }
-                                .into()
-                            ),
-                            cond: Pattern::ConstNumber("2".to_string()),
-                            loc: (9, 6)
-                        },
-                        MatchArm {
-                            loc: (10, 6),
-                            block: Vec::new(),
-                            ret: Some(
-                                ast::Expr::BinaryOpCall(BinaryOpCall {
-                                    loc: (10, 12),
-                                    lhs: ast::Expr::ValueRead("a".to_string(), (10, 11)).into(),
-                                    rhs: ast::Expr::NumericLiteral {
-                                        value: "2".to_string(),
-                                    }
-                                    .into(),
-                                    operator: "/".to_string()
-                                })
-                                .into()
-                            ),
-                            cond: Pattern::Read("a".to_string(), (10, 6)),
-                        },
-                    ]
-                })),
-                generics: None,
-                abi: None,
-            }),
-            parser.next_toplevel().ast,
-            "match_expr_with_block"
+            ast::Pattern::Or(
+                ast::Pattern::ConstNumber("0".to_string()).into(),
+                ast::Pattern::ConstNumber("1".to_string()).into(),
+            ),
+            pattern(&mut src).unwrap(),
+            "or (0 or 1)"
         );
+        let mut src = from_source("0 | 1 | 2");
         assert_eq!(
-            ast::TopLevelDeclaration::Value(TopLevelValue {
-                loc: (12, 4),
-                is_op: false,
-                ident: "match_statement".to_owned(),
-                args: vec![ArgDeclaration::Simple {
-                    loc: (12, 20),
-                    ident: "x".to_string(),
-                    ty: None,
-                },],
-                ty: Some(ResolvedType::Function {
-                    arg: types::INT32.into(),
-                    returns: types::UNIT.into(),
-                    loc: (12, 30)
-                }),
-                value: ValueType::Function(vec![ast::Statement::Match(Match {
-                    loc: (13, 4),
-                    on: ast::Expr::ValueRead("x".to_string(), (13, 10)).into(),
-                    arms: vec![
-                        MatchArm {
-                            block: vec![ast::Statement::FnCall(FnCall {
-                                loc: (15, 8),
-                                value: ast::Expr::ValueRead("foo".to_string(), (15, 8)).into(),
-                                arg: Some(
-                                    ast::Expr::NumericLiteral {
-                                        value: "0".to_string(),
-                                    }
-                                    .into()
-                                )
-                            })],
-                            ret: None,
-                            cond: Pattern::ConstNumber("1".to_string()),
-                            loc: (14, 6),
-                        },
-                        MatchArm {
-                            block: vec![ast::Statement::FnCall(FnCall {
-                                loc: (17, 8),
-                                value: ast::Expr::ValueRead("bar".to_string(), (17, 8)).into(),
-                                arg: Some(
-                                    ast::Expr::NumericLiteral {
-                                        value: "1".to_string(),
-                                    }
-                                    .into()
-                                )
-                            })],
-                            ret: None,
-                            cond: Pattern::ConstNumber("2".to_string()),
-                            loc: (16, 6),
-                        },
-                        MatchArm {
-                            block: Vec::new(),
-                            ret: Some(
-                                ast::Expr::FnCall(FnCall {
-                                    loc: (18, 11),
-                                    value: ast::Expr::ValueRead("baz".to_string(), (18, 11)).into(),
-                                    arg: Some(
-                                        ast::Expr::NumericLiteral {
-                                            value: "2".to_string(),
-                                        }
-                                        .into()
-                                    )
-                                })
-                                .into()
-                            ),
-                            cond: Pattern::ConstNumber("3".to_string()),
-                            loc: (18, 6),
-                        },
-                    ]
-                })]),
-                generics: None,
-                abi: None,
-            }),
-            parser.next_toplevel().ast,
-            "match_statement",
+            ast::Pattern::Or(
+                ast::Pattern::ConstNumber("0".to_string()).into(),
+                ast::Pattern::Or(
+                    ast::Pattern::ConstNumber("1".to_string()).into(),
+                    ast::Pattern::ConstNumber("2".to_string()).into(),
+                )
+                .into()
+            ),
+            pattern(&mut src).unwrap(),
+            "or (0 or 1 or 2)"
+        );
+        let mut src = from_source("(0 | 1,b)");
+        assert_eq!(
+            ast::Pattern::Destructure(ast::PatternDestructure::Tuple(vec![
+                ast::Pattern::Or(
+                    ast::Pattern::ConstNumber("0".to_string()).into(),
+                    ast::Pattern::ConstNumber("1".to_string()).into(),
+                ),
+                ast::Pattern::Read("b".to_string(), (7, 8)),
+            ])),
+            pattern(&mut src).unwrap(),
+            "destruct tuple"
         );
     }
+
+    #[test]
+    fn arg_types() {
+        const SRC: &'static str = "
+let simple a = ();
+let decon_arg (a,b) = ();
+let discard _ = ();
+let unit () = ();
+let annotated_arg_tuple ((x,y):(int32,int32)) = ();
+";
+
+        let mut src = from_source(SRC);
+        let simple = top_level_decl(&mut src).unwrap();
+        let decon = top_level_decl(&mut src).unwrap();
+        let discard = top_level_decl(&mut src).unwrap();
+        let unit = top_level_decl(&mut src).unwrap();
+        let annotated_decon = top_level_decl(&mut src).unwrap();
+        assert_eq!(
+            ast::TopLevelDeclaration::Value(ast::TopLevelValue {
+                loc: (5, 11),
+                is_op: false,
+                ident: "simple".to_owned(),
+                args: vec![ast::ArgDeclaration::Simple {
+                    loc: (12, 13),
+                    ident: "a".to_string(),
+                    ty: None,
+                },],
+                ty: None,
+                value: ast::ValueType::Expr(ast::Expr::UnitLiteral),
+                generics: None,
+                abi: None,
+            }),
+            simple,
+            "let simple a = ();"
+        );
+        assert_eq!(
+            ast::TopLevelDeclaration::Value(ast::TopLevelValue {
+                loc: (24, 33),
+                is_op: false,
+                ident: "decon_arg".to_owned(),
+                args: vec![ast::ArgDeclaration::DestructureTuple(
+                    vec![
+                        ast::ArgDeclaration::Simple {
+                            loc: (35, 36),
+                            ident: "a".to_string(),
+                            ty: None,
+                        },
+                        ast::ArgDeclaration::Simple {
+                            loc: (37, 38),
+                            ident: "b".to_string(),
+                            ty: None,
+                        },
+                    ],
+                    None,
+                    (34, 39)
+                ),],
+                ty: None,
+                value: ast::ValueType::Expr(ast::Expr::UnitLiteral),
+                generics: None,
+                abi: None,
+            }),
+            decon,
+            "let decon_arg (a,b) = ()"
+        );
+        assert_eq!(
+            ast::TopLevelDeclaration::Value(ast::TopLevelValue {
+                loc: (50, 57),
+                is_op: false,
+                ident: "discard".to_owned(),
+                args: vec![ast::ArgDeclaration::Discard {
+                    loc: (58, 59),
+                    ty: None,
+                },],
+                ty: None,
+                value: ast::ValueType::Expr(ast::Expr::UnitLiteral),
+                generics: None,
+                abi: None,
+            }),
+            discard,
+            "let discard _ = ();"
+        );
+        assert_eq!(
+            ast::TopLevelDeclaration::Value(ast::TopLevelValue {
+                loc: (70, 74),
+                is_op: false,
+                ident: "unit".to_owned(),
+                args: vec![ast::ArgDeclaration::Unit {
+                    loc: (75, 77),
+                    ty: None,
+                },],
+                ty: None,
+                value: ast::ValueType::Expr(ast::Expr::UnitLiteral),
+                generics: None,
+                abi: None,
+            }),
+            unit,
+            "let unit () = ();"
+        );
+        assert_eq!(
+            ast::TopLevelDeclaration::Value(ast::TopLevelValue {
+                loc: (88, 107),
+                is_op: false,
+                ident: "annotated_arg_tuple".to_owned(),
+                args: vec![ast::ArgDeclaration::DestructureTuple(
+                    vec![
+                        ast::ArgDeclaration::Simple {
+                            loc: (110, 111),
+                            ident: "x".to_string(),
+                            ty: None,
+                        },
+                        ast::ArgDeclaration::Simple {
+                            loc: (112, 113),
+                            ident: "y".to_string(),
+                            ty: None,
+                        },
+                    ],
+                    Some(types::ResolvedType::Tuple {
+                        underlining: vec![types::INT32, types::INT32,],
+                        loc: (115, 128)
+                    }),
+                    (109, 114)
+                ),],
+                ty: None,
+                value: ast::ValueType::Expr(ast::Expr::UnitLiteral),
+                generics: None,
+                abi: None,
+            }),
+            annotated_decon,
+            "let annotated_arg_tuple ((x,y):(int32,int32)) = ();"
+        );
+    }
+
+    #[test]
+    fn destructuring_statement() {
+        let mut parser = from_source(
+r#"let (x,y) = v;
+let ((x,y),z) = v;
+let (x,y,z) = v;
+let (x,y):(int32,int32) = v;
+"#,
+        );
+        assert_eq!(
+            ast::Statement::Declaration(ast::ValueDeclaration {
+                loc: (4,9),
+                is_op: false,
+                target: ast::Pattern::Destructure(ast::PatternDestructure::Tuple(vec![
+                    ast::Pattern::Read("x".to_string(), (5, 6)),
+                    ast::Pattern::Read("y".to_string(), (7, 8)),
+                ])),
+                args: Vec::new(),
+                ty: None,
+                value: ast::ValueType::Expr(ast::Expr::ValueRead("v".to_string(), (12, 13))),
+                generictypes: None,
+                abi: None,
+            }),
+            statement(&mut parser).unwrap()
+        );
+        ascii::line_ending::<_, ContextError>(&mut parser);
+        assert_eq!(
+            ast::Statement::Declaration(ast::ValueDeclaration {
+                loc: (19, 28),
+                is_op: false,
+                target: ast::Pattern::Destructure(ast::PatternDestructure::Tuple(vec![
+                    ast::Pattern::Destructure(ast::PatternDestructure::Tuple(vec![
+                        ast::Pattern::Read("x".to_string(), (21, 22)),
+                        ast::Pattern::Read("y".to_string(), (23, 24)),
+                    ])),
+                    ast::Pattern::Read("z".to_string(), (26, 27))
+                ])),
+                args: Vec::new(),
+                ty: None,
+                value: ast::ValueType::Expr(ast::Expr::ValueRead("v".to_string(), (31, 32))),
+                generictypes: None,
+                abi: None,
+            }),
+            statement(&mut parser).unwrap()
+        );
+
+        ascii::line_ending::<_, ContextError>(&mut parser);
+        assert_eq!(
+            ast::Statement::Declaration(ast::ValueDeclaration {
+                loc: (38, 45),
+                is_op: false,
+                target: ast::Pattern::Destructure(ast::PatternDestructure::Tuple(vec![
+                    ast::Pattern::Read("x".to_string(), (39, 40)),
+                    ast::Pattern::Read("y".to_string(), (41, 42)),
+                    ast::Pattern::Read("z".to_string(), (43, 44)),
+                ])),
+                args: Vec::new(),
+                ty: None,
+                value: ast::ValueType::Expr(ast::Expr::ValueRead("v".to_string(), (48, 49))),
+                generictypes: None,
+                abi: None,
+            }),
+            statement(&mut parser).unwrap()
+        );
+        ascii::line_ending::<_, ContextError>(&mut parser);
+        assert_eq!(
+            ast::Statement::Declaration(ast::ValueDeclaration {
+                loc: (55, 60),
+                is_op: false,
+                target: ast::Pattern::Destructure(ast::PatternDestructure::Tuple(vec![
+                    ast::Pattern::Read("x".to_string(), (56, 57)),
+                    ast::Pattern::Read("y".to_string(), (58, 59)),
+                ])),
+                args: Vec::new(),
+                ty: Some(types::ResolvedType::Tuple {
+                    underlining: vec![types::INT32, types::INT32],
+                    loc: (4, 10),
+                }),
+                value: ast::ValueType::Expr(ast::Expr::ValueRead("v".to_string(), (77, 78))),
+                generictypes: None,
+                abi: None,
+            }),
+            statement(&mut parser).unwrap()
+        );
+    }
+
     #[test]
     fn arrays() {
-        const SRC: &'static str = r#"
-let arr = [0,0,0,0];
+        const SRC: &'static str = r#"let arr = [0,0,0,0];
 "#;
-        let arr = Parser::from_source(SRC).next_toplevel().ast;
+        let mut arr = from_source(SRC);
+        let arr = top_level_decl(&mut arr).unwrap();
         assert_eq!(
-            ast::TopLevelDeclaration::Value(TopLevelValue {
-                loc: (1, 4),
+            ast::TopLevelDeclaration::Value(ast::TopLevelValue {
+                loc: (4, 7),
                 is_op: false,
                 ident: "arr".to_owned(),
                 args: Vec::new(),
@@ -5342,7 +2564,7 @@ let arr = [0,0,0,0];
                             value: "0".to_string()
                         },
                     ],
-                    loc: (1, 10)
+                    loc: (10, 19)
                 }),
                 generics: None,
                 abi: None,
@@ -5351,399 +2573,6 @@ let arr = [0,0,0,0];
             "arrays"
         )
     }
-
-    #[test]
-    fn abi() {
-        const SRC: &'static str = r#"
-extern "C" let putchar : int32 -> int32;
-extern "C" let ex (a:int32) b = a + b;
-"#;
-        let mut parser = Parser::from_source(SRC);
-        let putchar = parser.next_toplevel().ast;
-        let ex = parser.next_toplevel().ast;
-        assert_eq!(
-            ast::TopLevelDeclaration::Value(TopLevelValue {
-                loc: (1, 15),
-                is_op: false,
-                ident: "putchar".to_owned(),
-                args: Vec::new(),
-                ty: Some(types::INT32.fn_ty(&types::INT32)),
-                value: ValueType::External,
-                generics: None,
-                abi: Some(ast::Abi {
-                    loc: (1, 0),
-                    identifier: "C".to_string(),
-                }),
-            }),
-            putchar,
-            "input function"
-        );
-        assert_eq!(
-            ast::TopLevelDeclaration::Value(TopLevelValue {
-                loc: (2, 15),
-                is_op: false,
-                ident: "ex".to_owned(),
-                args: vec![
-                    ast::ArgDeclaration::Simple {
-                        loc: (2, 19),
-                        ident: "a".to_string(),
-                        ty: Some(types::INT32),
-                    },
-                    ast::ArgDeclaration::Simple {
-                        loc: (2, 28),
-                        ident: "b".to_string(),
-                        ty: None,
-                    },
-                ],
-                ty: None,
-                value: ValueType::Expr(Expr::BinaryOpCall(BinaryOpCall {
-                    loc: (2, 34),
-                    lhs: Expr::ValueRead("a".to_string(), (2, 32)).into(),
-                    rhs: Expr::ValueRead("b".to_string(), (2, 36)).into(),
-                    operator: "+".to_string()
-                })),
-                generics: None,
-                abi: Some(ast::Abi {
-                    loc: (2, 0),
-                    identifier: "C".to_string(),
-                }),
-            }),
-            ex,
-            "output function."
-        )
-    }
-
-    #[test]
-    fn tuples() {
-        const SRC: &'static str = "
-let ty _ : (int32,int32)->int32 = 0
-
-let cons a : int32 -> (int32,int32) = (a,0)
-";
-
-        let module = Parser::from_source(SRC).module("".to_string()).ast;
-        let [ty, cons] = &module.declarations[..] else {
-            unreachable!()
-        };
-        assert_eq!(
-            &ast::TopLevelDeclaration::Value(TopLevelValue {
-                loc: (1, 4),
-                is_op: false,
-                ident: "ty".to_owned(),
-                args: vec![ArgDeclaration::Discard {
-                    ty: None,
-                    loc: (1, 7)
-                }],
-                ty: Some(
-                    ResolvedType::Tuple {
-                        underlining: vec![types::INT32, types::INT32],
-                        loc: (0, 0)
-                    }
-                    .fn_ty(&types::INT32)
-                ),
-                value: ValueType::Expr(Expr::NumericLiteral {
-                    value: "0".to_string()
-                }),
-                generics: None,
-                abi: None,
-            }),
-            ty
-        );
-
-        assert_eq!(
-            &ast::TopLevelDeclaration::Value(TopLevelValue {
-                loc: (3, 4),
-                is_op: false,
-                ident: "cons".to_owned(),
-                args: vec![ArgDeclaration::Simple {
-                    loc: (3, 9),
-                    ident: "a".to_string(),
-                    ty: None
-                }],
-                ty: Some(types::INT32.fn_ty(&ResolvedType::Tuple {
-                    underlining: vec![types::INT32, types::INT32],
-                    loc: (0, 0)
-                })),
-                value: ValueType::Expr(Expr::TupleLiteral {
-                    contents: vec![
-                        Expr::ValueRead("a".to_string(), (3, 39)),
-                        Expr::NumericLiteral {
-                            value: "0".to_string()
-                        }
-                    ],
-                    loc: (3, 38)
-                }),
-                generics: None,
-                abi: None
-            }),
-            cons
-        );
-    }
-
-    #[test]
-    fn match_patterns() {
-        let pattern = Parser::from_source("a").collect_pattern().ast;
-        assert_eq!(Pattern::Read("a".to_string(), (0, 0)), pattern, "a");
-        let pattern = Parser::from_source("_").collect_pattern().ast;
-        assert_eq!(Pattern::Default, pattern, "_");
-        let pattern = Parser::from_source("(a,b)").collect_pattern().ast;
-        assert_eq!(
-            Pattern::Destructure(PatternDestructure::Tuple(vec![
-                Pattern::Read("a".to_string(), (0, 1)),
-                Pattern::Read("b".to_string(), (0, 3)),
-            ])),
-            pattern,
-            "destruct tuple"
-        );
-        let pattern = Parser::from_source("0 | 1").collect_pattern().ast;
-        assert_eq!(
-            Pattern::Or(
-                Pattern::ConstNumber("0".to_string()).into(),
-                Pattern::ConstNumber("1".to_string()).into(),
-            ),
-            pattern,
-            "or (0 or 1)"
-        );
-        let pattern = Parser::from_source("0 | 1 | 2").collect_pattern().ast;
-        assert_eq!(
-            Pattern::Or(
-                Pattern::ConstNumber("0".to_string()).into(),
-                Pattern::Or(
-                    Pattern::ConstNumber("1".to_string()).into(),
-                    Pattern::ConstNumber("2".to_string()).into(),
-                )
-                .into()
-            ),
-            pattern,
-            "or (0 or 1 or 2)"
-        );
-        let pattern = Parser::from_source("(0 | 1,b)").collect_pattern().ast;
-        assert_eq!(
-            Pattern::Destructure(PatternDestructure::Tuple(vec![
-                Pattern::Or(
-                    Pattern::ConstNumber("0".to_string()).into(),
-                    Pattern::ConstNumber("1".to_string()).into(),
-                ),
-                Pattern::Read("b".to_string(), (0, 7)),
-            ])),
-            pattern,
-            "destruct tuple"
-        );
-    }
-
-    #[test]
-    fn arg_types() {
-        const SRC: &'static str = "
-let simple a = ();
-let decon_arg (a,b) = ();
-let discard _ = ();
-let unit () = ();
-let annotated_arg_tuple ((x,y):(int32,int32)) = ();
-";
-
-        let ast = Parser::from_source(SRC).module("".to_string()).ast;
-        let [simple, decon, discard, unit, annotated_decon] = &ast.declarations[..] else {
-            unreachable!()
-        };
-        assert_eq!(
-            &TopLevelDeclaration::Value(TopLevelValue {
-                loc: (1, 4),
-                is_op: false,
-                ident: "simple".to_owned(),
-                args: vec![ArgDeclaration::Simple {
-                    loc: (1, 11),
-                    ident: "a".to_string(),
-                    ty: None,
-                },],
-                ty: None,
-                value: ValueType::Expr(Expr::UnitLiteral),
-                generics: None,
-                abi: None,
-            }),
-            simple,
-            "let simple a = ();"
-        );
-        assert_eq!(
-            &TopLevelDeclaration::Value(TopLevelValue {
-                loc: (2, 4),
-                is_op: false,
-                ident: "decon_arg".to_owned(),
-                args: vec![ArgDeclaration::DestructureTuple(
-                    vec![
-                        ArgDeclaration::Simple {
-                            loc: (2, 15),
-                            ident: "a".to_string(),
-                            ty: None,
-                        },
-                        ArgDeclaration::Simple {
-                            loc: (2, 17),
-                            ident: "b".to_string(),
-                            ty: None,
-                        },
-                    ],
-                    None,
-                    (2, 14)
-                ),],
-                ty: None,
-                value: ValueType::Expr(Expr::UnitLiteral),
-                generics: None,
-                abi: None,
-            }),
-            decon,
-            "let decon_arg (a,b) = ()"
-        );
-        assert_eq!(
-            &TopLevelDeclaration::Value(TopLevelValue {
-                loc: (3, 4),
-                is_op: false,
-                ident: "discard".to_owned(),
-                args: vec![ArgDeclaration::Discard {
-                    loc: (3, 12),
-                    ty: None,
-                },],
-                ty: None,
-                value: ValueType::Expr(Expr::UnitLiteral),
-                generics: None,
-                abi: None,
-            }),
-            discard,
-            "let discard _ = ();"
-        );
-        assert_eq!(
-            &TopLevelDeclaration::Value(TopLevelValue {
-                loc: (4, 4),
-                is_op: false,
-                ident: "unit".to_owned(),
-                args: vec![ArgDeclaration::Unit {
-                    loc: (4, 9),
-                    ty: None,
-                },],
-                ty: None,
-                value: ValueType::Expr(Expr::UnitLiteral),
-                generics: None,
-                abi: None,
-            }),
-            unit,
-            "let unit () = ();"
-        );
-        assert_eq!(
-            &TopLevelDeclaration::Value(TopLevelValue {
-                loc: (5, 4),
-                is_op: false,
-                ident: "annotated_arg_tuple".to_owned(),
-                args: vec![ArgDeclaration::DestructureTuple(
-                    vec![
-                        ArgDeclaration::Simple {
-                            loc: (5, 26),
-                            ident: "x".to_string(),
-                            ty: None,
-                        },
-                        ArgDeclaration::Simple {
-                            loc: (5, 28),
-                            ident: "y".to_string(),
-                            ty: None,
-                        },
-                    ],
-                    Some(ResolvedType::Tuple {
-                        underlining: vec![types::INT32, types::INT32,],
-                        loc: (5, 31)
-                    }),
-                    (5, 25)
-                ),],
-                ty: None,
-                value: ValueType::Expr(Expr::UnitLiteral),
-                generics: None,
-                abi: None,
-            }),
-            annotated_decon,
-            "let annotated_arg_tuple ((x,y):(int32,int32)) = ();"
-        );
-    }
-    #[test]
-    fn destructuring_statement() {
-        let mut parser = super::Parser::from_source(
-            "
-let (x,y) = v;
-let ((x,y),z) = v;
-let (x,y,z) = v;
-let (x,y):(int32,int32) = v;
-//yes this will all fail typecheking.
-",
-        );
-        assert_eq!(
-            Statement::Declaration(ValueDeclaration {
-                loc: (1, 4),
-                is_op: false,
-                target: Pattern::Destructure(PatternDestructure::Tuple(vec![
-                    Pattern::Read("x".to_string(), (1, 5)),
-                    Pattern::Read("y".to_string(), (1, 7)),
-                ])),
-                args: Vec::new(),
-                ty: None,
-                value: ValueType::Expr(ast::Expr::ValueRead("v".to_string(), (1, 12))),
-                generictypes: None,
-                abi: None,
-            }),
-            parser.next_statement().ast
-        );
-
-        assert_eq!(
-            Statement::Declaration(ValueDeclaration {
-                loc: (2, 4),
-                is_op: false,
-                target: Pattern::Destructure(PatternDestructure::Tuple(vec![
-                    Pattern::Destructure(PatternDestructure::Tuple(vec![
-                        Pattern::Read("x".to_string(), (2, 6)),
-                        Pattern::Read("y".to_string(), (2, 8)),
-                    ])),
-                    Pattern::Read("z".to_string(), (2, 11))
-                ])),
-                args: Vec::new(),
-                ty: None,
-                value: ValueType::Expr(ast::Expr::ValueRead("v".to_string(), (2, 16))),
-                generictypes: None,
-                abi: None,
-            }),
-            parser.next_statement().ast
-        );
-        assert_eq!(
-            Statement::Declaration(ValueDeclaration {
-                loc: (3, 4),
-                is_op: false,
-                target: Pattern::Destructure(PatternDestructure::Tuple(vec![
-                    Pattern::Read("x".to_string(), (3, 5)),
-                    Pattern::Read("y".to_string(), (3, 7)),
-                    Pattern::Read("z".to_string(), (3, 9)),
-                ])),
-                args: Vec::new(),
-                ty: None,
-                value: ValueType::Expr(ast::Expr::ValueRead("v".to_string(), (3, 14))),
-                generictypes: None,
-                abi: None,
-            }),
-            parser.next_statement().ast
-        );
-        assert_eq!(
-            Statement::Declaration(ValueDeclaration {
-                loc: (4, 4),
-                is_op: false,
-                target: Pattern::Destructure(PatternDestructure::Tuple(vec![
-                    Pattern::Read("x".to_string(), (4, 5)),
-                    Pattern::Read("y".to_string(), (4, 7)),
-                ])),
-                args: Vec::new(),
-                ty: Some(ResolvedType::Tuple {
-                    underlining: vec![types::INT32, types::INT32],
-                    loc: (4, 10),
-                }),
-                value: ValueType::Expr(ast::Expr::ValueRead("v".to_string(), (4, 26))),
-                generictypes: None,
-                abi: None,
-            }),
-            parser.next_statement().ast
-        );
-    }
-
     #[test]
     fn enums() {
         const SRC: &'static str = "
@@ -5751,174 +2580,222 @@ enum Basic = | None | AnInt int32 | Struct { a: int32 }
 for<T> enum Option = | Some T | None
 for<T,E> enum Result = | Ok T | Err E
 ";
-        let mut parser = Parser::from_source(SRC);
-        let basic = parser.next_toplevel().ast;
+        let mut parser = from_source(SRC);
+        ignore_blank_lines(&mut parser);
+        let basic = top_level_decl(&mut parser).unwrap();
         assert_eq!(
-            TopLevelDeclaration::TypeDefinition(TypeDefinition::Enum(EnumDeclaration {
-                ident: "Basic".to_string(),
-                generics: None,
-                values: vec![
-                    EnumVariant::Unit {
-                        ident: "None".to_string(),
-                        loc: (1, 15)
-                    },
-                    EnumVariant::Tuple {
-                        ident: "AnInt".to_string(),
-                        loc: (1, 22),
-                        ty: types::INT32
-                    },
-                    EnumVariant::Struct {
-                        ident: "Struct".to_string(),
-                        fields: vec![FieldDecl {
-                            name: "a".to_string(),
-                            ty: types::INT32,
-                            loc: (1, 45)
-                        }],
-                        loc: (1, 36)
-                    }
-                ],
-                loc: (1, 5),
-            })),
+            ast::TopLevelDeclaration::TypeDefinition(ast::TypeDefinition::Enum(
+                ast::EnumDeclaration {
+                    ident: "Basic".to_string(),
+                    generics: None,
+                    values: vec![
+                        ast::EnumVariant::Unit {
+                            ident: "None".to_string(),
+                            loc: (16, 20)
+                        },
+                        ast::EnumVariant::Tuple {
+                            ident: "AnInt".to_string(),
+                            loc: (23, 28),
+                            ty: types::INT32
+                        },
+                        ast::EnumVariant::Struct {
+                            ident: "Struct".to_string(),
+                            fields: vec![ast::FieldDecl {
+                                name: "a".to_string(),
+                                ty: types::INT32,
+                                loc: (46, 47)
+                            }],
+                            loc: (37, 43)
+                        }
+                    ],
+                    loc: (6, 11),
+                }
+            )),
             basic,
             "basic: enum Basic = | None | AnInt int32 | Struct {{ a: int32 }}"
         );
-        let option = parser.next_toplevel().ast;
+        ignore_blank_lines(&mut parser);
+        let option = top_level_decl(&mut parser).unwrap();
         assert_eq!(
-            TopLevelDeclaration::TypeDefinition(TypeDefinition::Enum(EnumDeclaration {
-                ident: "Option".to_string(),
-                generics: Some(GenericsDecl {
-                    for_loc: (2, 0),
-                    decls: vec![((2, 4), "T".to_string())]
-                }),
-                values: vec![
-                    EnumVariant::Tuple {
-                        ident: "Some".to_string(),
-                        ty: ResolvedType::Generic {
-                            name: "T".to_string(),
-                            loc: (2, 28)
+            ast::TopLevelDeclaration::TypeDefinition(ast::TypeDefinition::Enum(
+                ast::EnumDeclaration {
+                    ident: "Option".to_string(),
+                    generics: Some(ast::GenericsDecl {
+                        for_loc: (57, 60),
+                        decls: vec![((61, 62), "T".to_string())]
+                    }),
+                    values: vec![
+                        ast::EnumVariant::Tuple {
+                            ident: "Some".to_string(),
+                            ty: types::ResolvedType::Generic {
+                                name: "T".to_string(),
+                                loc: (85, 86)
+                            },
+                            loc: (80, 84)
                         },
-                        loc: (2, 23)
-                    },
-                    EnumVariant::Unit {
-                        ident: "None".to_string(),
-                        loc: (2, 32)
-                    }
-                ],
-                loc: (2, 12)
-            })),
+                        ast::EnumVariant::Unit {
+                            ident: "None".to_string(),
+                            loc: (89, 93)
+                        }
+                    ],
+                    loc: (69, 75)
+                }
+            )),
             option,
             "option: for<T> enum Option = | Some T | None"
         );
 
-        let result = parser.next_toplevel().ast;
+        ignore_blank_lines(&mut parser);
+        let result = top_level_decl(&mut parser).unwrap();
         assert_eq!(
-            TopLevelDeclaration::TypeDefinition(TypeDefinition::Enum(EnumDeclaration {
-                ident: "Result".to_string(),
-                generics: Some(GenericsDecl {
-                    for_loc: (3, 0),
-                    decls: vec![((3, 4), "T".to_string()), ((3, 6), "E".to_string()),]
-                }),
-                values: vec![
-                    EnumVariant::Tuple {
-                        ident: "Ok".to_string(),
-                        ty: ResolvedType::Generic {
-                            name: "T".to_string(),
-                            loc: (3, 28)
+            ast::TopLevelDeclaration::TypeDefinition(ast::TypeDefinition::Enum(
+                ast::EnumDeclaration {
+                    ident: "Result".to_string(),
+                    generics: Some(ast::GenericsDecl {
+                        for_loc: (94, 97),
+                        decls: vec![((98, 99), "T".to_string()), ((100, 101), "E".to_string()),]
+                    }),
+                    values: vec![
+                        ast::EnumVariant::Tuple {
+                            ident: "Ok".to_string(),
+                            ty: types::ResolvedType::Generic {
+                                name: "T".to_string(),
+                                loc: (122, 123)
+                            },
+                            loc: (119, 121)
                         },
-                        loc: (3, 25)
-                    },
-                    EnumVariant::Tuple {
-                        ident: "Err".to_string(),
-                        ty: ResolvedType::Generic {
-                            name: "E".to_string(),
-                            loc: (3, 35)
+                        ast::EnumVariant::Tuple {
+                            ident: "Err".to_string(),
+                            ty: types::ResolvedType::Generic {
+                                name: "E".to_string(),
+                                loc: (130, 131)
+                            },
+                            loc: (126, 129)
                         },
-                        loc: (3, 32)
-                    },
-                ],
-                loc: (3, 14)
-            })),
+                    ],
+                    loc: (108, 114)
+                }
+            )),
             result,
             "result: for<T,E> enum Result = | Ok T | Err E"
         );
-
-        assert!(!parser.has_next());
+        ignore_blank_lines(&mut parser);
+        assert!(combinator::eof::<_, ContextError>(&mut parser).is_ok());
     }
 
     #[test]
     fn enum_patterns() {
         const SRC: &'static str = r#"
 match a where
-| Enum::Complex { a: 0, b } -> b, // TODO! struct patterns
-// | Enum::Complex c -> c.a // TODO! struct access.
+| Enum::Complex { a: 0, b } -> b,
 | Enum::Simple (0 | 1) -> 0,
 | Simple a -> a,
 "#;
-        let ast = Parser::from_source(SRC).match_().ast;
-
+        // | Enum::Complex c -> c.a // TODO! struct access.
+        let mut src = from_source(SRC);
+        ignore_blank_lines(&mut src);
+        let ast = match_(&mut src).unwrap();
         assert_eq!(
             ast::Match {
-                loc: (1, 0),
-                on: ast::Expr::ValueRead("a".to_string(), (1, 6)).into(),
+                loc: (1, 6),
+                on: ast::Expr::ValueRead("a".to_string(), (7, 8)).into(),
                 arms: vec![
-                    MatchArm {
-                        block: Vec::new(),
-                        ret: Some(ast::Expr::ValueRead("b".to_string(), (2, 31)).into()),
-                        cond: Pattern::EnumVariant {
-                            ty: Some("Enum".to_string()),
-                            variant: "Complex".to_string(),
-                            pattern: Some(
-                                Pattern::Destructure(PatternDestructure::Struct {
-                                    base_ty: None,
-                                    fields: [
-                                        ("a".to_string(), Pattern::ConstNumber("0".to_string())),
-                                        ("b".to_string(), Pattern::Read("b".to_string(), (2, 24))),
-                                    ]
-                                    .into(),
-                                })
-                                .into()
+                    ast::MatchArm {
+                        block: ast::Block {
+                            statements: Vec::new(),
+                            implicit_ret: Some(
+                                ast::Expr::ValueRead("b".to_string(), (46, 47)).into()
                             ),
-                            loc: (2, 2)
                         },
-                        loc: (2, 2),
+                        cond: ast::Pattern::Destructure(ast::PatternDestructure::Struct {
+                            base_ty: Some("Enum::Complex".into()),
+                            fields: [
+                                ("a".to_string(), ast::Pattern::ConstNumber("0".to_string())),
+                                (
+                                    "b".to_string(),
+                                    ast::Pattern::Read("b".to_string(), (39, 40))
+                                ),
+                            ]
+                            .into(),
+                        }),
+                        loc: (15, 16)
                     },
-                    MatchArm {
-                        block: Vec::new(),
-                        ret: Some(
-                            ast::Expr::NumericLiteral {
-                                value: "0".to_string()
-                            }
-                            .into()
-                        ),
-                        cond: Pattern::EnumVariant {
+                    ast::MatchArm {
+                        block: ast::Block {
+                            statements: Vec::new(),
+                            implicit_ret: Some(
+                                ast::Expr::NumericLiteral {
+                                    value: "0".to_string()
+                                }
+                                .into()
+                            )
+                        },
+                        cond: ast::Pattern::EnumVariant {
                             ty: Some("Enum".to_string()),
                             variant: "Simple".to_string(),
                             pattern: Some(
-                                Pattern::Or(
-                                    Pattern::ConstNumber("0".to_string()).into(),
-                                    Pattern::ConstNumber("1".to_string()).into(),
+                                ast::Pattern::Or(
+                                    ast::Pattern::ConstNumber("0".to_string()).into(),
+                                    ast::Pattern::ConstNumber("1".to_string()).into(),
                                 )
                                 .into()
                             ),
-                            loc: (4, 2)
+                            loc: (51, 63)
                         },
-                        loc: (4, 2),
+                        loc: (49, 50),
                     },
-                    MatchArm {
-                        block: Vec::new(),
-                        ret: Some(ast::Expr::ValueRead("a".to_string(), (5, 14)).into()),
-                        cond: Pattern::EnumVariant {
+                    ast::MatchArm {
+                        block: ast::Block {
+                            statements: Vec::new(),
+                            implicit_ret: Some(
+                                ast::Expr::ValueRead("a".to_string(), (92, 93)).into()
+                            ),
+                        },
+                        cond: ast::Pattern::EnumVariant {
                             ty: None,
                             variant: "Simple".to_string(),
-                            pattern: Some(Pattern::Read("a".to_string(), (5, 9)).into()),
-                            loc: (5, 2)
+                            pattern: Some(ast::Pattern::Read("a".to_string(), (87, 88)).into()),
+                            loc: (80, 86),
                         },
-                        loc: (5, 2),
+                        loc: (78, 79),
                     },
                 ],
             },
             ast,
             "match"
         );
+    }
+
+    #[test]
+    fn comments() {
+        let mut src = from_source(r"#/ unnested #/ nested 
+        /# unnested /#");
+        assert!(ascii::space1::<_,ContextError>(&mut src).is_ok());
+        assert!(src.is_empty());
+        let mut src = from_source("a #/ comment /# b");
+        assert_eq!(
+            expr(&mut src),
+            Ok(ast::Expr::FnCall(ast::FnCall{ 
+                loc:(0,1), 
+                value:ast::Expr::ValueRead("a".into(),(0,1)).into(), 
+                arg: Some(ast::Expr::ValueRead("b".into(), (16,17)).into())
+            }))
+        );
+        assert!(src.is_empty());
+        let mut src = from_source("a b #! as;ldkfj;aslkdf 
+()");
+        assert_eq!(
+            expr(&mut src),
+            Ok(ast::Expr::FnCall(ast::FnCall{ 
+                loc:(0,1), 
+                value: ast::Expr::FnCall(ast::FnCall { 
+                    value:ast::Expr::ValueRead("a".into(),(0,1)).into(), 
+                    arg: Some(ast::Expr::ValueRead("b".into(), (2,3)).into()),
+                    loc:(0,1),
+                }).into(),
+                arg:Some(ast::Expr::UnitLiteral.into()),
+            }))
+        );
+        assert!(src.is_empty());
     }
 }

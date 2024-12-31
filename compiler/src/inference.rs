@@ -132,6 +132,7 @@ impl Context {
                     }
                     untyped_ast::ValueType::Function(stmnts) => ast::ValueType::Function(
                         stmnts
+                            .statements
                             .into_iter()
                             .map(|stmnt| self.assign_ids_stmnt(stmnt))
                             .collect(),
@@ -259,7 +260,7 @@ impl Context {
             }
             untyped_ast::ValueType::Function(stmnts) => ast::ValueType::Function(
                 stmnts
-                    .into_iter()
+                    .statements.into_iter()
                     .map(|stmnt| self.assign_ids_stmnt(stmnt))
                     .collect(),
             ),
@@ -275,6 +276,16 @@ impl Context {
             generics: generictypes,
             abi,
             id,
+        }
+    }
+
+    fn assign_ids_block(&mut self, untyped_ast::Block{ statements, implicit_ret} : untyped_ast::Block, expected: Option<ResolvedType>) -> ast::Block {
+        let id = self.get_next_expr_id();
+        ast::Block {
+            statements : statements.into_iter().map(|stmnt| self.assign_ids_stmnt(stmnt)).collect(),
+            implicit_ret : implicit_ret.map(|expr| self.assign_ids_expr(*expr,expected.clone()).into()),
+            id,
+            ret_ty : expected
         }
     }
 
@@ -296,44 +307,31 @@ impl Context {
             }
             untyped_ast::Statement::Pipe(_) => unimplemented!(),
             untyped_ast::Statement::IfStatement(if_) => {
-                let untyped_ast::IfBranching {
+                
+                let untyped_ast::If {
                     cond,
                     true_branch,
-                    else_ifs,
                     else_branch,
                     loc,
                 } = if_;
                 let cond = self.assign_ids_expr(*cond, Some(types::BOOL));
-                let true_branch = true_branch
-                    .into_iter()
-                    .map(|stmnt| self.assign_ids_stmnt(stmnt))
-                    .collect();
-                let else_ifs = else_ifs
-                    .into_iter()
-                    .map(|(cond, branch)| {
-                        let cond = self.assign_ids_expr(*cond, Some(types::BOOL));
-                        let branch = branch
-                            .into_iter()
-                            .map(|stmnt| self.assign_ids_stmnt(stmnt))
-                            .collect();
-                        (cond.into(), branch)
-                    })
-                    .collect();
-                let else_branch = else_branch
-                    .into_iter()
-                    .map(|stmnt| self.assign_ids_stmnt(stmnt))
-                    .collect();
-                ast::Statement::IfStatement(ast::IfBranching {
+                let true_branch = self.assign_ids_block(true_branch,Some(types::UNIT));
+                
+                let else_branch = else_branch.map(|block| self.assign_ids_block(block,Some(types::UNIT)));
+                ast::Statement::IfStatement(ast::If {
                     cond: cond.into(),
                     true_branch,
-                    else_ifs,
                     else_branch,
                     loc,
+                    result:types::UNIT,
+                    id : usize::MAX,
                 })
+                
             }
             untyped_ast::Statement::Match(match_) => {
                 ast::Statement::Match(self.assign_ids_match(match_))
             }
+            untyped_ast::Statement::Expr(expr) => ast::Statement::Expr(self.assign_ids_expr(expr,None)),
             untyped_ast::Statement::Error => ast::Statement::Error,
         }
     }
@@ -347,8 +345,10 @@ impl Context {
             .into_iter()
             .map(|arm| {
                 let untyped_ast::MatchArm {
-                    block,
-                    ret,
+                    block:untyped_ast::Block{
+                        statements:block,
+                        implicit_ret:ret,
+                    },
                     cond,
                     loc,
                 } = arm;
@@ -591,43 +591,21 @@ impl Context {
             untyped_ast::Expr::If(if_) => {
                 let id = self.get_next_expr_id();
                 let result = self.get_next_type_id();
-                let untyped_ast::IfExpr {
+                let untyped_ast::If {
                     cond,
                     true_branch,
-                    else_ifs,
                     else_branch,
                     loc,
                 } = if_;
                 let cond = self.assign_ids_expr(*cond, Some(types::BOOL)).into();
-                let (true_block, true_ret) = true_branch;
-                let true_block = true_block
-                    .into_iter()
-                    .map(|stmnt| self.assign_ids_stmnt(stmnt))
-                    .collect_vec();
-                let true_ret = self.assign_ids_expr(*true_ret, None).into();
-                let else_ifs = else_ifs
-                    .into_iter()
-                    .map(|(cond, block, ret)| {
-                        let cond = self.assign_ids_expr(*cond, Some(types::BOOL)).into();
-                        let block = block
-                            .into_iter()
-                            .map(|stmnt| self.assign_ids_stmnt(stmnt))
-                            .collect_vec();
-                        let ret = self.assign_ids_expr(*ret, None).into();
-                        (cond, block, ret)
-                    })
-                    .collect_vec();
-                let (else_block, else_ret) = else_branch;
-                let else_block = else_block
-                    .into_iter()
-                    .map(|stmnt| self.assign_ids_stmnt(stmnt))
-                    .collect_vec();
-                let else_ret = self.assign_ids_expr(*else_ret, None).into();
-                ast::Expr::If(ast::IfExpr {
+                
+                let ty = self.get_next_type_id();
+                let true_branch = self.assign_ids_block(true_branch, Some(ty));
+                let else_branch = self.assign_ids_block(else_branch.unwrap(), dbg!(true_branch.ret_ty.clone()));
+                ast::Expr::If(ast::If {
                     cond,
-                    true_branch: (true_block, true_ret),
-                    else_ifs,
-                    else_branch: (else_block, else_ret),
+                    true_branch,
+                    else_branch:dbg!(else_branch).into(),
                     loc,
                     id,
                     result,
@@ -836,7 +814,7 @@ impl Context {
                 ty,
             } => {
                 if let Some(ety) = expected {
-                    let is_ety_valid = ety.is_float() || ety.is_int();
+                    let is_ety_valid = ety.is_float() || ety.is_int() || ety.is_unknown();
                     let is_replacable =
                         ty == &ResolvedType::Number || ty.is_error() || ty.is_unknown();
                     *ty = if is_ety_valid && is_replacable {
@@ -940,7 +918,7 @@ impl Context {
             }
             ast::Expr::FnCall(fncall) => self.infer_call(fncall, fun_ret_ty),
             ast::Expr::ValueRead(ident, _, _) => {
-                if let Some(ty) = self.known_locals.get_mut(ident) {
+                if let Some(ty) = dbg!(self.known_locals.get_mut(*dbg!(&ident))) {
                     if let Some(ety) = expected {
                         if let ResolvedType::Unknown(id) = ty {
                             if let Some(new_ty) = self.equations.get(id) {
@@ -996,7 +974,9 @@ impl Context {
                         out
                     })
                     .expect("no empty array literals");
-                if underlining != types::ERROR {
+
+
+                if dbg!(&underlining) != &types::ERROR {
                     for elem in contents.iter_mut() {
                         self.get_actual_type(elem, Some(underlining.clone()), fun_ret_ty);
                     }
@@ -1050,44 +1030,23 @@ impl Context {
                     .unwrap_or(ResolvedType::Error)
             }
             ast::Expr::BoolLiteral(_, _, _) => ResolvedType::Bool,
-            ast::Expr::If(ast::IfExpr {
+            ast::Expr::If(ast::If {
                 cond,
                 true_branch,
-                else_ifs,
                 else_branch,
                 loc: _,
                 id: _,
                 result,
             }) => {
                 self.get_actual_type(cond, Some(types::BOOL), fun_ret_ty);
-                let (true_block, true_ret) = true_branch;
-                for stmnt in true_block {
-                    self.infer_stmnt(stmnt, fun_ret_ty);
-                }
-                let mut ety = self.get_actual_type(true_ret, expected.clone(), fun_ret_ty);
-                for (cond, block, ret) in else_ifs {
-                    self.get_actual_type(cond, Some(types::BOOL), fun_ret_ty);
-                    for stmnt in block {
-                        self.infer_stmnt(stmnt, fun_ret_ty);
-                    }
-                    if ety == types::ERROR {
-                        ety = self.get_actual_type(ret, expected.clone(), fun_ret_ty);
-                    } else {
-                        self.get_actual_type(ret, Some(ety.clone()), fun_ret_ty);
-                    }
-                }
-                let (block, ret) = else_branch;
-                for stmnt in block {
-                    self.infer_stmnt(stmnt, fun_ret_ty);
-                }
-                if ety == types::ERROR {
-                    ety = self.get_actual_type(ret, expected, fun_ret_ty);
-                } else {
-                    self.get_actual_type(ret, Some(ety.clone()), fun_ret_ty);
-                }
+                
+                self.infer_block(true_branch,fun_ret_ty, expected);
+                let mut ety = true_branch.ret_ty.clone().unwrap_or(types::ERROR);
+                
+                self.infer_block(else_branch.as_mut().unwrap(), fun_ret_ty, Some(dbg!(ety.clone())));
 
                 *result = ety.clone();
-                ety
+                dbg!(ety)
             }
             ast::Expr::Match(match_) => self.handle_match(match_, expected, fun_ret_ty),
         }
@@ -1117,7 +1076,6 @@ impl Context {
             },
         ) in arms.iter_mut().enumerate()
         {
-            println!("doing equations of arm {idx}");
             self.add_equation_of_pattern(cond, &on_ty);
             for stmnt in block {
                 self.infer_stmnt(stmnt, fun_ret_ty);
@@ -1130,7 +1088,6 @@ impl Context {
                 }
             }
             if let ast::Pattern::EnumVariant { ty, .. } = cond {
-                println!("end type {ty:#?}");
             }
         }
         if !ety.is_error() {
@@ -1145,19 +1102,16 @@ impl Context {
         match pattern {
             ast::Pattern::Read { ident, loc, ty, id } => {
                 //todo? check if ty is unknown first
-                println!("setting ty {ty:?} to {on_ty:?}");
                 *ty = on_ty.clone();
                 self.expr_ty.insert(*id, on_ty.clone());
                 self.known_locals.insert(ident.clone(), on_ty.clone());
             }
             ast::Pattern::ConstNumber(_num, ty) => {
                 //TODO? check for non-number types.
-                println!("setting ty {ty:?} to {on_ty:?}");
                 *ty = on_ty.clone();
             }
 
             ast::Pattern::Destructure(d) => {
-                println!("destructure");
                 
                 match d {
                     ast::DestructurePattern::Tuple(contents, ty, id) => {
@@ -1177,7 +1131,6 @@ impl Context {
                                 self.add_equation_of_pattern(pat, ty);
                             }
                         } else {
-                            println!("Error before finding tuple");
                             *ty = types::ERROR
                             // TODO! error reporting.
                         }
@@ -1266,29 +1219,25 @@ impl Context {
             ast::Statement::FnCall(fncall) => {
                 self.infer_call(fncall, fun_ret_ty);
             }
-            ast::Statement::IfStatement(ast::IfBranching {
+            ast::Statement::IfStatement(ast::If {
                 cond,
                 true_branch,
-                else_ifs,
                 else_branch,
                 loc: _,
+                id:_,
+                result:_
             }) => {
                 self.get_actual_type(cond, Some(types::BOOL), fun_ret_ty);
-                for stmnt in true_branch {
-                    self.infer_stmnt(stmnt, fun_ret_ty);
-                }
-                for (cond, block) in else_ifs {
-                    self.get_actual_type(cond, Some(types::BOOL), fun_ret_ty);
-                    for stmnt in block {
-                        self.infer_stmnt(stmnt, fun_ret_ty);
-                    }
-                }
-                for stmnt in else_branch {
-                    self.infer_stmnt(stmnt, fun_ret_ty);
+                self.infer_block(true_branch, fun_ret_ty, None);
+                if let Some(else_branch) = else_branch.as_mut() {
+                    self.infer_block(else_branch, fun_ret_ty, None);
                 }
             }
             ast::Statement::Match(match_) => {
                 self.handle_match(match_, None, fun_ret_ty);
+            }
+            ast::Statement::Expr(expr) => {
+                self.get_actual_type(expr, None, fun_ret_ty);
             }
         };
     }
@@ -1303,13 +1252,15 @@ impl Context {
             arg,
             returns,
             ..
-        } = fncall;
+        } = dbg!(fncall);
         if let ResolvedType::Function {
             arg: arg_t,
             returns: return_t,
             loc: _,
-        } = self.get_actual_type(value.as_mut(), None, fun_ret_ty)
+        } = dbg!(self.get_actual_type(value.as_mut(), None, fun_ret_ty))
         {
+
+            println!("successful got the type for the value");
             self.get_actual_type(
                 arg.as_mut(),
                 if arg_t.is_generic() || arg_t.is_unknown() || arg_t.is_error() {
@@ -1322,39 +1273,36 @@ impl Context {
             *returns = return_t.as_ref().clone();
             *return_t
         } else {
+            println!("getting the value was unsuccessful");
             ResolvedType::Error
         }
     }
 
     fn apply_equations(&mut self, module: &mut ast::ModuleDeclaration) {
-        println!(
-            "equations {:#?}\nexpr_ty {:#?}",
-            &self.equations, &self.expr_ty
-        );
+        
         self.apply_substutions(module);
-        println!("post subs\n{module:#?}");
         let ast::ModuleDeclaration {
             loc: _,
             name: _,
             decls,
         } = module;
-        let mut equations = self.equations.clone().into_iter().collect_vec();
-        equations.sort_by(|(lhs_id, lhs_ty), (rhs_id, rhs_ty)| {
-            match (
-                lhs_ty.contains_unknown(*rhs_id),
-                rhs_ty.contains_unknown(*lhs_id),
-            ) {
-                (true, true) => todo!("handle circular equations?"),
-                (false, false) => Ordering::Equal,
-                (true, false) => Ordering::Greater,
-                (false, true) => Ordering::Less,
+        let mut equations = dbg!(self.equations.clone()).into_iter().collect_vec();
+        for (id,ty) in &self.equations {
+            for equation in &mut equations {
+                if id == &equation.0 {
+                    continue;
+                }
+                equation.1.replace_unknown_with(*id,ty.clone());
             }
-        });
+        }
+        
         for decl in decls {
             match decl {
                 ast::TopLevelDeclaration::Value(v) => {
+                    dbg!(&v.ty);
                     for (id, ty) in &equations {
                         v.ty.replace_unknown_with(*id, ty.clone());
+                        dbg!(&v.ty);
                         for arg in &mut v.args {
                             arg.replace_unknown_with(*id, ty.clone());
                         }
@@ -1367,9 +1315,7 @@ impl Context {
                                     if let Some(rt) =
                                         self.apply_equation_stmnt(stmnt, *id, ty.clone())
                                     {
-                                        if v.ty.is_unknown() || v.ty.is_error() {
-                                            v.ty = rt;
-                                        }
+                                        //todo?
                                     }
                                 }
                             }
@@ -1515,29 +1461,33 @@ impl Context {
         match stmnt {
             ast::Statement::Declaration(v) => self.apply_substution_decl(sub, v),
             ast::Statement::FnCall(call) => self.apply_substution_fncall(sub, call),
-            ast::Statement::IfStatement(ast::IfBranching {
+            ast::Statement::IfStatement(ast::If {
                 cond,
                 true_branch,
-                else_ifs,
                 else_branch,
                 ..
             }) => {
                 self.apply_substution_expr(sub, cond.as_mut());
-                for stmnt in true_branch {
+                for stmnt in &mut true_branch.statements {
                     self.apply_substution_statement(sub, stmnt);
                 }
-                for (cond, block) in else_ifs {
-                    self.apply_substution_expr(sub, cond.as_mut());
-                    for stmnt in block {
+                if let Some(ret) = true_branch.implicit_ret.as_mut() {
+                    self.apply_substution_expr(sub, ret.as_mut());
+                }
+                
+                if let Some(else_branch) = else_branch.as_mut() {
+
+                    for stmnt in &mut else_branch.statements {
                         self.apply_substution_statement(sub, stmnt);
                     }
-                }
-                for stmnt in else_branch {
-                    self.apply_substution_statement(sub, stmnt);
+                    if let Some(ret) = else_branch.implicit_ret.as_mut() {
+                        self.apply_substution_expr(sub, ret.as_mut());
+                    }
                 }
             }
             ast::Statement::Match(match_) => self.apply_substution_match(sub, match_),
-            ast::Statement::Return(expr, _) => self.apply_substution_expr(sub, expr),
+            ast::Statement::Expr(expr)
+            | ast::Statement::Return(expr, _) => self.apply_substution_expr(sub, expr),
             ast::Statement::Error => (),
         }
     }
@@ -1564,10 +1514,9 @@ impl Context {
                 }
             }
             ast::Expr::FnCall(call) => self.apply_substution_fncall((id, ty), call),
-            ast::Expr::If(ast::IfExpr {
+            ast::Expr::If(ast::If {
                 cond,
                 true_branch,
-                else_ifs,
                 else_branch,
                 id: ifid,
                 result,
@@ -1577,23 +1526,19 @@ impl Context {
                     *result = ty.clone();
                 } else {
                     self.apply_substution_expr((id, ty), cond.as_mut());
-                    for stmnt in &mut true_branch.0 {
+                    for stmnt in &mut true_branch.statements {
                         self.apply_substution_statement((id, ty), stmnt);
                     }
-                    self.apply_substution_expr((id, ty), true_branch.1.as_mut());
+                    self.apply_substution_expr((id, ty), true_branch.implicit_ret.as_mut().unwrap());
 
-                    for (cond, block, ret) in else_ifs {
-                        self.apply_substution_expr((id, ty), cond.as_mut());
-                        for stmnt in block {
-                            self.apply_substution_statement((id, ty), stmnt);
-                        }
+                    let else_branch = else_branch.as_mut().unwrap();
+
+                    for stmnt in &mut else_branch.statements {
+                        self.apply_substution_statement((id, ty), stmnt);
+                    }
+                    if let Some(ret) = else_branch.implicit_ret.as_mut() {
                         self.apply_substution_expr((id, ty), ret.as_mut());
                     }
-
-                    for stmnt in &mut else_branch.0 {
-                        self.apply_substution_statement((id, ty), stmnt);
-                    }
-                    self.apply_substution_expr((id, ty), else_branch.1.as_mut());
                 }
             }
             ast::Expr::Match(match_) => self.apply_substution_match((id, ty), match_),
@@ -1653,31 +1598,41 @@ impl Context {
                 None
             }
             ast::Statement::IfStatement(if_) => {
-                let ast::IfBranching {
+                let ast::If {
                     cond,
                     true_branch,
-                    else_ifs,
                     else_branch,
                     loc: _,
+                    id:self_id,
+                    result
                 } = if_;
+                if id == *self_id {
+                    *result = ty.clone();
+                }
                 self.apply_equation_expr(cond.as_mut(), id, ty.clone());
-                for stmnt in true_branch {
+                for stmnt in &mut true_branch.statements {
                     self.apply_equation_stmnt(stmnt, id, ty.clone());
                 }
+                if let Some(ret) = true_branch.implicit_ret.as_mut() {
+                    self.apply_equation_expr(ret.as_mut(),id,ty.clone());
+                }
+                if let Some(else_branch) = else_branch.as_mut() {
 
-                for (cond, block) in else_ifs.iter_mut() {
-                    self.apply_equation_expr(cond.as_mut(), id, ty.clone());
-                    for stmnt in block {
+                    for stmnt in &mut else_branch.statements {
                         self.apply_equation_stmnt(stmnt, id, ty.clone());
                     }
-                }
-                for stmnt in else_branch {
-                    self.apply_equation_stmnt(stmnt, id, ty.clone());
+                    if let Some(ret) = else_branch.implicit_ret.as_mut() {
+                        self.apply_equation_expr(ret.as_mut(),id,ty.clone());
+                    }
                 }
                 None
             }
             ast::Statement::Match(match_) => {
                 self.apply_equation_match(match_, id, ty);
+                None
+            }
+            ast::Statement::Expr(expr) => {
+                self.apply_equation_expr(expr,id,ty);
                 None
             }
             ast::Statement::Error => None, //nothing to do for errors
@@ -1927,37 +1882,30 @@ impl Context {
                 }
             }
             ast::Expr::StructConstruction(_) => todo!(),
-            ast::Expr::If(ast::IfExpr {
+            ast::Expr::If(ast::If {
                 cond,
                 true_branch,
-                else_ifs,
                 else_branch,
                 loc: _,
                 id: _,
                 result,
             }) => {
                 self.apply_equation_expr(cond.as_mut(), id, ty.clone());
-                for stmnt in &mut true_branch.0 {
+                true_branch.ret_ty.as_mut().unwrap().replace_unknown_with(id, ty.clone());
+                for stmnt in &mut true_branch.statements {
                     self.apply_equation_stmnt(stmnt, id, ty.clone());
                 }
-                let true_result = self.apply_equation_expr(true_branch.1.as_mut(), id, ty.clone());
+                let true_result = self.apply_equation_expr(true_branch.implicit_ret.as_mut().unwrap().as_mut(), id, ty.clone());
                 if result.is_unknown() || result.is_error() {
                     *result = true_result;
                 }
-                for (cond, block, ret) in else_ifs.iter_mut() {
-                    self.apply_equation_expr(cond.as_mut(), id, ty.clone());
-                    for stmnt in block {
-                        self.apply_equation_stmnt(stmnt, id, ty.clone());
-                    }
-                    let block_result = self.apply_equation_expr(ret.as_mut(), id, ty.clone());
-                    if result.is_unknown() || result.is_error() {
-                        *result = block_result;
-                    }
-                }
-                for stmnt in &mut else_branch.0 {
+                let else_branch = dbg!(else_branch.as_mut().unwrap());
+                
+                else_branch.ret_ty.as_mut().unwrap().replace_unknown_with(id, ty.clone());
+                for stmnt in &mut else_branch.statements {
                     self.apply_equation_stmnt(stmnt, id, ty.clone());
                 }
-                let else_result = self.apply_equation_expr(else_branch.1.as_mut(), id, ty.clone());
+                let else_result = self.apply_equation_expr(else_branch.implicit_ret.as_mut().unwrap().as_mut(), id, ty.clone());
                 if result.is_unknown() || result.is_error() {
                     *result = else_result;
                 }
@@ -2017,6 +1965,45 @@ impl Context {
             _ => (),
         }
     }
+
+fn infer_block(&mut self, block: &mut ast::Block, fun_ret_ty:&mut Option<ResolvedType>, expected: Option<ResolvedType>) {
+    let ast::Block {
+        statements,
+        implicit_ret,
+        id:_,
+        ret_ty,
+    } = block;
+    let statements = dbg!(statements);
+    let implicit_ret = dbg!(implicit_ret);
+    for stmnt in statements {
+        self.infer_stmnt(stmnt, fun_ret_ty);
+    }
+    if let Some(ret) = implicit_ret.as_mut() {
+        let ty = dbg!(self.get_actual_type(dbg!(ret.as_mut()), dbg!(expected), fun_ret_ty));
+        if let Some(ret_ty) = ret_ty.as_mut() {
+            if let ResolvedType::Unknown(idx) = *ret_ty {
+                println!("[line:1987]replacing ret_ty {} with {}", idx,ty.to_string());
+                *ret_ty = ty.clone();
+                self.equations.insert(idx, dbg!(ty));
+            } else if ret_ty == &types::ERROR {
+                println!("[line:1990]replacing ret_ty {} with {}", ret_ty.to_string(),ty.to_string());
+            
+                *ret_ty = ty;
+            }
+            
+        } else {
+            println!("[line:1991]replacing ret_ty {} with {}", ret_ty.as_ref().map(|it|it.to_string()).unwrap_or("None".into()),ty.to_string());
+            ret_ty.replace(ty);
+        }
+    } else {
+        if expected.is_some() {
+            println!("Expected type but no implicit ret. possibly warn and check for unconditional branching");
+            implicit_ret.replace(ast::Expr::Error(usize::MAX).into());
+        }
+    }
+}
+
+    
 }
 
 fn sort_on_tree(src: Vec<String>, dependencies: &HashMap<String, Vec<String>>) -> Vec<String> {
@@ -2056,12 +2043,11 @@ impl Context {
         self.next_unknown_id = 0;
     }
 }
-
 #[cfg(test)]
 mod tests {
     use crate::{
         inference::ast::TopLevelValue,
-        parser::Parser,
+        parser::file,
         types::{self, ResolvedType},
     };
     use pretty_assertions::assert_eq;
@@ -2131,49 +2117,51 @@ mod tests {
         );
         ctx.reset();
         let ast =
-            crate::Parser::from_source(r"let foo a = if a then 0 else 1").module("foo".to_string());
+            file("foo", r"let foo a : bool -> int32 = if a then 0 else 1;");
         assert_eq!(
             super::ast::ModuleDeclaration {
                 loc: (0, 0),
                 name: "foo".to_string(),
                 decls: vec![super::ast::TopLevelDeclaration::Value(
                     super::ast::TopLevelValue {
-                        loc: (0, 4),
+                        loc: (4,7),
                         is_op: false,
                         ident: "foo".to_string(),
                         args: vec![super::ast::ArgDeclaration::Simple {
-                            loc: (0, 8),
+                            loc: (8,9),
                             ident: "a".to_string(),
-                            ty: ResolvedType::Unknown(1),
+                            ty: types::BOOL,
                             id: 1
                         }],
-                        ty: ResolvedType::Unknown(0),
+                        ty: types::BOOL.fn_ty(&types::INT32),
                         value: super::ast::ValueType::Expr(super::ast::Expr::If(
-                            super::ast::IfExpr {
-                                cond: super::ast::Expr::ValueRead("a".to_string(), (0, 15), 3)
+                            super::ast::If {
+                                cond: super::ast::Expr::ValueRead("a".to_string(), (31,32), 3)
                                     .into(),
-                                true_branch: (
-                                    Vec::new(),
-                                    super::ast::Expr::NumericLiteral {
+                                true_branch: super::ast::Block{
+                                    statements:Vec::new(),
+                                    implicit_ret:Some(super::ast::Expr::NumericLiteral {
                                         value: "0".to_string(),
-                                        id: 4,
-                                        ty: types::NUMBER,
-                                    }
-                                    .into()
-                                ),
-                                else_ifs: Vec::new(),
-                                else_branch: (
-                                    Vec::new(),
-                                    super::ast::Expr::NumericLiteral {
-                                        value: "1".to_string(),
                                         id: 5,
-                                        ty: types::NUMBER,
-                                    }
-                                    .into()
-                                ),
-                                loc: (0, 12),
+                                        ty: ResolvedType::Unknown(2),
+                                    }.into()),
+                                    id:4,
+                                    ret_ty:ResolvedType::Unknown(1).into(),
+                                }.into(),
+                                else_branch: super::ast::Block {
+                                    statements:Vec::new(),
+                                    implicit_ret:Some(super::ast::Expr::NumericLiteral {
+                                        value: "1".to_string(),
+                                        id:7,
+                                        ty: ResolvedType::Unknown(3),
+                                    }.into()),
+                                    id:6,
+                                    ret_ty:ResolvedType::Unknown(1).into(),
+                                }
+                                .into(),
+                                loc: (28,30),
                                 id: 2,
-                                result: ResolvedType::Unknown(2),
+                                result: ResolvedType::Unknown(0),
                             }
                         )),
                         generics: None,
@@ -2182,31 +2170,30 @@ mod tests {
                     }
                 )]
             },
-            ctx.assign_ids_module(ast.ast),
+            ctx.assign_ids_module(ast),
             "with if expr",
         );
         ctx.reset();
-        let ast = crate::Parser::from_source(
+        let ast = file("foo",
             r"
-let foo a = match a where
+let foo a = match a   where
     | 0 -> 'a',
     | 1 -> 'b',
     | 2 -> 'c',
     | _ -> 'd',
 ",
-        )
-        .module("foo".to_string());
+        );
         assert_eq!(
             super::ast::ModuleDeclaration {
                 loc: (0, 0),
                 name: "foo".to_string(),
                 decls: vec![super::ast::TopLevelDeclaration::Value(
                     super::ast::TopLevelValue {
-                        loc: (1, 4),
+                        loc: (5,8),
                         is_op: false,
                         ident: "foo".to_string(),
                         args: vec![super::ast::ArgDeclaration::Simple {
-                            loc: (1, 8),
+                            loc: (9,10),
                             ident: "a".to_string(),
                             ty: types::ResolvedType::Unknown(1),
                             id: 1
@@ -2214,8 +2201,8 @@ let foo a = match a where
                         ty: types::ResolvedType::Unknown(0),
                         value: super::ast::ValueType::Expr(super::ast::Expr::Match(
                             super::ast::Match {
-                                loc: (1, 12),
-                                on: super::ast::Expr::ValueRead("a".to_string(), (1, 18), 3).into(),
+                                loc: (13,18),
+                                on: super::ast::Expr::ValueRead("a".to_string(), (19,20), 3).into(),
                                 arms: vec![
                                     super::ast::MatchArm {
                                         block: Vec::new(),
@@ -2226,7 +2213,7 @@ let foo a = match a where
                                             "0".to_string(),
                                             ResolvedType::Unknown(2),
                                         ),
-                                        loc: (2, 6)
+                                        loc: (33,34)
                                     },
                                     super::ast::MatchArm {
                                         block: Vec::new(),
@@ -2237,7 +2224,7 @@ let foo a = match a where
                                             "1".to_string(),
                                             ResolvedType::Unknown(2),
                                         ),
-                                        loc: (3, 6)
+                                        loc: (49,50)
                                     },
                                     super::ast::MatchArm {
                                         block: Vec::new(),
@@ -2248,7 +2235,7 @@ let foo a = match a where
                                             "2".to_string(),
                                             ResolvedType::Unknown(2),
                                         ),
-                                        loc: (4, 6)
+                                        loc: (65,66)
                                     },
                                     super::ast::MatchArm {
                                         block: Vec::new(),
@@ -2256,7 +2243,7 @@ let foo a = match a where
                                             super::ast::Expr::CharLiteral("d".to_string()).into()
                                         ),
                                         cond: super::ast::Pattern::Default,
-                                        loc: (5, 6)
+                                        loc: (81,82)
                                     },
                                 ],
                                 id: 2
@@ -2268,21 +2255,21 @@ let foo a = match a where
                     }
                 )]
             },
-            ctx.assign_ids_module(ast.ast),
+            ctx.assign_ids_module(ast),
         );
         ctx.reset();
-        let ast = crate::Parser::from_source("let foo a = a == 3").module("foo".to_string());
+        let ast = file("foo","let foo a = a == 3;");
         assert_eq!(
             super::ast::ModuleDeclaration {
                 loc: (0, 0),
                 name: "foo".to_string(),
                 decls: vec![super::ast::TopLevelDeclaration::Value(
                     super::ast::TopLevelValue {
-                        loc: (0, 4),
+                        loc: (4,7),
                         is_op: false,
                         ident: "foo".to_string(),
                         args: vec![super::ast::ArgDeclaration::Simple {
-                            loc: (0, 8),
+                            loc: (8,9),
                             ident: "a".to_string(),
                             ty: ResolvedType::Unknown(1),
                             id: 1
@@ -2290,8 +2277,8 @@ let foo a = match a where
                         ty: ResolvedType::Unknown(0),
                         value: super::ast::ValueType::Expr(super::ast::Expr::BinaryOpCall(
                             super::ast::BinaryOpCall {
-                                loc: (0, 14),
-                                lhs: super::ast::Expr::ValueRead("a".to_string(), (0, 12), 3)
+                                loc: (14,16),
+                                lhs: super::ast::Expr::ValueRead("a".to_string(), (12,13), 3)
                                     .into(),
                                 rhs: super::ast::Expr::NumericLiteral {
                                     value: "3".to_string(),
@@ -2310,92 +2297,18 @@ let foo a = match a where
                     }
                 )]
             },
-            ctx.assign_ids_module(ast.ast),
+            ctx.assign_ids_module(ast),
             "binary op"
         );
     }
 
-    #[test]
-    fn generic_tying() {
-        const SRC: &'static str = r#"
-for<T> let foo x y : T -> T -> () = ()
-"#;
-        let ast = crate::Parser::from_source(SRC).module("foo".to_string());
-        let mut ctx = super::Context::new(
-            HashMap::new(),
-            HashMap::new(),
-            HashMap::new(),
-            HashMap::new(),
-            HashMap::new(),
-        );
-
-        assert_eq!(
-            super::ast::ModuleDeclaration {
-                loc: (0, 0),
-                name: "foo".to_string(),
-                decls: vec![super::ast::TopLevelDeclaration::Value(
-                    super::ast::TopLevelValue {
-                        loc: (1, 11),
-                        is_op: false,
-                        ident: "foo".to_string(),
-                        args: vec![
-                            super::ast::ArgDeclaration::Simple {
-                                loc: (1, 15),
-                                ident: "x".to_string(),
-                                ty: ResolvedType::Generic {
-                                    name: "T".to_string(),
-                                    loc: (1, 21)
-                                },
-                                id: 1
-                            },
-                            super::ast::ArgDeclaration::Simple {
-                                loc: (1, 17),
-                                ident: "y".to_string(),
-                                ty: ResolvedType::Generic {
-                                    name: "T".to_string(),
-                                    loc: (1, 26)
-                                },
-                                id: 2
-                            },
-                        ],
-                        ty: ResolvedType::Function {
-                            arg: ResolvedType::Generic {
-                                name: "T".to_string(),
-                                loc: (1, 21)
-                            }
-                            .into(),
-                            returns: ResolvedType::Function {
-                                arg: ResolvedType::Generic {
-                                    name: "T".to_string(),
-                                    loc: (1, 26)
-                                }
-                                .into(),
-                                returns: types::UNIT.into(),
-                                loc: (1, 28)
-                            }
-                            .into(),
-                            loc: (1, 23)
-                        },
-                        value: super::ast::ValueType::Expr(super::ast::Expr::UnitLiteral),
-                        generics: Some(crate::ast::GenericsDecl {
-                            for_loc: (1, 0),
-                            decls: vec![((1, 4), "T".to_string())]
-                        }),
-                        abi: None,
-                        id: 0
-                    }
-                )]
-            },
-            ctx.assign_ids_module(ast.ast),
-        )
-    }
 
     #[test]
     fn finale() {
         const SRC: &'static str = r#" 
 
 
-let annotated_arg (x:int32) = [x,1,2,3]
+let annotated_arg (x:int32) = [x,1,2,3];
 
 let complex x =
     print_int32 x;
@@ -2415,17 +2328,14 @@ let complex x =
                 annoated_arg x
         */
 
-        let ast = crate::Parser::from_source(SRC).module("foo".to_string());
+        let ast = file("foo",SRC);
+        let dtree=ast.get_dependencies();
+        let dtree = dtree
+            .into_iter()
+            .map(|(key, value)| (key, value.into_iter().collect()))
+            .collect();
         let mut ctx = super::Context::new(
-            [
-                ("simple".to_string(), Vec::new()),
-                ("annotated_arg".to_string(), Vec::new()),
-                (
-                    "complex".to_string(),
-                    vec!["print_int32".to_string(), "annoated_arg".to_string()],
-                ),
-            ]
-            .into(),
+            dtree,
             [("print_int32".to_string(), types::INT32.fn_ty(&types::UNIT))].into(),
             HashMap::new(),
             [(
@@ -2435,8 +2345,9 @@ let complex x =
             .into(),
             HashMap::new(),
         );
-        let mut ast = ctx.assign_ids_module(ast.ast);
+        let mut ast = ctx.assign_ids_module(ast);
         ctx.try_to_infer(&mut ast);
+        dbg!(&ctx.equations);
         ctx.apply_equations(&mut ast);
         ast.decls.sort_by_key(|it| it.get_ident());
         assert_eq!(
@@ -2445,11 +2356,11 @@ let complex x =
                 name: "foo".to_string(),
                 decls: vec![
                     super::ast::TopLevelDeclaration::Value(super::ast::TopLevelValue {
-                        loc: (3, 4),
+                        loc: (8,21),
                         is_op: false,
                         ident: "annotated_arg".to_string(),
                         args: vec![super::ast::ArgDeclaration::Simple {
-                            loc: (3, 19),
+                            loc: (23,24),
                             ident: "x".to_string(),
                             ty: types::INT32,
                             id: 1
@@ -2465,7 +2376,7 @@ let complex x =
                         },
                         value: super::ast::ValueType::Expr(super::ast::Expr::ArrayLiteral {
                             contents: vec![
-                                super::ast::Expr::ValueRead("x".to_string(), (3, 31), 3),
+                                super::ast::Expr::ValueRead("x".to_string(), (35,36), 3),
                                 super::ast::Expr::NumericLiteral {
                                     value: "1".to_string(),
                                     id: 4,
@@ -2482,7 +2393,7 @@ let complex x =
                                     ty: types::INT32
                                 },
                             ],
-                            loc: (3, 30),
+                            loc: (34,43),
                             id: 2
                         }),
                         generics: None,
@@ -2490,11 +2401,11 @@ let complex x =
                         id: 0
                     }),
                     super::ast::TopLevelDeclaration::Value(super::ast::TopLevelValue {
-                        loc: (5, 4),
+                        loc: (50,57),
                         is_op: false,
                         ident: "complex".to_string(),
                         args: vec![super::ast::ArgDeclaration::Simple {
-                            loc: (5, 12),
+                            loc: (58,59),
                             ident: "x".to_string(),
                             ty: types::INT32,
                             id: 8
@@ -2504,27 +2415,28 @@ let complex x =
                             size: 4
                         }),
                         value: super::ast::ValueType::Function(vec![
-                            super::ast::Statement::FnCall(super::ast::FnCall {
-                                loc: (6, 4),
+                            super::ast::Statement::Expr(super::ast::Expr::FnCall(super::ast::FnCall {
+                                loc: (66, 77),
                                 value: super::ast::Expr::ValueRead(
                                     "print_int32".to_string(),
-                                    (6, 4),
+                                    (66, 77),
                                     10
                                 )
                                 .into(),
-                                arg: super::ast::Expr::ValueRead("x".to_string(), (6, 16), 9)
+                                arg: super::ast::Expr::ValueRead("x".to_string(), (78,79), 9)
                                     .into(),
                                 id: 11,
                                 returns: types::UNIT
-                            }),
+                            })),
                             super::ast::Statement::Return(
-                                super::ast::Expr::If(super::ast::IfExpr {
+                                super::ast::Expr::If(super::ast::If {
+                                    loc: (92,94),
                                     cond: super::ast::Expr::BinaryOpCall(
                                         super::ast::BinaryOpCall {
-                                            loc: (7, 16),
+                                            loc: (97,99),
                                             lhs: super::ast::Expr::ValueRead(
                                                 "x".to_string(),
-                                                (7, 14),
+                                                (95,96),
                                                 14
                                             )
                                             .into(),
@@ -2540,20 +2452,15 @@ let complex x =
                                         }
                                     )
                                     .into(),
-                                    true_branch: (
-                                        Vec::new(),
-                                        super::ast::Expr::ArrayLiteral {
+                                    true_branch: super::ast::Block{
+                                        statements:Vec::new(),
+                                        implicit_ret:Some(super::ast::Expr::ArrayLiteral {
                                             contents: vec![
                                                 super::ast::Expr::ValueRead(
                                                     "x".to_string(),
-                                                    (7, 27),
-                                                    17
+                                                    (108,109),
+                                                    18
                                                 ),
-                                                super::ast::Expr::NumericLiteral {
-                                                    value: "0".to_string(),
-                                                    id: 18,
-                                                    ty: types::INT32
-                                                },
                                                 super::ast::Expr::NumericLiteral {
                                                     value: "0".to_string(),
                                                     id: 19,
@@ -2564,45 +2471,58 @@ let complex x =
                                                     id: 20,
                                                     ty: types::INT32
                                                 },
+                                                super::ast::Expr::NumericLiteral {
+                                                    value: "0".to_string(),
+                                                    id: 21,
+                                                    ty: types::INT32
+                                                },
                                             ],
-                                            loc: (7, 26),
-                                            id: 16
+                                            loc: (107,116),
+                                            id: 17
                                         }
-                                        .into()
-                                    ),
-                                    else_ifs: Vec::new(),
-                                    else_branch: (
-                                        Vec::new(),
-                                        super::ast::Expr::FnCall(super::ast::FnCall {
-                                            loc: (7, 41),
+                                        .into()),
+                                        id:16,
+                                        ret_ty:Some(ResolvedType::Array{
+                                            underlining:types::INT32.into(),
+                                            size:4,
+                                        })
+                                    },
+                                    else_branch: super::ast::Block {
+                                        statements:Vec::new(),
+                                        implicit_ret:Some(super::ast::Expr::FnCall(super::ast::FnCall {
+                                            loc: (122,135),
                                             value: super::ast::Expr::ValueRead(
                                                 "annotated_arg".to_string(),
-                                                (7, 41),
-                                                22
+                                                (122,135),
+                                                24
                                             )
                                             .into(),
                                             arg: super::ast::Expr::ValueRead(
                                                 "x".to_string(),
-                                                (7, 55),
-                                                21
+                                                (136,137),
+                                                23
                                             )
                                             .into(),
-                                            id: 23,
+                                            id: 25,
                                             returns: ResolvedType::Array {
                                                 underlining: types::INT32.into(),
                                                 size: 4
                                             }
                                         })
-                                        .into()
-                                    ),
-                                    loc: (7, 11),
+                                        .into()),
+                                        id:22,
+                                        ret_ty:Some(ResolvedType::Array{
+                                            underlining:types::INT32.into(),
+                                            size:4,
+                                        })
+                                    }.into(),
                                     id: 12,
                                     result: ResolvedType::Array {
                                         underlining: types::INT32.into(),
                                         size: 4
                                     }
                                 }),
-                                (7, 4)
+                                (85,91)
                             )
                         ]),
                         generics: None,
@@ -2618,16 +2538,16 @@ let complex x =
     #[test]
     fn type_bindings() {
         const SRC: &'static str = "
-let int_unit _ : int32 -> () = ()
+let int_unit _ : int32 -> () = ();
 
-let unit_int _ : () -> int16 = 0
+let unit_int _ : () -> int16 = 0;
 
-let int_int x : int32 -> int32 = x
+let int_int x : int32 -> int32 = x;
 
-let unit_unit _ : () -> () = ()
+let unit_unit _ : () -> () = ();
 ";
 
-        let module = crate::parser::Parser::from_source(SRC).module("test".to_string());
+        let module = file("test",SRC);
 
         let dtree = [
             ("int_unit".to_string(), Vec::new()),
@@ -2645,7 +2565,7 @@ let unit_unit _ : () -> () = ()
             HashMap::new(),
         );
 
-        let mut module = ctx.inference(module.ast);
+        let mut module = ctx.inference(module);
 
         module
             .decls
@@ -2655,11 +2575,11 @@ let unit_unit _ : () -> () = ()
         };
         assert_eq!(
             &super::ast::TopLevelDeclaration::Value(TopLevelValue {
-                loc: (5, 4),
+                loc: (76,83),
                 is_op: false,
                 ident: "int_int".to_string(),
                 args: vec![super::ast::ArgDeclaration::Simple {
-                    loc: (5, 12),
+                    loc: (84,85),
                     ident: "x".to_string(),
                     ty: types::INT32,
                     id: 4
@@ -2667,11 +2587,11 @@ let unit_unit _ : () -> () = ()
                 ty: ResolvedType::Function {
                     arg: types::INT32.into(),
                     returns: types::INT32.into(),
-                    loc: (5, 22)
+                    loc: (94,96)
                 },
                 value: super::ast::ValueType::Expr(super::ast::Expr::ValueRead(
                     "x".to_string(),
-                    (5, 33),
+                    (105,106),
                     5
                 )),
                 generics: None,
@@ -2683,17 +2603,17 @@ let unit_unit _ : () -> () = ()
         );
         assert_eq!(
             &super::ast::TopLevelDeclaration::Value(TopLevelValue {
-                loc: (1, 4),
+                loc: (5,13),
                 is_op: false,
                 ident: "int_unit".to_string(),
                 args: vec![super::ast::ArgDeclaration::Discard {
-                    loc: (1, 13),
+                    loc: (14,15),
                     ty: types::INT32,
                 }],
                 ty: ResolvedType::Function {
                     arg: types::INT32.into(),
                     returns: types::UNIT.into(),
-                    loc: (1, 23),
+                    loc: (24,26),
                 },
                 value: super::ast::ValueType::Expr(super::ast::Expr::UnitLiteral),
                 generics: None,
@@ -2705,17 +2625,17 @@ let unit_unit _ : () -> () = ()
         );
         assert_eq!(
             &super::ast::TopLevelDeclaration::Value(TopLevelValue {
-                loc: (3, 4),
+                loc: (41,49),
                 is_op: false,
                 ident: "unit_int".to_string(),
                 args: vec![super::ast::ArgDeclaration::Discard {
-                    loc: (3, 13),
+                    loc: (50,51),
                     ty: types::UNIT,
                 }],
                 ty: ResolvedType::Function {
                     arg: types::UNIT.into(),
                     returns: types::INT16.into(),
-                    loc: (3, 20)
+                    loc: (57,59)
                 },
                 value: super::ast::ValueType::Expr(super::ast::Expr::NumericLiteral {
                     value: "0".to_string(),
@@ -2731,17 +2651,17 @@ let unit_unit _ : () -> () = ()
         );
         assert_eq!(
             &super::ast::TopLevelDeclaration::Value(TopLevelValue {
-                loc: (7, 4),
+                loc: (113,122),
                 is_op: false,
                 ident: "unit_unit".to_string(),
                 args: vec![super::ast::ArgDeclaration::Discard {
-                    loc: (7, 14),
+                    loc: (123,124),
                     ty: types::UNIT,
                 }],
                 ty: ResolvedType::Function {
                     arg: types::UNIT.into(),
                     returns: types::UNIT.into(),
-                    loc: (7, 21)
+                    loc: (130,132)
                 },
                 value: super::ast::ValueType::Expr(super::ast::Expr::UnitLiteral),
                 generics: None,
@@ -2756,10 +2676,10 @@ let unit_unit _ : () -> () = ()
     #[test]
     fn if_expr() {
         const SRC: &'static str = "
-let if_expr a b : bool -> int32 -> int32 = if a then b else 0
+let if_expr a b : bool -> int32 -> int32 = if a then b else 0;
 ";
 
-        let module = crate::Parser::from_source(SRC).module("".to_string());
+        let module = file("",SRC);
         let mut ctx = super::Context::new(
             [("if_expr".to_string(), Vec::new())].into(),
             HashMap::new(),
@@ -2767,25 +2687,25 @@ let if_expr a b : bool -> int32 -> int32 = if a then b else 0
             HashMap::new(),
             HashMap::new(),
         );
-        let module = ctx.inference(module.ast);
+        let module = ctx.inference(module);
 
         let [if_expr] = &module.decls[..] else {
             unreachable!()
         };
         assert_eq!(
             &super::ast::TopLevelDeclaration::Value(super::ast::TopLevelValue {
-                loc: (1, 4),
+                loc: (5,12),
                 is_op: false,
                 ident: "if_expr".to_string(),
                 args: vec![
                     super::ast::ArgDeclaration::Simple {
-                        loc: (1, 12),
+                        loc: (13,14),
                         ident: "a".to_string(),
                         ty: types::BOOL,
                         id: 1,
                     },
                     super::ast::ArgDeclaration::Simple {
-                        loc: (1, 14),
+                        loc: (15,16),
                         ident: "b".to_string(),
                         ty: types::INT32,
                         id: 2,
@@ -2796,28 +2716,31 @@ let if_expr a b : bool -> int32 -> int32 = if a then b else 0
                     returns: ResolvedType::Function {
                         arg: types::INT32.into(),
                         returns: types::INT32.into(),
-                        loc: (1, 32)
+                        loc: (33,35)
                     }
                     .into(),
-                    loc: (1, 23)
+                    loc: (24,26)
                 },
-                value: super::ast::ValueType::Expr(super::ast::Expr::If(super::ast::IfExpr {
-                    cond: super::ast::Expr::ValueRead("a".to_string(), (1, 46), 4).into(),
-                    true_branch: (
-                        Vec::new(),
-                        super::ast::Expr::ValueRead("b".to_string(), (1, 53), 5).into()
-                    ),
-                    else_ifs: Vec::new(),
-                    else_branch: (
-                        Vec::new(),
-                        super::ast::Expr::NumericLiteral {
+                value: super::ast::ValueType::Expr(super::ast::Expr::If(super::ast::If {
+                    cond: super::ast::Expr::ValueRead("a".to_string(), (47,48), 4).into(),
+                    true_branch: super::ast::Block {
+                        statements:Vec::new(),
+                        implicit_ret:Some(super::ast::Expr::ValueRead("b".to_string(), (54,55), 6).into()),
+                        id:5,
+                        ret_ty:types::INT32.into(),
+                    },
+                    else_branch: super::ast::Block {
+                        statements:Vec::new(),
+                        implicit_ret:Some(super::ast::Expr::NumericLiteral {
                             value: "0".to_string(),
-                            id: 6,
+                            id: 8,
                             ty: types::INT32
                         }
-                        .into()
-                    ),
-                    loc: (1, 43),
+                        .into()),
+                        id:7,
+                        ret_ty:types::INT32.into()
+                    }.into(),
+                    loc: (44,46),
                     id: 3,
                     result: types::INT32
                 })),
@@ -2830,7 +2753,7 @@ let if_expr a b : bool -> int32 -> int32 = if a then b else 0
     }
 
     #[test]
-    fn returns() {
+    fn  returns() {
         const SRC: &'static str = "
 let returns a : bool -> int32 =
     if a then
@@ -2838,7 +2761,7 @@ let returns a : bool -> int32 =
     return 1;
 ";
 
-        let module = crate::Parser::from_source(SRC).module("".to_string());
+        let module = file("",SRC);
         let mut ctx = super::Context::new(
             [("returns".to_string(), Vec::new())].into(),
             HashMap::new(),
@@ -2846,18 +2769,18 @@ let returns a : bool -> int32 =
             HashMap::new(),
             HashMap::new(),
         );
-        let module = ctx.inference(module.ast);
+        let module = ctx.inference(module);
 
         let [returns] = &module.decls[..] else {
             unreachable!()
         };
         assert_eq!(
             &super::ast::TopLevelDeclaration::Value(super::ast::TopLevelValue {
-                loc: (1, 4),
+                loc: (5,12),
                 is_op: false,
                 ident: "returns".to_string(),
                 args: vec![super::ast::ArgDeclaration::Simple {
-                    loc: (1, 12),
+                    loc: (13, 14),
                     ident: "a".to_string(),
                     ty: types::BOOL,
                     id: 1,
@@ -2865,30 +2788,36 @@ let returns a : bool -> int32 =
                 ty: ResolvedType::Function {
                     arg: types::BOOL.into(),
                     returns: types::INT32.into(),
-                    loc: (1, 21)
+                    loc: (22,24)
                 },
                 value: super::ast::ValueType::Function(vec![
-                    super::ast::Statement::IfStatement(super::ast::IfBranching {
-                        cond: super::ast::Expr::ValueRead("a".to_string(), (2, 7), 2).into(),
-                        true_branch: vec![super::ast::Statement::Return(
-                            super::ast::Expr::NumericLiteral {
-                                value: "0".to_string(),
-                                id: 3,
-                                ty: types::INT32
-                            },
-                            (3, 8)
-                        )],
-                        else_ifs: Vec::new(),
-                        else_branch: Vec::new(),
-                        loc: (2, 4)
+                    super::ast::Statement::IfStatement(super::ast::If {
+                        cond: super::ast::Expr::ValueRead("a".to_string(), (40,41), 2).into(),
+                        true_branch: super::ast::Block {
+                            statements:vec![super::ast::Statement::Return(
+                                super::ast::Expr::NumericLiteral {
+                                    value: "0".to_string(),
+                                    id: 4,
+                                    ty: types::INT32
+                                },
+                                (55,61)
+                            )],
+                            implicit_ret:None,
+                            id:3,
+                            ret_ty:Some(types::UNIT),
+                        },
+                        else_branch: None,
+                        loc: (37,39),
+                        id:usize::MAX,
+                        result:types::UNIT,
                     }),
                     super::ast::Statement::Return(
                         super::ast::Expr::NumericLiteral {
                             value: "1".to_string(),
-                            id: 4,
+                            id: 5,
                             ty: types::INT32
                         },
-                        (4, 4)
+                        (69, 75)
                     )
                 ]),
                 generics: None,
@@ -2902,7 +2831,7 @@ let returns a : bool -> int32 =
     fn tuples() {
         const SRC: &'static str = "
 let produce (a:int32) = (a,a);
-// in theory this could be `let consume = fst` but let's ignore that case for now
+#! in theory this could be `let consume = fst` but let's ignore that case for now
 let consume a = fst a;
 ";
         let predefined = [(
@@ -2915,7 +2844,7 @@ let consume a = fst a;
         )]
         .into();
 
-        let ast = crate::Parser::from_source(SRC).module("".to_string()).ast;
+        let ast = file("",SRC);
         let dtree = ast.get_dependencies();
         let dtree = dtree
             .into_iter()
@@ -2937,11 +2866,11 @@ let consume a = fst a;
         };
         assert_eq!(
             &super::ast::TopLevelDeclaration::Value(super::ast::TopLevelValue {
-                loc: (3, 4),
+                loc: (118,125),
                 is_op: false,
                 ident: "consume".to_string(),
                 args: vec![super::ast::ArgDeclaration::Simple {
-                    loc: (3, 12),
+                    loc: (126,127),
                     ident: "a".to_string(),
                     ty: ResolvedType::Tuple {
                         underlining: vec![types::INT32, types::INT32,],
@@ -2955,9 +2884,9 @@ let consume a = fst a;
                 }
                 .fn_ty(&types::INT32),
                 value: super::ast::ValueType::Expr(super::ast::Expr::FnCall(super::ast::FnCall {
-                    loc: (3, 16),
-                    value: super::ast::Expr::ValueRead("fst".to_string(), (3, 16), 8).into(),
-                    arg: super::ast::Expr::ValueRead("a".to_string(), (3, 20), 7).into(),
+                    loc: (130,133),
+                    value: super::ast::Expr::ValueRead("fst".to_string(), (130,133), 8).into(),
+                    arg: super::ast::Expr::ValueRead("a".to_string(), (134,135), 7).into(),
                     id: 9,
                     returns: types::INT32,
                 })),
@@ -2971,11 +2900,11 @@ let consume a = fst a;
 
         assert_eq!(
             &super::ast::TopLevelDeclaration::Value(super::ast::TopLevelValue {
-                loc: (1, 4),
+                loc: (5,12),
                 is_op: false,
                 ident: "produce".to_string(),
                 args: vec![super::ast::ArgDeclaration::Simple {
-                    loc: (1, 13),
+                    loc: (14,15),
                     ident: "a".to_string(),
                     ty: types::INT32,
                     id: 1
@@ -2989,11 +2918,11 @@ let consume a = fst a;
                 abi: None,
                 value: super::ast::ValueType::Expr(super::ast::Expr::TupleLiteral {
                     contents: vec![
-                        super::ast::Expr::ValueRead("a".to_string(), (1, 25), 3),
-                        super::ast::Expr::ValueRead("a".to_string(), (1, 27), 4),
+                        super::ast::Expr::ValueRead("a".to_string(), (26,27), 3),
+                        super::ast::Expr::ValueRead("a".to_string(), (28,29), 4),
                     ],
                     id: 2,
-                    loc: (1, 24),
+                    loc: (25,30),
                 })
             }),
             produce,
@@ -3011,7 +2940,7 @@ let main _ : () -> () =
     return ();
 ";
 
-        let ast = crate::Parser::from_source(SRC).module(String::new()).ast;
+        let ast = file("",SRC);
         let dtree = ast.get_dependencies();
         let dtree = dtree
             .into_iter()
@@ -3031,11 +2960,11 @@ let main _ : () -> () =
         };
         assert_eq!(
             &super::ast::TopLevelDeclaration::Value(super::ast::TopLevelValue {
-                loc: (1, 4),
+                loc: (5,6),
                 is_op: false,
                 ident: "f".to_string(),
                 args: vec![super::ast::ArgDeclaration::Simple {
-                    loc: (1, 7),
+                    loc: (8,9),
                     ident: "a".to_string(),
                     ty: ResolvedType::Array {
                         underlining: types::INT32.into(),
@@ -3058,18 +2987,18 @@ let main _ : () -> () =
         );
         assert_eq!(
             &super::ast::TopLevelDeclaration::Value(super::ast::TopLevelValue {
-                loc: (3, 4),
+                loc: (32,36),
                 is_op: false,
                 ident: "main".to_string(),
                 args: vec![super::ast::ArgDeclaration::Discard {
-                    loc: (3, 9),
+                    loc: (37, 38),
                     ty: types::UNIT,
                 },],
                 ty: types::UNIT.fn_ty(&types::UNIT),
                 value: super::ast::ValueType::Function(vec![
-                    super::ast::Statement::FnCall(super::ast::FnCall {
-                        loc: (4, 4),
-                        value: super::ast::Expr::ValueRead("f".to_string(), (4, 4), 9).into(),
+                    super::ast::Statement::Expr(super::ast::Expr::FnCall(super::ast::FnCall {
+                        loc: (56,57),
+                        value: super::ast::Expr::ValueRead("f".to_string(), (56,57), 9).into(),
                         arg: super::ast::Expr::ArrayLiteral {
                             contents: vec![
                                 super::ast::Expr::NumericLiteral {
@@ -3098,14 +3027,14 @@ let main _ : () -> () =
                                     ty: types::INT32
                                 },
                             ],
-                            loc: (4, 6),
+                            loc: (58,69),
                             id: 3
                         }
                         .into(),
                         id: 10,
                         returns: types::UNIT
-                    }),
-                    super::ast::Statement::Return(super::ast::Expr::UnitLiteral, (5, 4))
+                    })),
+                    super::ast::Statement::Return(super::ast::Expr::UnitLiteral, (75,81))
                 ]),
                 generics: None,
                 abi: None,
@@ -3127,7 +3056,7 @@ let tuples (v:(int32,int32)) = match v where
     | (1,b) -> b,
     | _ -> 0,
     ";
-        let ast = crate::Parser::from_source(SRC).module(String::new()).ast;
+        let ast = file("",SRC);
         let dtree = ast.get_dependencies();
         let dtree = dtree
             .into_iter()
@@ -3147,19 +3076,19 @@ let tuples (v:(int32,int32)) = match v where
         };
         assert_eq!(
             &super::ast::TopLevelDeclaration::Value(super::ast::TopLevelValue {
-                loc: (1, 4),
+                loc: (5,8),
                 is_op: false,
                 ident: "ors".to_string(),
                 args: vec![super::ast::ArgDeclaration::Simple {
-                    loc: (1, 9),
+                    loc: (10,11),
                     ident: "a".to_string(),
                     ty: types::INT32,
                     id: 1
                 }],
                 ty: types::INT32.fn_ty(&types::INT32),
                 value: super::ast::ValueType::Expr(super::ast::Expr::Match(super::ast::Match {
-                    loc: (1, 20),
-                    on: super::ast::Expr::ValueRead("a".to_string(), (1, 26), 3).into(),
+                    loc: (21,26),
+                    on: super::ast::Expr::ValueRead("a".to_string(), (27,28), 3).into(),
                     arms: vec![
                         super::ast::MatchArm {
                             block: Vec::new(),
@@ -3182,20 +3111,20 @@ let tuples (v:(int32,int32)) = match v where
                                 )
                                 .into()
                             ),
-                            loc: (2, 6),
+                            loc: (39,40),
                         },
                         super::ast::MatchArm {
                             block: Vec::new(),
                             ret: Some(
-                                super::ast::Expr::ValueRead("a".to_string(), (3, 11), 6).into()
+                                super::ast::Expr::ValueRead("a".to_string(), (68,69), 6).into()
                             ),
                             cond: super::ast::Pattern::Read {
                                 ident: "a".to_string(),
-                                loc: (3, 6),
+                                loc: (63,64),
                                 ty: types::INT32,
                                 id: 5
                             },
-                            loc: (3, 6),
+                            loc: (61,62),
                         }
                     ],
                     id: 2
@@ -3209,11 +3138,11 @@ let tuples (v:(int32,int32)) = match v where
 
         assert_eq!(
             &super::ast::TopLevelDeclaration::Value(super::ast::TopLevelValue {
-                loc: (4, 4),
+                loc: (75,81),
                 is_op: false,
                 ident: "tuples".to_string(),
                 args: vec![super::ast::ArgDeclaration::Simple {
-                    loc: (4, 12),
+                    loc: (83,84),
                     ident: "v".to_string(),
                     ty: ResolvedType::Tuple {
                         underlining: vec![types::INT32, types::INT32,],
@@ -3227,20 +3156,20 @@ let tuples (v:(int32,int32)) = match v where
                 }
                 .fn_ty(&types::INT32),
                 value: super::ast::ValueType::Expr(super::ast::Expr::Match(super::ast::Match {
-                    loc: (4, 31),
-                    on: super::ast::Expr::ValueRead("v".to_string(), (4, 37), 10).into(),
+                    loc: (102,107),
+                    on: super::ast::Expr::ValueRead("v".to_string(), (108,109), 10).into(),
                     arms: vec![
                         super::ast::MatchArm {
                             block: Vec::new(),
                             ret: Some(
-                                super::ast::Expr::ValueRead("a".to_string(), (5, 15), 13).into()
+                                super::ast::Expr::ValueRead("a".to_string(), (131,132), 13).into()
                             ),
                             cond: super::ast::Pattern::Destructure(
                                 super::ast::DestructurePattern::Tuple(
                                     vec![
                                         super::ast::Pattern::Read {
                                             ident: "a".to_string(),
-                                            loc: (5, 7),
+                                            loc: (123,124),
                                             ty: types::INT32,
                                             id: 12
                                         },
@@ -3256,12 +3185,12 @@ let tuples (v:(int32,int32)) = match v where
                                     11
                                 )
                             ),
-                            loc: (5, 6)
+                            loc: (120,121)
                         },
                         super::ast::MatchArm {
                             block: Vec::new(),
                             ret: Some(
-                                super::ast::Expr::ValueRead("b".to_string(), (6, 15), 16).into()
+                                super::ast::Expr::ValueRead("b".to_string(), (149,150), 16).into()
                             ),
                             cond: super::ast::Pattern::Destructure(
                                 super::ast::DestructurePattern::Tuple(
@@ -3272,7 +3201,7 @@ let tuples (v:(int32,int32)) = match v where
                                         ),
                                         super::ast::Pattern::Read {
                                             ident: "b".to_string(),
-                                            loc: (6, 9),
+                                            loc: (143,144),
                                             ty: types::INT32,
                                             id: 15
                                         },
@@ -3284,7 +3213,7 @@ let tuples (v:(int32,int32)) = match v where
                                     14
                                 )
                             ),
-                            loc: (6, 6)
+                            loc: (138,139)
                         },
                         super::ast::MatchArm {
                             block: Vec::new(),
@@ -3297,7 +3226,7 @@ let tuples (v:(int32,int32)) = match v where
                                 .into()
                             ),
                             cond: super::ast::Pattern::Default,
-                            loc: (7, 6)
+                            loc: (156,157)
                         }
                     ],
                     id: 9,
@@ -3312,15 +3241,13 @@ let tuples (v:(int32,int32)) = match v where
     }
     #[test]
     fn destructureing_statement() {
-        let ast = Parser::from_source(
+        let ast = file("",
             "
 let a (v:(int32,int32)) =
     let (x,y) = v;
     return ();
 ",
-        )
-        .module("".to_string())
-        .ast;
+        );
         let dtree = ast.get_dependencies();
         let dtree = dtree
             .into_iter()
@@ -3338,7 +3265,7 @@ let a (v:(int32,int32)) =
         use super::ast;
         assert_eq!(
             &ast::TopLevelDeclaration::Value(ast::TopLevelValue {
-                loc: (1, 4),
+                loc: (5,6),
                 is_op: false,
                 ident: "a".to_string(),
                 args: vec![ast::ArgDeclaration::Simple {
@@ -3347,7 +3274,7 @@ let a (v:(int32,int32)) =
                         underlining: vec![types::INT32, types::INT32,],
                         loc: (0, 0)
                     },
-                    loc: (1, 7),
+                    loc: (8,9),
                     id: 1,
                 }],
                 ty: ResolvedType::Tuple {
@@ -3357,20 +3284,20 @@ let a (v:(int32,int32)) =
                 .fn_ty(&types::UNIT),
                 value: ast::ValueType::Function(vec![
                     ast::Statement::Declaration(ast::ValueDeclaration {
-                        loc: (2, 8),
+                        loc: (35,40),
                         is_op: false,
                         target: ast::Pattern::Destructure(ast::DestructurePattern::Tuple(
                             vec![
                                 ast::Pattern::Read {
                                     ident: "x".to_string(),
                                     ty: types::INT32,
-                                    loc: (2, 9),
+                                    loc: (36,37),
                                     id: 3
                                 },
                                 ast::Pattern::Read {
                                     ident: "y".to_string(),
                                     ty: types::INT32,
-                                    loc: (2, 11),
+                                    loc: (38,39),
                                     id: 4
                                 },
                             ],
@@ -3383,7 +3310,7 @@ let a (v:(int32,int32)) =
                         args: Vec::new(),
                         value: ast::ValueType::Expr(ast::Expr::ValueRead(
                             "v".to_string(),
-                            (2, 16),
+                            (43,44),
                             6
                         )),
                         ty: ResolvedType::Tuple {
@@ -3394,7 +3321,7 @@ let a (v:(int32,int32)) =
                         abi: None,
                         id: 5
                     }),
-                    ast::Statement::Return(ast::Expr::UnitLiteral, (3, 4))
+                    ast::Statement::Return(ast::Expr::UnitLiteral, (50,56))
                 ]),
                 generics: None,
                 abi: None,
@@ -3406,7 +3333,7 @@ let a (v:(int32,int32)) =
 
     #[test]
     fn enum_patterns() {
-        let parser = Parser::from_source(
+        let ast = file("",
             "
 enum IP = | V4 (int8,int8,int8,int8) | V6 (int8,int8,int8,int8,int8,int8)
 
@@ -3416,8 +3343,6 @@ let do_something a = match a where
 | IP::V6 _ -> (),
 ",
         );
-        let ast = parser.module("".to_string());
-        assert_eq!(ast.errors.len(), 0, "no errors");
 
         let mut ctx = super::Context::new(
             [].into(),
@@ -3426,18 +3351,17 @@ let do_something a = match a where
             [].into(),
             [].into(),
         );
-        let ast = ctx.inference(ast.ast);
+        let ast = ctx.inference(ast);
         let [_enum_, func] = &ast.decls[..] else {
             panic!("too much? too little?")
         };
         assert_eq!(
-            func,
             &super::ast::TopLevelDeclaration::Value(super::ast::TopLevelValue {
-                loc: (3, 4),
+                loc: (80,92),
                 is_op: false,
                 ident: "do_something".to_string(),
                 args: vec![super::ast::ArgDeclaration::Simple {
-                    loc: (3, 17),
+                    loc: (93,94),
                     ident: "a".to_string(),
                     ty: ResolvedType::User {
                         name: "IP".to_string(),
@@ -3453,8 +3377,8 @@ let do_something a = match a where
                 }
                 .fn_ty(&types::UNIT),
                 value: super::ast::ValueType::Expr(super::ast::Expr::Match(super::ast::Match {
-                    loc: (3, 21),
-                    on: super::ast::Expr::ValueRead("a".to_string(), (3, 27), 3).into(),
+                    loc: (97,102),
+                    on: super::ast::Expr::ValueRead("a".to_string(), (103,104), 3).into(),
                     arms: vec![
                         super::ast::MatchArm {
                             block: Vec::new(),
@@ -3511,9 +3435,9 @@ let do_something a = match a where
                                     )
                                     .into()
                                 ),
-                                loc: (4, 2)
+                                loc: (113,119),
                             },
-                            loc: (4, 2)
+                            loc: (111,112),
                         },
                         super::ast::MatchArm {
                             block: Vec::new(),
@@ -3544,7 +3468,7 @@ let do_something a = match a where
                                 pattern: Some(
                                     super::ast::Pattern::Read {
                                         ident: "a".into(),
-                                        loc: (5, 9),
+                                        loc: (148,149),
                                         ty:  ResolvedType::Tuple {
                                                 underlining: vec![
                                                     types::INT8;4
@@ -3555,9 +3479,9 @@ let do_something a = match a where
                                     }
                                     .into()
                                 ),
-                                loc: (5, 2)
+                                loc: (141,147)
                             },
-                            loc: (5, 2),
+                            loc: (139,140),
                         },
                         super::ast::MatchArm {
                             block: Vec::new(),
@@ -3588,9 +3512,9 @@ let do_something a = match a where
                                 },
                                 variant: "IP::V6".into(),
                                 pattern: Some(super::ast::Pattern::Default.into()),
-                                loc: (6, 2)
+                                loc: (159,165)
                             },
-                            loc: (6, 2)
+                            loc: (157,158)
                         }
                     ],
                     id: 2
@@ -3599,6 +3523,7 @@ let do_something a = match a where
                 abi: None,
                 id: 0,
             }),
+            func,
         );
 
     }
@@ -3615,7 +3540,7 @@ let fun test = match test where
 | Testing::One _ -> 1,
 | Testing::Two -> 2,
 "#; 
-        let mut ast = Parser::from_source(SRC).module("".to_string()).ast;
+        let mut ast = file("",SRC);
         ast.canonialize(vec!["v".into()]);
         let dtree = ast.get_dependencies();
         let dtree = dtree

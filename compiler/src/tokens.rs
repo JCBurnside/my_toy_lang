@@ -1,5 +1,6 @@
+use std::borrow::Cow;
 #[derive(PartialEq, Eq, Debug, Clone)]
-pub enum Token {
+pub enum Token<'a> {
     Let,
     Return,
     Arrow,        // ->
@@ -29,15 +30,15 @@ pub enum Token {
     // Fn, //to be added latter to distinguish between value and function with 0 args.  reality will be syntax sugar for functions with auto unit args
 
     //literals
-    Integer(bool, String),
-    FloatingPoint(bool, String),
+    Integer(String),
+    FloatingPoint(String),
     StringLiteral(String),
     CharLiteral(String),
 
     #[allow(unused)] //todo implement.
     Compose,
     // |, >, <, !, @,  $, =, &, +, -, \, /, *, ^, .
-    Op(String),
+    Op(&'a str),
     //meta tokens
     //TODO! attribute indicatator
     Extern,
@@ -50,8 +51,63 @@ pub enum Token {
     Error(&'static str /*reason*/),
 }
 
-impl Token {
+impl Token<'_> {
     pub fn is_eof(&self) -> bool {
         matches!(self, Self::EoF)
+    }
+}
+
+impl winnow::stream::ContainsToken<Token<'_>> for Token<'_> {
+    #[inline(always)]
+    fn contains_token(&self, token: Token) -> bool {
+        self == &token
+    }
+}
+
+impl winnow::stream::ContainsToken<Token<'_>> for (Token<'_>,std::ops::Range<usize>) {
+    #[inline(always)]
+    fn contains_token(&self, token: Token<'_>) -> bool {
+        self.0 == token
+    }
+}
+
+impl winnow::stream::ContainsToken<Token<'_>> for &'_ [Token<'_>] {
+    #[inline]
+    fn contains_token(&self, token: Token<'_>) -> bool {
+        self.iter().any(|t| *t == token)
+    }
+}
+
+impl<const LEN: usize> winnow::stream::ContainsToken<Token<'_>> for &'_ [Token<'_>; LEN] {
+    #[inline]
+    fn contains_token(&self, token: Token<'_>) -> bool {
+        self.iter().any(|t| t == &token)
+    }
+}
+
+impl<const LEN: usize> winnow::stream::ContainsToken<Token<'_>> for [Token<'_>; LEN] {
+    #[inline]
+    fn contains_token(&self, token: Token<'_>) -> bool {
+        self.iter().any(|t| t == &token)
+    }
+}
+impl winnow::stream::ContainsToken<Token<'_>> for &'_ [(Token<'_>,std::ops::Range<usize>)] {
+    #[inline]
+    fn contains_token(&self, token: Token<'_>) -> bool {
+        self.iter().any(|t| t.0 == token)
+    }
+}
+
+impl<const LEN: usize> winnow::stream::ContainsToken<Token<'_>> for &'_ [(Token<'_>,std::ops::Range<usize>); LEN] {
+    #[inline]
+    fn contains_token(&self, token: Token<'_>) -> bool {
+        self.iter().any(|t| t.0 == token)
+    }
+}
+
+impl<const LEN: usize> winnow::stream::ContainsToken<Token<'_>> for [(Token<'_>,std::ops::Range<usize>); LEN] {
+    #[inline]
+    fn contains_token(&self, token: Token<'_>) -> bool {
+        self.iter().any(|t| t.0 == token)
     }
 }

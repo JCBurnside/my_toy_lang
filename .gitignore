@@ -2,3 +2,5 @@ target
 [Cc]argo.lock
 *.llvm
 *.ll
+# used for debugging.  no need to check it in
+out.txt 

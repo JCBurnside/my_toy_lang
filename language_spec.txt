@@ -1,0 +1,72 @@
+SimpleIdent ::= any sequence of alphanumeric chars or _ but doesn't lead with a number
+
+Ident ::=
+    | Ident "::" SimpleIdent
+    | SimpleIdent\
+
+Operator ::= sequence of one of [+-*/!^&| ]
+
+Expr ::=
+    | Ident
+    | "..."
+    | '...'
+    | Number
+    | FnCall
+    | Match
+    | If with required else clause
+    | "[" (comma separated Expr)+ "]"
+    | "()"
+    
+
+FnCall ::= Expr " " Expr
+
+Match ::= 
+    "match " Expr " where"
+    ("|" Pattern "->" (Expr | Block))+
+
+Block ::= all prefixed with the same leading whitspace.  should be longer than containing block.
+    Statement+
+    [Expr]
+
+If ::=
+    "if" expr "then" (Expr|Block)
+    ["else" (Expr|Block)]
+
+Pattern ::=
+    | SimpleIdent 
+    | "(" (Pattern",")+ ")"
+    | Ident " "* Pattern
+    | Ident "{" (SimpleIdent[":"Pattern])+"}"
+    | Pattern "|" Pattern
+
+Statement ::=
+    | If
+    | Match
+    | "let" SimplePattern Arg* [":"Type]"=" (Expr ";"|Block)
+    | Expr ";"
+
+Arg ::=
+    | SimpleIdent
+    | "()"
+    | "("Arg[":"Type]")"
+    | "(" comma separated Arg ")"
+
+Type ::=
+    | Ident
+    | Type "->" Type
+    | "("Type")"
+    | "["Type";"Number"]"
+    | "("(comma separated Type)+")"
+    | "()"
+
+GenericDecl::=
+    "for" "<" (comma separated SimpleIdent)+ ">"
+
+TopLevelDeclaration ::=
+    | TopLevelValue
+    | StructDecl
+    | EnumDeclaration
+    | AliasDecl
+
+TopLevelValue ::= [GenericDecl] "let" (SimpleIdent|"("Operator")") Arg* [":"Type] "=" (Expr ";"|Block)
+

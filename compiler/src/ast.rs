@@ -140,21 +140,21 @@ impl ModuleDeclaration {
                         let ident = variant.get_ident();
                         let new_ident = format!("{}::{}", &e.ident, ident);
                         let generics = e
-                        .generics
-                        .as_ref()
-                        .map(|generics| {
-                            generics
-                                .decls
-                                .iter()
-                                .map(|(loc, name)| ResolvedType::Generic {
-                                    name: name.clone(),
-                                    loc: *loc,
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
+                            .generics
+                            .as_ref()
+                            .map(|generics| {
+                                generics
+                                    .decls
+                                    .iter()
+                                    .map(|(loc, name)| ResolvedType::Generic {
+                                        name: name.clone(),
+                                        loc: *loc,
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
                         match variant {
-                            EnumVariant::Unit { ident:_, loc } => out.push((
+                            EnumVariant::Unit { ident: _, loc } => out.push((
                                 new_ident.clone(),
                                 ResolvedType::Dependent {
                                     base: base_ty.clone().into(),
@@ -164,7 +164,7 @@ impl ModuleDeclaration {
                                     loc: *loc,
                                 },
                             )),
-                            EnumVariant::Tuple { ident:_, ty, loc } => out.push((
+                            EnumVariant::Tuple { ident: _, ty, loc } => out.push((
                                 new_ident.clone(),
                                 ResolvedType::Dependent {
                                     base: base_ty.clone().into(),
@@ -174,26 +174,21 @@ impl ModuleDeclaration {
                                     loc: *loc,
                                 },
                             )),
-                            EnumVariant::Struct {
-                                ident:_, loc, ..
-                            } => {
-                                
-                                out.push((
-                                    new_ident.clone(),
-                                    ResolvedType::Dependent {
-                                        base: base_ty.clone().into(),
-                                        ident: new_ident.clone(),
-                                        actual: ResolvedType::User {
-                                            name: new_ident,
-                                            generics:generics.clone(),
-                                            loc: *loc,
-                                        }
-                                        .into(),
-                                        generics,
+                            EnumVariant::Struct { ident: _, loc, .. } => out.push((
+                                new_ident.clone(),
+                                ResolvedType::Dependent {
+                                    base: base_ty.clone().into(),
+                                    ident: new_ident.clone(),
+                                    actual: ResolvedType::User {
+                                        name: new_ident,
+                                        generics: generics.clone(),
                                         loc: *loc,
-                                    },
-                                ))
-                            }
+                                    }
+                                    .into(),
+                                    generics,
+                                    loc: *loc,
+                                },
+                            )),
                         }
                     }
                     HashMap::from_iter(out)
@@ -250,6 +245,32 @@ impl TopLevelValue {
         self.value.replace(nice_name, actual);
         for arg in &mut self.args {
             arg.replace(nice_name, actual);
+        }
+    }
+
+    pub fn bind_generics(&mut self) {
+        let Self {
+            ty,
+            generics,
+            value,
+            args,
+            ..
+        } = self;
+        if let Some(generics) = generics {
+            for (_,generic) in &mut generics.decls {
+                if let Some(ty) = ty.as_mut() {
+                    ty.replace_generic_inplace(generic);
+                    
+                }
+                for arg in args.iter_mut() {
+                    arg.apply_generic(generic);
+                }
+                match value {
+                    ValueType::Expr(expr) => expr.apply_generic(generic),
+                    ValueType::Function(block) => block.apply_generic(generic),
+                    ValueType::External => (),
+                }
+            }
         }
     }
 
@@ -333,6 +354,43 @@ impl TypeDefinition {
                     field.ty = field.ty.replace(nice_name, actual);
                 }
             }
+        }
+    }
+
+    pub(crate) fn bind_generics(&mut self) {
+        match self {
+            TypeDefinition::Alias(_, resolved_type) => (), // todo! generic alias
+            TypeDefinition::Enum(EnumDeclaration {
+                generics, values, ..
+            }) => {
+                if let Some(generics) = generics {
+                    for generic in generics.decls.iter().map(|(_,it)| it) {
+
+                        for value in values.iter_mut() {
+                            match value {
+                                EnumVariant::Unit { .. } => (),
+                                EnumVariant::Tuple { ty, .. } => { take_mut::take(ty,|ty| ty.replace_user_with_generic(generic)); },
+                                EnumVariant::Struct { fields, .. } => {
+                                    for FieldDecl { ty, .. } in fields {
+                                        take_mut::take(ty,|ty| ty.replace_user_with_generic(generic));
+                                    }
+                                },
+                            }
+                        }
+                    }
+                }
+            }
+            TypeDefinition::Struct(StructDefinition { generics, values, .. }) => {
+                if let Some(generics) = generics {
+                    for (_,generic) in &generics.decls {
+                        for FieldDecl { ty, .. } in values.iter_mut() {
+                            take_mut::take(ty, |ty| {
+                                ty.replace_user_with_generic(generic)
+                            });
+                        }
+                    }
+                }
+            },
         }
     }
 }
@@ -436,12 +494,12 @@ impl ArgDeclaration {
         match self {
             Self::Discard { ty, .. } | Self::Unit { ty, .. } | Self::Simple { ty, .. } => {
                 if let Some(ty) = ty {
-                    *ty = ty.clone().replace_user_with_generic(generic);
+                    take_mut::take(ty,|ty| ty.replace_user_with_generic(generic));
                 }
             }
             Self::DestructureTuple(contents, ty, _) => {
                 if let Some(ty) = ty {
-                    *ty = ty.clone().replace_user_with_generic(generic);
+                    take_mut::take(ty,|ty| ty.replace_user_with_generic(generic));
                 }
                 contents.iter_mut().for_each(|it| it.apply_generic(generic))
             }
@@ -539,11 +597,27 @@ impl ValueDeclaration {
         output.extend(dependencies);
         output
     }
+    
+    fn apply_generic(&mut self, generic: &str) {
+        let Self {
+            ty,
+            args,
+            value,
+            ..
+        } = self;
+        if let Some(ty) = ty.as_mut() {
+            ty.replace_generic_inplace(generic);
+        }
+        for arg in args {
+            arg.apply_generic(generic);
+        }
+        value.apply_generic(generic);
+    }
 }
 #[derive(PartialEq, Debug)]
 pub enum ValueType {
     Expr(Expr),
-    Function(Vec<Statement>),
+    Function(Block),
     External,
 }
 impl ValueType {
@@ -551,6 +625,7 @@ impl ValueType {
         match self {
             Self::Expr(expr) => expr.replace(nice_name, actual),
             Self::Function(stmnts) => stmnts
+                .statements
                 .iter_mut()
                 .for_each(|it| it.replace(nice_name, actual)),
             Self::External => (),
@@ -560,8 +635,9 @@ impl ValueType {
     fn get_dependencies(&self, known_values: Vec<String>) -> HashSet<String> {
         match self {
             Self::Expr(expr) => expr.get_dependencies(known_values),
-            Self::Function(stmnts) => {
-                stmnts
+            Self::Function(block) => {
+                let (values,mut deps) = block
+                    .statements //todo! add the implicit ret
                     .iter()
                     .fold(
                         (known_values, HashSet::new()),
@@ -573,9 +649,21 @@ impl ValueType {
                             (known_values, dependencies)
                         },
                     )
-                    .1
+                    ;
+                if let Some(ret) = &block.implicit_ret {
+                    deps.extend(ret.get_dependencies(values));
+                }
+                deps
             }
             Self::External => HashSet::new(),
+        }
+    }
+
+    fn apply_generic(&mut self, generic:&str) {
+        match self {
+            ValueType::Expr(expr) => expr.apply_generic(generic),
+            ValueType::Function(block) => block.apply_generic(generic),
+            ValueType::External => (),
         }
     }
 }
@@ -584,10 +672,12 @@ impl ValueType {
 pub enum Statement {
     Declaration(ValueDeclaration),
     Return(Expr, crate::Location),
+    #[deprecated(note = "use expr instead.")]
     FnCall(FnCall),
     Pipe(Pipe),
-    IfStatement(IfBranching),
+    IfStatement(If),
     Match(Match),
+    Expr(Expr),
     Error,
 }
 impl Statement {
@@ -597,8 +687,9 @@ impl Statement {
             Self::Return(expr, _) => expr.replace(nice_name, actual),
             Self::FnCall(fncall) => fncall.replace(nice_name, actual),
             Self::Pipe(_) => todo!(),
-            Self::IfStatement(ifbranches) => ifbranches.replace(nice_name, actual),
+            Self::IfStatement(ifbranches) => todo!(), //ifbranches.replace(nice_name, actual),
             Self::Match(match_) => match_.replace(nice_name, actual),
+            Self::Expr(e) => e.replace(nice_name, actual),
             Self::Error => (),
         }
     }
@@ -611,71 +702,116 @@ impl Statement {
             Self::Pipe(_) => todo!(),
             Self::IfStatement(if_) => if_.loc,
             Self::Match(match_) => match_.loc,
+            Self::Expr(e) => e.get_loc(),
             Self::Error => (0, 0),
         }
     }
 
     fn get_dependencies(&self, known_values: Vec<String>) -> HashSet<String> {
         match self {
-            Statement::Declaration(decl) => decl.get_dependencies(),
-            Statement::Return(expr, _) => expr.get_dependencies(known_values),
-            Statement::FnCall(fncall) => fncall.get_dependencies(known_values),
-            Statement::Pipe(_) => todo!(),
-            Statement::IfStatement(if_) => {
+            Self::Declaration(decl) => decl.get_dependencies(),
+            Self::Return(expr, _) => expr.get_dependencies(known_values),
+            Self::FnCall(fncall) => fncall.get_dependencies(known_values),
+            Self::Pipe(_) => todo!(),
+            Self::Expr(e) => e.get_dependencies(known_values),
+            Self::IfStatement(if_) => {
                 let mut dependencies = if_.cond.get_dependencies(known_values.clone());
                 {
                     let mut known_values = known_values.clone();
-                    for stmnt in &if_.true_branch {
+                    for stmnt in &if_.true_branch.statements {
                         dependencies.extend(stmnt.get_dependencies(known_values.clone()));
-                        if let Statement::Declaration(decl) = stmnt {
+                        if let Self::Declaration(decl) = stmnt {
                             known_values.extend(decl.target.get_idents());
                         }
                     }
                 }
-                for elif in &if_.else_ifs {
+                /*for elif in &if_.else_ifs {
                     dependencies.extend(elif.0.get_dependencies(known_values.clone()));
                     {
                         let mut known_values = known_values.clone();
                         for stmnt in &elif.1 {
                             dependencies.extend(stmnt.get_dependencies(known_values.clone()));
-                            if let Statement::Declaration(decl) = stmnt {
+                            if let Self::Declaration(decl) = stmnt {
                                 known_values.extend(decl.target.get_idents());
                             }
                         }
                     }
-                }
+                }*/
                 {
                     let mut known_values = known_values.clone();
-                    for stmnt in &if_.else_branch {
+                    for stmnt in if_
+                        .else_branch
+                        .as_ref()
+                        .map(|b| &b.statements)
+                        .unwrap_or(&Vec::new())
+                    {
                         dependencies.extend(stmnt.get_dependencies(known_values.clone()));
-                        if let Statement::Declaration(decl) = stmnt {
+                        if let Self::Declaration(decl) = stmnt {
                             known_values.extend(decl.target.get_idents());
                         }
                     }
                 }
                 dependencies
             }
-            Statement::Match(match_) => {
+            Self::Match(match_) => {
                 let mut dependencies = match_.on.get_dependencies(known_values.clone());
                 for arm in &match_.arms {
                     {
                         let mut known_values = known_values.clone();
-                        for stmnt in &arm.block {
+                        for stmnt in &arm.block.statements {
                             dependencies.extend(stmnt.get_dependencies(known_values.clone()));
-                            if let Statement::Declaration(decl) = stmnt {
+                            if let Self::Declaration(decl) = stmnt {
                                 known_values.extend(decl.target.get_idents());
                             }
                         }
-                        if let Some(ret) = &arm.ret {
+                        if let Some(ret) = &arm.block.implicit_ret {
                             dependencies.extend(ret.get_dependencies(known_values));
                         }
                     }
                 }
                 dependencies
             }
-            Statement::Error => todo!(),
+            Self::Error => todo!(),
         }
     }
+    
+    fn apply_generic(&mut self, generic: &str) {
+        match self {
+            Self::Declaration(value_declaration) => value_declaration.apply_generic(generic),
+            Self::FnCall(fn_call) => (),// replaced.
+            Self::Pipe(pipe) => todo!(),
+            Self::IfStatement(_) => todo!(),
+            Self::Match(match_) => match_.apply_generic(generic),
+            Self::Return(expr, _) |
+            Self::Expr(expr) => (),//todo! apply generics for exprs
+            Self::Error => (),
+        }
+    }
+}
+
+#[derive(PartialEq, Debug)]
+pub struct Block {
+    pub statements: Vec<Statement>,
+    pub implicit_ret: Option<Box<Expr>>,
+}
+impl Block {
+    fn apply_generic(&mut self, generic: &str) {
+        let Self {
+            statements,
+            .. //todo handle expressions
+        } = self;
+        for statement in statements {
+            statement.apply_generic(generic);
+        }
+    }
+}
+
+#[derive(PartialEq, Debug)]
+pub struct If {
+    pub loc: crate::Location,
+    pub cond: Box<Expr>,
+    pub true_branch: Block,
+    pub else_branch: Option<Block>,
 }
 
 #[derive(PartialEq, Debug)]
@@ -833,7 +969,7 @@ pub enum Expr {
 
     StructConstruction(StructConstruction),
     BoolLiteral(bool, crate::Location),
-    If(IfExpr),
+    If(If),
     Match(Match),
 }
 impl Expr {
@@ -855,7 +991,7 @@ impl Expr {
                 lhs.replace(nice_name, actual);
                 rhs.replace(nice_name, actual);
             }
-            Expr::If(ifexpr) => ifexpr.replace(nice_name, actual),
+            Expr::If(ifexpr) => todo!(), //ifexpr.replace(nice_name, actual),
             Expr::Match(match_) => match_.replace(nice_name, actual),
             _ => (),
         }
@@ -909,36 +1045,50 @@ impl Expr {
                 let mut dependencies = if_.cond.get_dependencies(known_values.clone());
                 {
                     let mut known_values = known_values.clone();
-                    for stmnt in &if_.true_branch.0 {
+                    for stmnt in &if_.true_branch.statements {
                         dependencies.extend(stmnt.get_dependencies(known_values.clone()));
                         if let Statement::Declaration(decl) = stmnt {
                             known_values.extend(decl.target.get_idents());
                         }
                     }
-                    dependencies.extend(if_.true_branch.1.get_dependencies(known_values));
+                    dependencies.extend(
+                        if_.true_branch
+                            .implicit_ret
+                            .as_ref()
+                            .unwrap()
+                            .get_dependencies(known_values),
+                    );
                 }
-                for elif in &if_.else_ifs {
-                    dependencies.extend(elif.0.get_dependencies(known_values.clone()));
-                    {
-                        let mut known_values = known_values.clone();
-                        for stmnt in &elif.1 {
-                            dependencies.extend(stmnt.get_dependencies(known_values.clone()));
-                            if let Statement::Declaration(decl) = stmnt {
-                                known_values.extend(decl.target.get_idents());
-                            }
-                        }
-                        dependencies.extend(elif.2.get_dependencies(known_values));
-                    }
-                }
+                // for elif in &if_.else_ifs {
+                //     dependencies.extend(elif.0.get_dependencies(known_values.clone()));
+                //     {
+                //         let mut known_values = known_values.clone();
+                //         for stmnt in &elif.1 {
+                //             dependencies.extend(stmnt.get_dependencies(known_values.clone()));
+                //             if let Statement::Declaration(decl) = stmnt {
+                //                 known_values.extend(decl.target.get_idents());
+                //             }
+                //         }
+                //         dependencies.extend(elif.2.get_dependencies(known_values));
+                //     }
+                // }
                 {
                     let mut known_values = known_values.clone();
-                    for stmnt in &if_.else_branch.0 {
+                    for stmnt in &if_.else_branch.as_ref().unwrap().statements {
                         dependencies.extend(stmnt.get_dependencies(known_values.clone()));
                         if let Statement::Declaration(decl) = stmnt {
                             known_values.extend(decl.target.get_idents());
                         }
                     }
-                    dependencies.extend(if_.else_branch.1.get_dependencies(known_values));
+                    dependencies.extend(
+                        if_.else_branch
+                            .as_ref()
+                            .unwrap()
+                            .implicit_ret
+                            .as_ref()
+                            .unwrap()
+                            .get_dependencies(known_values),
+                    );
                 }
                 dependencies
             }
@@ -947,19 +1097,82 @@ impl Expr {
                 for arm in &match_.arms {
                     {
                         let mut known_values = known_values.clone();
-                        for stmnt in &arm.block {
+                        for stmnt in &arm.block.statements {
                             dependencies.extend(stmnt.get_dependencies(known_values.clone()));
                             if let Statement::Declaration(decl) = stmnt {
                                 known_values.extend(decl.target.get_idents());
                             }
                         }
-                        if let Some(ret) = &arm.ret {
+                        if let Some(ret) = &arm.block.implicit_ret {
                             dependencies.extend(ret.get_dependencies(known_values));
                         }
                     }
                 }
                 dependencies
             }
+        }
+    }
+    pub fn get_loc(&self) -> crate::Location {
+        match self {
+            Expr::NumericLiteral { .. }
+            | Expr::StringLiteral(_)
+            | Expr::CharLiteral(_)
+            | Expr::UnitLiteral
+            | Expr::Error => (0, 0),
+            Expr::Compose { lhs, rhs } => todo!("REMOVE"),
+            Expr::UnaryOpCall(UnaryOpCall { loc, .. })
+            | Expr::FnCall(FnCall { loc, .. })
+            | Expr::ValueRead(_, loc)
+            | Expr::ArrayLiteral { loc, .. }
+            | Expr::ListLiteral { loc, .. }
+            | Expr::TupleLiteral { loc, .. }
+            | Expr::StructConstruction(StructConstruction { loc, .. })
+            | Expr::If(If { loc, .. })
+            | Expr::BoolLiteral(_, loc)
+            | Expr::Match(Match { loc, .. })
+            | Expr::BinaryOpCall(BinaryOpCall { loc, .. }) => *loc,
+        }
+    }
+
+    fn apply_generic(&mut self, generic:&str) {
+        match self {
+            Expr::Error|
+            Expr::NumericLiteral { .. }|
+            Expr::StringLiteral(_) |
+            Expr::CharLiteral(_) |
+            Expr::UnitLiteral => (),
+            Expr::BinaryOpCall(BinaryOpCall{ lhs, rhs, .. }) |
+            Expr::Compose { lhs, rhs } => {
+                lhs.apply_generic(generic);
+                rhs.apply_generic(generic);
+            },
+            Expr::UnaryOpCall(unary_op_call) => todo!("unary ops not implemented yet."),
+            Expr::FnCall(FnCall {value, arg,..}) => {
+                value.apply_generic(generic);
+                if let Some(arg) = arg {
+                    arg.apply_generic(generic)
+                }
+
+            },
+            Expr::ValueRead(_, _) => (),// TODO! apply generics to explicit generic args
+            Expr::ArrayLiteral { contents, .. } |
+            Expr::ListLiteral { contents, .. } |
+            Expr::TupleLiteral { contents, .. } =>{
+                for expr in contents {
+                    expr.apply_generic(generic);
+                }
+            },
+            Expr::StructConstruction(StructConstruction{ fields, .. }) => todo!("struct Constsructions"),
+            Expr::BoolLiteral(_, _) => (),
+            Expr::If(If { cond, true_branch, else_branch, .. }) => {
+                cond.apply_generic(generic);
+                true_branch.apply_generic(generic);
+                else_branch.as_mut().unwrap()//else would be a parse error
+                .apply_generic(generic);
+            },
+            Expr::Match(match_) => {
+                match_.apply_generic(generic);
+            },
         }
     }
 }
@@ -1009,26 +1222,40 @@ impl Match {
             arm.replace(nice_name, actual);
         }
     }
+    
+    fn apply_generic(&mut self, generic: &str) {
+        let Self {
+            on:_,// todo! apply generics to expr
+            arms,
+            ..
+        } = self;
+        for MatchArm { block, .. } in arms {
+            block.apply_generic(generic);
+            
+        }
+    }
 }
 
 #[derive(Debug, PartialEq)]
 pub struct MatchArm {
-    pub block: Vec<Statement>,
-    pub ret: Option<Box<Expr>>,
+    pub block: Block,
     pub cond: Pattern,
     pub loc: crate::Location,
 }
 impl MatchArm {
     fn replace(&mut self, nice_name: &str, actual: &str) {
-        self.cond.replace(nice_name,actual);
+        self.cond.replace(nice_name, actual);
         let names = self.cond.get_idents();
         if names.contains(nice_name) {
             return;
         }
-        for stmnt in &mut self.block {
+        for stmnt in &mut self.block.statements {
             stmnt.replace(nice_name, actual);
         }
-        self.ret.as_mut().map(|it| it.replace(nice_name, actual));
+        self.block
+            .implicit_ret
+            .as_mut()
+            .map(|it| it.replace(nice_name, actual));
 
         //TODO! allowing for named consts in patterns and handling replacing them with cannon names.
     }
@@ -1079,10 +1306,9 @@ impl Pattern {
             _ => HashSet::new(),
         }
     }
-    
+
     fn replace(&mut self, nice_name: &str, actual: &str) {
         match self {
-            
             Self::Destructure(destructure) => match destructure {
                 PatternDestructure::Struct { base_ty, .. } => {
                     if let Some(ty) = base_ty {
@@ -1090,15 +1316,20 @@ impl Pattern {
                             *ty = actual.into();
                         }
                     }
-                },
+                }
                 PatternDestructure::Tuple(pats) => {
                     for pat in pats {
-                        pat.replace(nice_name,actual)
+                        pat.replace(nice_name, actual)
                     }
-                },
+                }
                 PatternDestructure::Unit => (),
             },
-            Self::EnumVariant { ty, variant, pattern, .. } => {
+            Self::EnumVariant {
+                ty,
+                variant,
+                pattern,
+                ..
+            } => {
                 if let Some(ty) = ty {
                     if ty == nice_name {
                         *ty = actual.into();
@@ -1109,15 +1340,15 @@ impl Pattern {
                     }
                 }
                 if let Some(pat) = pattern {
-                    pat.replace(nice_name,actual);
+                    pat.replace(nice_name, actual);
                 }
-            },
-            
-            Self::Or(lhs, rhs) => {
-                lhs.replace(nice_name,actual);
-                rhs.replace(nice_name,actual);
             }
-            _=>()
+
+            Self::Or(lhs, rhs) => {
+                lhs.replace(nice_name, actual);
+                rhs.replace(nice_name, actual);
+            }
+            _ => (),
         }
     }
 }
