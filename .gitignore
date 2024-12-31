@@ -2,5 +2,8 @@ target
 [Cc]argo.lock
 *.llvm
 *.ll
+**/*.mlir
 # used for debugging.  no need to check it in
 out.txt 
+**/build
+**/.cache

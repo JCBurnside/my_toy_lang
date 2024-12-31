@@ -1,4 +1,4 @@
 [workspace]
 default-members = ["cli"]
-members = ["cli","langstd","compiler", "llvm-codegen"]
+members = ["cli","langstd","compiler", "llvm-codegen", "mlir-codegen"]
 resolver = "2"
