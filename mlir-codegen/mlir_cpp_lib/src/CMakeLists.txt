@@ -2,7 +2,8 @@ add_mlir_dialect_library(
     FflatMlir
     lib.cpp
     builder.cpp
-    types.cpp
+    fflat_types.cpp
+    ops.cpp
     
     DEPENDS
     MLIRFflatOpsIncGen
@@ -15,13 +16,13 @@ add_mlir_dialect_library(
 )
 add_dependencies(FflatMlir bridge_headers)
 target_link_libraries(FflatMlir
-PRIVATE
-MLIRAnalysis
-MLIRFunctionInterfaces
-MLIRIR
-MLIRParser
-MLIRSideEffectInterfaces
-MLIRTransforms)
+PUBLIC
+libMLIRAnalysis.a
+libMLIRFunctionInterfaces.a
+libMLIRIR.a
+libMLIRParser.a
+libMLIRSideEffectInterfaces.a
+libMLIRTransforms.a)
 install(
     TARGETS FflatMlir
 )

@@ -124,15 +124,15 @@ fn main() {
             }
         }
         Ok(ast) => {
-            if dbg!(args.run) {
-                let mut jit = llvm_codegen::create_jit_runtime();
-                jit.add_declarations(ast.declarations);
-                unsafe {
-                    jit.run_function::<unsafe extern "C" fn()>("main", ());
-                }
-            } else if dbg!(args.output_llvm) {
-                llvm_codegen::compile_file(ast, args.file, args.out_file, fwd_decl)
-            }
+            // if dbg!(args.run) {
+            //     let mut jit = llvm_codegen::create_jit_runtime();
+            //     jit.add_declarations(ast.declarations);
+            //     unsafe {
+            //         jit.run_function::<unsafe extern "C" fn()>("main", ());
+            //     }
+            // } else if dbg!(args.output_llvm) {
+            //     llvm_codegen::compile_file(ast, args.file, args.out_file, fwd_decl)
+            // }
         }
     }
 }

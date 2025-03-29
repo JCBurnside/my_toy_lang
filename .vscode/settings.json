@@ -2,5 +2,9 @@
     "cSpell.words": [
         "Itertools",
         "rustfmt"
-    ]
+    ],
+    "cmake.sourceDirectory": "/home/pixel/my_toy_lang/mlir-codegen/mlir_cpp_lib",
+    "files.associations": {
+        "*.inc": "cpp"
+    }
 }

@@ -24,10 +24,11 @@ else()
     add_custom_target(bridge_headers)#empty target so that it works no matter
 endif()
 
+list(APPEND CMAKE_PREFIX_PATH "/usr/lib/llvm-20/lib/cmake/mlir")
+list(APPEND CMAKE_MODULE_PATH "/usr/lib/llvm-20/lib/cmake/mlir")
 find_package(LLVM CONFIG REQUIRED)
 find_package(MLIR CONFIG REQUIRED)
 include(AddLLVM)
-list(APPEND CMAKE_MODULE_PATH "/usr/lib/llvm-18/lib/cmake/mlir")
 include(TableGen)
 include(AddMLIR)
 include_directories(${LLVM_INCLUDE_DIRS})

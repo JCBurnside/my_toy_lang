@@ -8,4 +8,4 @@ edition = "2021"
 [dependencies]
 compiler = {path = '../compiler' }
 clap = { version = "4.1.4", features = ["derive"] }
-llvm-codegen = {path = "../llvm-codegen"}
+# llvm-codegen = {path = "../llvm-codegen"}

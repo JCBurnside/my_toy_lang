@@ -6,7 +6,7 @@
 #include "mlir/IR/OwningOpRef.h"
 #include <fstream>
 #include <iostream>
-#include <llvm-18/llvm/Support/raw_ostream.h>
+#include <llvm/Support/raw_ostream.h>
 #include <memory>
 #include <stdexcept>
 #include <system_error>

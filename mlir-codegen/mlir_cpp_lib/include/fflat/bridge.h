@@ -30,4 +30,6 @@ struct Builder {
 
 ::std::unique_ptr<Builder> make_builder();
 
+void test();
+
 } // namespace fflat

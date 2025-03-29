@@ -34,6 +34,7 @@ mod ffi {
     #[namespace = "fflat"]
     unsafe extern "C++" {
         include!("fflat/bridge.h");
+        fn test();
         pub type Builder;
         pub fn make_builder() -> UniquePtr<Builder>; 
         pub fn dump(self:Pin<&mut Builder>);
