@@ -1,3 +1,4 @@
+use std::ops::Range;
 use std::path::PathBuf;
 use std::{cmp::Ordering, collections::HashMap};
 
@@ -41,7 +42,26 @@ pub enum WarningAndError {
 // use lexer::TokenStream;
 // use parser::{Parser, ParserReturns};
 use types::ResolvedType;
-type Location = (usize, usize);
+// type Location = (usize, usize);
+
+#[derive(Clone, PartialEq, Eq, Debug, Hash)]
+pub enum Location {
+    User {
+
+        file : String,
+        span : Range<usize>,
+    },
+    Language,
+}
+#[cfg(test)]
+impl From<(usize,usize)> for Location {
+    fn from(value: (usize,usize)) -> Self {
+        Self::User {
+            file : "".into(),
+            span : value.0 .. value.1
+        }
+    }
+}
 
 pub fn get_untyped_ast(
     input: &str,
@@ -64,7 +84,7 @@ pub fn get_untyped_ast(
     (ast,Vec::new())
 }
 
-pub fn get_ast(input: &str, file_name: &str) -> typed_ast::TypedModuleDeclaration {
+pub fn get_ast(_input: &str, _file_name: &str) -> typed_ast::TypedModuleDeclaration {
     todo!("fix parsing.")
     // let ts = TokenStream::from_source(input);
     // let ParserReturns {

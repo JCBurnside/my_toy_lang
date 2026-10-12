@@ -225,7 +225,6 @@ impl<'ctx> TypeResolver<'ctx> {
         let ResolvedType::Function {
             arg,
             returns,
-            loc: _,
         } = ty
         else {
             unreachable!("trying to make a non function type into a function")

@@ -101,7 +101,6 @@ pub enum ResolvedType {
     Function {
         arg: Box<Self>,
         returns: Box<Self>,
-        loc: crate::Location,
     },
     User {
         name: String,
@@ -240,7 +239,6 @@ impl ResolvedType {
             Self::Function {
                 arg,
                 returns,
-                loc: _,
             } => {
                 arg.replace_unknown_with(id, ty.clone());
                 returns.replace_unknown_with(id, ty);
@@ -268,7 +266,6 @@ impl ResolvedType {
         } else if let Self::Function {
             arg,
             returns,
-            loc: _,
         } = self
         {
             arg.check_equality(&args[0]) && returns.check_function(&args[1..])
@@ -281,7 +278,6 @@ impl ResolvedType {
         Self::Function {
             arg: self.clone().into(),
             returns: returns.clone().into(),
-            loc: (0, 0),
         }
     }
 
@@ -327,7 +323,6 @@ impl ResolvedType {
             Self::Function {
                 arg,
                 returns,
-                loc: _,
             } => {
                 let mut tys = arg.get_all_types();
                 tys.extend(returns.get_all_types().into_iter());
@@ -364,10 +359,9 @@ impl ResolvedType {
     pub fn replace_generic(&self, name: &str, new_ty: Self) -> Self {
         match self {
             Self::Generic { name: old_name, .. } if old_name == name => new_ty,
-            Self::Function { arg, returns, loc } => Self::Function {
+            Self::Function { arg, returns } => Self::Function {
                 arg: Box::new(arg.replace_generic(name, new_ty.clone())),
                 returns: Box::new(returns.replace_generic(name, new_ty)),
-                loc: *loc,
             },
             _ => self.clone(),
         }
@@ -424,10 +418,9 @@ impl ResolvedType {
             ResolvedType::Slice { underlining } => Self::Slice {
                 underlining: underlining.replace_user_with_generic(target_name).into(),
             },
-            ResolvedType::Function { arg, returns, loc } => Self::Function {
+            ResolvedType::Function { arg, returns, } => Self::Function {
                 arg: arg.replace_user_with_generic(target_name).into(),
                 returns: returns.replace_user_with_generic(target_name).into(),
-                loc: loc,
             },
             ResolvedType::Array {
                 underlining: underlying,
@@ -518,7 +511,7 @@ impl ResolvedType {
                     Self::User {
                         name: actual.to_string(),
                         generics: generics.clone(),
-                        loc: *loc,
+                        loc: loc.clone(),
                     }
                 } else {
                     Self::User {
@@ -527,14 +520,13 @@ impl ResolvedType {
                             .iter()
                             .map(|it| it.replace(nice_name, actual))
                             .collect(),
-                        loc: *loc,
+                        loc: loc.clone(),
                     }
                 }
             }
-            Self::Function { arg, returns, loc } => Self::Function {
+            Self::Function { arg, returns, } => Self::Function {
                 arg: arg.replace(nice_name, actual).into(),
                 returns: returns.replace(nice_name, actual).into(),
-                loc: *loc,
             },
             _ => self.clone(),
         }
@@ -562,7 +554,7 @@ impl ResolvedType {
         match self {
             Self::Number //since it can be one of many types.
             | Self::Unknown(_) => true,
-            Self::Function { arg, returns, loc:_ } => arg.is_unknown() || returns.is_unknown(),
+            Self::Function { arg, returns,  } => arg.is_unknown() || returns.is_unknown(),
             _ => false,
         }
     }
@@ -593,7 +585,6 @@ impl ResolvedType {
             Self::Function {
                 arg,
                 returns,
-                loc: _,
             } => {
                 let mut out = arg.get_dependant_unknowns();
                 out.extend(returns.get_dependant_unknowns());
@@ -622,7 +613,6 @@ impl ResolvedType {
             Self::Function {
                 arg,
                 returns,
-                loc: _,
             } => arg.contains_unknown(id) || returns.contains_unknown(id),
             _ => false,
         }
@@ -644,7 +634,7 @@ impl ResolvedType {
                     //TODO! generate error if there are generics.
                 
                 }
-                *self = Self::Generic { name: generic.into(), loc: *loc };
+                *self = Self::Generic { name: generic.into(), loc: loc.clone() };
             }
             _ => (),
         }
@@ -768,24 +758,3 @@ mod consts {
 }
 pub use consts::*;
 
-#[cfg(test)]
-mod tests {
-
-    use pretty_assertions::assert_eq;
-    #[test]
-    #[ignore = "for testing equality"]
-    fn eq() {
-        println!(
-            "{}",
-            super::ResolvedType::Function {
-                arg: super::INT32.into(),
-                returns: super::INT32.into(),
-                loc: (0, 0)
-            } == super::ResolvedType::Function {
-                arg: super::INT32.into(),
-                returns: super::INT32.into(),
-                loc: (1, 0)
-            }
-        )
-    }
-}

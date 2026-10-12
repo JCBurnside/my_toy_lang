@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::convert::TryInto;
 use std::iter::once;
 
+use compiler::Location;
 use compiler::ast::EnumVariant;
 use inkwell::attributes::Attribute;
 use inkwell::basic_block::BasicBlock;
@@ -108,6 +109,7 @@ impl<'ctx> CodeGen<'ctx> {
 
     fn compile_arg(&mut self, arg: &TypedArgDeclaration, value: BasicValueEnum<'ctx>) {
         match arg {
+            TypedArgDeclaration::Unit { loc:_, ty:_ } => {}
             TypedArgDeclaration::Discard { .. } => {
                 //todo! check if drop/whatever I will call it is needed
             }
@@ -142,9 +144,6 @@ impl<'ctx> CodeGen<'ctx> {
                 renamed_fields,
             } => {
                 todo!("todo destructuring struct args")
-            }
-            TypedArgDeclaration::Discard { loc, ty } | TypedArgDeclaration::Unit { loc, ty } => {
-                //TODO debug info for these args.
             }
         }
     }
@@ -198,29 +197,30 @@ impl<'ctx> CodeGen<'ctx> {
                     DIFlags::PUBLIC,
                 )
             };
-            let fun_scope = dibuilder.create_function(
-                difile.as_debug_info_scope(),
-                &decl.ident,
-                Some(&decl.ident),
-                difile.clone(),
-                decl.loc.0.try_into().unwrap(),
-                fnty,
-                false, //TODO will be based on access level.
-                true, //TODO deal with foward declares.  likely to come with multiple file programs and external linking
-                decl.loc.0.try_into().unwrap(),
-                DIFlags::PUBLIC,
-                false,
-            );
-            v.set_subprogram(fun_scope);
-            let _loc = dibuilder.create_debug_location(
-                self.ctx,
-                decl.loc.0.try_into().unwrap(),
-                decl.loc.1.try_into().unwrap(),
-                fun_scope.as_debug_info_scope(),
-                None,
-            );
-            // self.builder.set_current_debug_location(loc);
-            self.difunction = Some(fun_scope);
+            todo!("DEBUG INFO!!!")
+            // let fun_scope = dibuilder.create_function(
+            //     difile.as_debug_info_scope(),
+            //     &decl.ident,
+            //     Some(&decl.ident),
+            //     difile.clone(),
+            //     decl.loc.0.try_into().unwrap(),
+            //     fnty,
+            //     false, //TODO will be based on access level.
+            //     true, //TODO deal with foward declares.  likely to come with multiple file programs and external linking
+            //     decl.loc.0.try_into().unwrap(),
+            //     DIFlags::PUBLIC,
+            //     false,
+            // );
+            // v.set_subprogram(fun_scope);
+            // let _loc = dibuilder.create_debug_location(
+            //     self.ctx,
+            //     decl.loc.0.try_into().unwrap(),
+            //     decl.loc.1.try_into().unwrap(),
+            //     fun_scope.as_debug_info_scope(),
+            //     None,
+            // );
+            // // self.builder.set_current_debug_location(loc);
+            // self.difunction = Some(fun_scope);
         }
         let args_block = self.ctx.append_basic_block(v, "arg_declarations");
         self.builder.position_at_end(args_block);
@@ -281,72 +281,74 @@ impl<'ctx> CodeGen<'ctx> {
                 .unwrap();
             self.compile_arg(arg, gep.as_basic_value_enum());
             if let Some(fnscope) = &self.difunction {
-                let Some(dibuilder) = &self.dibuilder else {
-                    unreachable!()
-                };
-                let Some(file) = &self.difile else {
-                    unreachable!()
-                };
-                let ty = &decl.ty.as_c_function().0[idx];
-                let ty = self.ditypes[&ty.to_string()];
-                let local = dibuilder.create_parameter_variable(
-                    fnscope.as_debug_info_scope(),
-                    &arg.get_ident(),
-                    idx as u32 + 1,
-                    file.clone(),
-                    decl.loc.0.try_into().unwrap(),
-                    ty,
-                    true,
-                    DIFlags::TYPE_PASS_BY_VALUE,
-                );
-                let diloc = dibuilder.create_debug_location(
-                    self.ctx,
-                    arg.get_loc().0.try_into().unwrap(),
-                    arg.get_loc().1.try_into().unwrap(),
-                    fnscope.as_debug_info_scope(),
-                    None,
-                );
-                // dibuilder.insert_declare_at_end(arg, Some(local), None, diloc, args_block);
-                self.dilocals.insert(arg.get_ident(), local);
+                // let Some(dibuilder) = &self.dibuilder else {
+                //     unreachable!()
+                // };
+                // let Some(file) = &self.difile else {
+                //     unreachable!()
+                // };
+                // let ty = &decl.ty.as_c_function().0[idx];
+                // let ty = self.ditypes[&ty.to_string()];
+                // let local = dibuilder.create_parameter_variable(
+                //     fnscope.as_debug_info_scope(),
+                //     &arg.get_ident(),
+                //     idx as u32 + 1,
+                //     file.clone(),
+                //     decl.loc.0.try_into().unwrap(),
+                //     ty,
+                //     true,
+                //     DIFlags::TYPE_PASS_BY_VALUE,
+                // );
+                // let diloc = dibuilder.create_debug_location(
+                //     self.ctx,
+                //     arg.get_loc().0.try_into().unwrap(),
+                //     arg.get_loc().1.try_into().unwrap(),
+                //     fnscope.as_debug_info_scope(),
+                //     None,
+                // );
+                // // dibuilder.insert_declare_at_end(arg, Some(local), None, diloc, args_block);
+                // self.dilocals.insert(arg.get_ident(), local);
+                todo!("DEBUG INFO")
             }
         }
         let last_param = v.get_last_param().unwrap();
         let last_param_info = decl.args.last().unwrap();
         self.compile_arg(last_param_info, last_param);
         if let Some(fnscope) = &self.difunction {
-            let Some(dibuilder) = &self.dibuilder else {
-                unreachable!()
-            };
-            let Some(file) = &self.difile else {
-                unreachable!()
-            };
-            let types = decl.ty.as_c_function().0;
-            let ty = types.last().unwrap();
-            let ty_name = if ty.is_function() {
-                "<Function>".to_string()
-            } else {
-                ty.to_string()
-            };
-            let ty = self.ditypes[&ty_name];
-            let local = dibuilder.create_parameter_variable(
-                fnscope.as_debug_info_scope(),
-                &last_param_info.get_ident(),
-                decl.args.len() as u32 + 1,
-                file.clone(),
-                decl.loc.0.try_into().unwrap(),
-                ty,
-                true,
-                DIFlags::TYPE_PASS_BY_VALUE,
-            );
-            let diloc = dibuilder.create_debug_location(
-                self.ctx,
-                last_param_info.get_loc().0.try_into().unwrap(),
-                last_param_info.get_loc().1.try_into().unwrap(),
-                fnscope.as_debug_info_scope(),
-                None,
-            );
-            // dibuilder.insert_declare_at_end(arg, Some(local), None, diloc, args_block);
-            self.dilocals.insert(last_param_info.get_ident(), local);
+            // let Some(dibuilder) = &self.dibuilder else {
+            //     unreachable!()
+            // };
+            // let Some(file) = &self.difile else {
+            //     unreachable!()
+            // };
+            // let types = decl.ty.as_c_function().0;
+            // let ty = types.last().unwrap();
+            // let ty_name = if ty.is_function() {
+            //     "<Function>".to_string()
+            // } else {
+            //     ty.to_string()
+            // };
+            // let ty = self.ditypes[&ty_name];
+            // let local = dibuilder.create_parameter_variable(
+            //     fnscope.as_debug_info_scope(),
+            //     &last_param_info.get_ident(),
+            //     decl.args.len() as u32 + 1,
+            //     file.clone(),
+            //     decl.loc.0.try_into().unwrap(),
+            //     ty,
+            //     true,
+            //     DIFlags::TYPE_PASS_BY_VALUE,
+            // );
+            // let diloc = dibuilder.create_debug_location(
+            //     self.ctx,
+            //     last_param_info.get_loc().0.try_into().unwrap(),
+            //     last_param_info.get_loc().1.try_into().unwrap(),
+            //     fnscope.as_debug_info_scope(),
+            //     None,
+            // );
+            // // dibuilder.insert_declare_at_end(arg, Some(local), None, diloc, args_block);
+            // self.dilocals.insert(last_param_info.get_ident(), local);
+            todo!("DEBUG INFO")
         }
 
         let ret_block = self.ctx.append_basic_block(v, "ret"); //this is what will be used to return
@@ -422,37 +424,38 @@ impl<'ctx> CodeGen<'ctx> {
                 let target = self.builder.build_alloca(ty, &name).unwrap();
                 self.builder.build_store(target, value).unwrap();
                 if let Some(fnscope) = &self.difunction {
-                    let Some(dibuilder) = &self.dibuilder else {
-                        unreachable!()
-                    };
-                    let Some(file) = &self.difile else {
-                        unreachable!()
-                    };
-                    let diloc = dibuilder.create_debug_location(
-                        self.ctx,
-                        loc.0.try_into().unwrap(),
-                        loc.1.try_into().unwrap(),
-                        fnscope.as_debug_info_scope(),
-                        None,
-                    );
-                    let local = dibuilder.create_auto_variable(
-                        fnscope.as_debug_info_scope(),
-                        &name,
-                        file.clone(),
-                        loc.0.try_into().unwrap(),
-                        self.ditypes[&ty.to_string()],
-                        false,
-                        DIFlags::ZERO,
-                        0,
-                    );
-                    self.dilocals.insert(name.clone(), local);
-                    dibuilder.insert_declare_at_end(
-                        target,
-                        Some(local),
-                        None,
-                        diloc,
-                        self.builder.get_insert_block().unwrap(),
-                    );
+                    // let Some(dibuilder) = &self.dibuilder else {
+                    //     unreachable!()
+                    // };
+                    // let Some(file) = &self.difile else {
+                    //     unreachable!()
+                    // };
+                    // let diloc = dibuilder.create_debug_location(
+                    //     self.ctx,
+                    //     loc.0.try_into().unwrap(),
+                    //     loc.1.try_into().unwrap(),
+                    //     fnscope.as_debug_info_scope(),
+                    //     None,
+                    // );
+                    // let local = dibuilder.create_auto_variable(
+                    //     fnscope.as_debug_info_scope(),
+                    //     &name,
+                    //     file.clone(),
+                    //     loc.0.try_into().unwrap(),
+                    //     self.ditypes[&ty.to_string()],
+                    //     false,
+                    //     DIFlags::ZERO,
+                    //     0,
+                    // );
+                    // self.dilocals.insert(name.clone(), local);
+                    // dibuilder.insert_declare_at_end(
+                    //     target,
+                    //     Some(local),
+                    //     None,
+                    //     diloc,
+                    //     self.builder.get_insert_block().unwrap(),
+                    // );
+                    todo!("DEBUG INFO")
                 }
 
                 self.locals.insert(name, target);
@@ -543,14 +546,15 @@ impl<'ctx> CodeGen<'ctx> {
                     let Some(difun) = &self.difunction else {
                         unreachable!()
                     };
-                    let _loc = dibuilder.create_debug_location(
-                        self.ctx,
-                        loc.0.try_into().unwrap(),
-                        loc.1.try_into().unwrap(),
-                        difun.as_debug_info_scope(),
-                        None,
-                    );
+                    // let _loc = dibuilder.create_debug_location(
+                    //     self.ctx,
+                    //     loc.0.try_into().unwrap(),
+                    //     loc.1.try_into().unwrap(),
+                    //     difun.as_debug_info_scope(),
+                    //     None,
+                    // );
                     // self.builder.set_current_debug_location(loc);
+                    todo!("DEBUG INFO")
                 }
                 let ret_bb = self
                     .builder
@@ -578,14 +582,15 @@ impl<'ctx> CodeGen<'ctx> {
                     let Some(difun) = &self.difunction else {
                         unreachable!()
                     };
-                    let _loc = dibuilder.create_debug_location(
-                        self.ctx,
-                        data.loc.0.try_into().unwrap(),
-                        data.loc.1.try_into().unwrap(),
-                        difun.as_debug_info_scope(),
-                        None,
-                    );
+                    // let _loc = dibuilder.create_debug_location(
+                    //     self.ctx,
+                    //     data.loc.0.try_into().unwrap(),
+                    //     data.loc.1.try_into().unwrap(),
+                    //     difun.as_debug_info_scope(),
+                    //     None,
+                    // );
                     // self.builder.set_current_debug_location(loc);
+                    todo!("DEBUG INFO")
                 }
                 self.compile_expr(TypedExpr::FnCall(data));
             }
@@ -715,14 +720,15 @@ impl<'ctx> CodeGen<'ctx> {
                     unimplemented!("user defined operators not supported yet")
                 }
                 if let Some(dibuilder) = &self.dibuilder {
-                    let _loc = dibuilder.create_debug_location(
-                        self.ctx,
-                        loc.0.try_into().unwrap(),
-                        loc.1.try_into().unwrap(),
-                        self.difunction.as_ref().unwrap().as_debug_info_scope(),
-                        None,
-                    );
+                    // let _loc = dibuilder.create_debug_location(
+                    //     self.ctx,
+                    //     loc.0.try_into().unwrap(),
+                    //     loc.1.try_into().unwrap(),
+                    //     self.difunction.as_ref().unwrap().as_debug_info_scope(),
+                    //     None,
+                    // );
                     // self.builder.set_current_debug_location(loc);
+                    todo!("DEBUG INFO")
                 }
                 match operator.as_str() {
                     "&&" => {
@@ -1212,7 +1218,7 @@ impl<'ctx> CodeGen<'ctx> {
                 arg,
                 rt,
                 arg_t: fn_arg_t,
-                loc,
+                loc:_,
                 is_extern,
             }) => {
                 let Some(arg) = arg else {
@@ -1272,17 +1278,18 @@ impl<'ctx> CodeGen<'ctx> {
                     arg
                 };
                 dbg!(arg_t);
-                let value_t = value.get_ty();
+                let _value_t = value.get_ty();
                 let value = self.compile_expr(*value);
-                if let Some(dibuilder) = &self.dibuilder {
-                    let _loc = dibuilder.create_debug_location(
-                        self.ctx,
-                        loc.0.try_into().unwrap(),
-                        loc.1.try_into().unwrap(),
-                        self.difunction.as_ref().unwrap().as_debug_info_scope(),
-                        None,
-                    );
+                if let Some(_dibuilder) = &self.dibuilder {
+                    // let _loc = dibuilder.create_debug_location(
+                    //     self.ctx,
+                    //     loc.0.try_into().unwrap(),
+                    //     loc.1.try_into().unwrap(),
+                    //     self.difunction.as_ref().unwrap().as_debug_info_scope(),
+                    //     None,
+                    // );
                     // self.builder.set_current_debug_location(loc);
+                    todo!("DEBUG INFO")
                 }
 
                 let target = self
@@ -1292,7 +1299,7 @@ impl<'ctx> CodeGen<'ctx> {
                 let target = self
                     .builder
                     .build_load(
-                        self.ctx.i8_type().ptr_type(AddressSpace::default()),
+                        self.ctx.ptr_type(AddressSpace::default()),
                         target,
                         "",
                     )
@@ -1584,13 +1591,14 @@ impl<'ctx> CodeGen<'ctx> {
                         .unwrap();
                     if let Some(dibuilder) = &self.dibuilder {
                         if let Some(scope) = &self.difunction {
-                            dibuilder.create_debug_location(
-                                self.ctx,
-                                loc.0 as u32,
-                                loc.1 as u32,
-                                scope.as_debug_info_scope(),
-                                None,
-                            );
+                            // dibuilder.create_debug_location(
+                            //     self.ctx,
+                            //     loc.0 as u32,
+                            //     loc.1 as u32,
+                            //     scope.as_debug_info_scope(),
+                            //     None,
+                            // );
+                            todo!("DEBUG INFO")
                         }
                     }
                     let result = convert_to_basic_value(self.compile_expr(value));
@@ -1673,7 +1681,7 @@ impl<'ctx> CodeGen<'ctx> {
                     .type_resolver
                     .resolve_type_as_basic(ResolvedType::Tuple {
                         underlining: tys,
-                        loc: (0, 0),
+                        loc: Location::Language,
                     });
                 let tuple = self.builder.build_alloca(ty, "").unwrap();
                 for (idx, expr) in contents.into_iter().enumerate() {
@@ -1700,7 +1708,7 @@ impl<'ctx> CodeGen<'ctx> {
         let fields = def
             .fields
             .iter()
-            .map(|field| (field.name.clone(), field.ty.clone(), field.loc))
+            .map(|field| (field.name.clone(), field.ty.clone(), field.loc.clone()))
             .collect_vec();
         if fields
             .iter()
@@ -1714,19 +1722,20 @@ impl<'ctx> CodeGen<'ctx> {
                 let ditype = self.ditypes[&field.1.to_string()];
                 let last = out.last().map_or(0, |(_, it)| *it);
                 let size = ditype.get_size_in_bits();
-                let ty = dibuilder.create_member_type(
-                    file.as_debug_info_scope(),
-                    &field.0,
-                    *file,
-                    field.2 .0 as u32,
-                    size,
-                    ditype.get_align_in_bits(),
-                    last,
-                    DIFlags::PUBLIC,
-                    ditype,
-                );
-                out.push((ty.as_type(), last + size));
-                out
+                // let ty = dibuilder.create_member_type(
+                //     file.as_debug_info_scope(),
+                //     &field.0,
+                //     *file,
+                //     field.2 .0 as u32,
+                //     size,
+                //     ditype.get_align_in_bits(),
+                //     last,
+                //     DIFlags::PUBLIC,
+                //     ditype,
+                // );
+                // out.push((ty.as_type(), last + size));
+                // out
+                todo!("DEBUG INFO");
             });
         let size = 0;
         let Some(discope) = &self.difile else {
@@ -1734,25 +1743,26 @@ impl<'ctx> CodeGen<'ctx> {
         };
         let difields = info.into_iter().map(|(it, _)| it).collect_vec();
 
-        let di_struct = dibuilder.create_struct_type(
-            discope.as_debug_info_scope(),
-            &def.ident,
-            *discope,
-            def.loc.0 as u32,
-            size,
-            self.target_info.get_preferred_alignment(&strct),
-            DIFlags::PUBLIC,
-            None,
-            &difields,
-            0,
-            None,
-            "",
-        );
-        if let Some(_di_placeholder) = self.ditypes.get(&def.ident) {
-            todo!("replace the placeholder somehow");
-        } else {
-            self.ditypes.insert(def.ident.clone(), di_struct.as_type());
-        }
+        // let di_struct = dibuilder.create_struct_type(
+        //     discope.as_debug_info_scope(),
+        //     &def.ident,
+        //     *discope,
+        //     def.loc.0 as u32,
+        //     size,
+        //     self.target_info.get_preferred_alignment(&strct),
+        //     DIFlags::PUBLIC,
+        //     None,
+        //     &difields,
+        //     0,
+        //     None,
+        //     "",
+        // );
+        // if let Some(_di_placeholder) = self.ditypes.get(&def.ident) {
+        //     todo!("replace the placeholder somehow");
+        // } else {
+        //     self.ditypes.insert(def.ident.clone(), di_struct.as_type());
+        // }
+        todo!("DEBUG INFO");
         true
     }
     pub fn compile_decl(&mut self, decl: TypedDeclaration) -> Module<'ctx> {
@@ -1793,7 +1803,6 @@ impl<'ctx> CodeGen<'ctx> {
                             if let ResolvedType::Function {
                                 arg,
                                 returns: ret,
-                                loc: _,
                             } = &decl.ty
                             {
                                 let args = if let ResolvedType::Tuple {
@@ -1843,12 +1852,12 @@ impl<'ctx> CodeGen<'ctx> {
                     };
                     let ty = if let TypedExpr::ValueRead(name, _, _) = expr {
                         self.ctx.struct_type(
-                            &[self.ctx.i8_type().ptr_type(AddressSpace::default()).into()],
+                            &[self.ctx.ptr_type(AddressSpace::default()).into()],
                             false,
                         )
                     } else if let TypedExpr::FnCall(fun) = expr {
                         let fields = self.fold_arg_ty(fun);
-                        let fields = [self.ctx.i8_type().ptr_type(AddressSpace::default()).into()]
+                        let fields = [self.ctx.ptr_type(AddressSpace::default()).into()]
                             .into_iter()
                             .chain(fields)
                             .collect_vec();
@@ -1995,7 +2004,6 @@ impl<'ctx> CodeGen<'ctx> {
                 let ResolvedType::Function {
                     arg: arg_t,
                     returns,
-                    loc: _,
                 } = result_ty.clone()
                 else {
                     unreachable!()
@@ -2020,7 +2028,6 @@ impl<'ctx> CodeGen<'ctx> {
         let ResolvedType::Function {
             arg: arg_t,
             returns: rt,
-            loc: _,
         } = result_ty
         else {
             unreachable!()
@@ -2033,8 +2040,9 @@ impl<'ctx> CodeGen<'ctx> {
             let arg_t = self.type_resolver.resolve_arg_type(&arg_t);
             if rt.is_user() {
                 let rt = self
-                    .type_resolver
-                    .resolve_type_as_basic(rt.as_ref().clone())
+                    // .type_resolver
+                    // .resolve_type_as_basic(rt.as_ref().clone())
+                    .ctx
                     .ptr_type(AddressSpace::default())
                     .as_basic_type_enum();
                 self.ctx
@@ -2057,7 +2065,7 @@ impl<'ctx> CodeGen<'ctx> {
         }
         curried_args.insert(
             0,
-            self.ctx.i8_type().ptr_type(AddressSpace::default()).into(),
+            self.ctx.ptr_type(AddressSpace::default()).into(),
         );
         for (idx, (curr, next)) in args_curry_functions
             .iter()
@@ -2122,7 +2130,7 @@ impl<'ctx> CodeGen<'ctx> {
                 .unwrap_or(&v)
                 .as_global_value()
                 .as_pointer_value()
-                .const_cast(self.ctx.i8_type().ptr_type(AddressSpace::default()))
+                .const_cast(self.ctx.ptr_type(AddressSpace::default()))
                 .into()],
             false,
         );
@@ -2246,7 +2254,6 @@ impl<'ctx> CodeGen<'ctx> {
                             == ResolvedType::Function {
                                 arg: Box::new(types::UNIT),
                                 returns: Box::new(types::UNIT),
-                                loc: (0, 0),
                             })
                     {
                         Some(decl.ident.clone())
@@ -2282,11 +2289,11 @@ impl<'ctx> CodeGen<'ctx> {
                 "",
             );
             let difile = dibulder.create_file("builtin", "");
-            let ptr_t = self.ctx.i8_type().ptr_type(AddressSpace::default());
+            let ptr_t = self.ctx.ptr_type(AddressSpace::default());
             let ptr_size = self.target_info.get_bit_size(&ptr_t);
             let ptr_align = self.target_info.get_preferred_alignment(&ptr_t);
             let curry_t = self.ctx.struct_type(
-                &[self.ctx.i8_type().ptr_type(AddressSpace::default()).into()],
+                &[self.ctx.ptr_type(AddressSpace::default()).into()],
                 false,
             );
             let curry_t_size = self.target_info.get_bit_size(&curry_t);
@@ -2452,21 +2459,22 @@ impl<'ctx> CodeGen<'ctx> {
 
     fn compile_match(&mut self, match_: TypedMatch) -> AnyValueEnum<'ctx> {
         let rt = match_.get_ty();
-        let TypedMatch { loc, on, mut arms } = match_;
+        let TypedMatch { loc:_, on, arms } = match_;
         let current_block = self.builder.get_insert_block().unwrap();
 
-        if let Some(dibuilder) = &self.dibuilder {
-            let Some(scope) = &self.difunction else {
+        if let Some(_dibuilder) = &self.dibuilder {
+            let Some(_scope) = &self.difunction else {
                 unreachable!()
             };
-            let _diloc = dibuilder.create_debug_location(
-                self.ctx,
-                loc.0 as _,
-                loc.1 as _,
-                scope.as_debug_info_scope(),
-                None,
-            );
+            // let _diloc = dibuilder.create_debug_location(
+            //     self.ctx,
+            //     loc.0 as _,
+            //     loc.1 as _,
+            //     scope.as_debug_info_scope(),
+            //     None,
+            // );
             // self.builder.set_current_debug_location(diloc);
+            todo!("DEBUG INFO")
         }
         let cond_ty = on.get_ty();
         if cond_ty == types::STR {
@@ -2852,7 +2860,7 @@ impl<'ctx> CodeGen<'ctx> {
                     self.builder.position_at_end(bindings_block);
                     let phi = self
                         .builder
-                        .build_phi(self.ctx.i8_type().ptr_type(AddressSpace::default()), &name)
+                        .build_phi(self.ctx.ptr_type(AddressSpace::default()), &name)
                         .unwrap();
                     self.builder.position_at_end(curr_block);
                     phi
@@ -2988,11 +2996,11 @@ impl<'ctx> CodeGen<'ctx> {
             let mut bindings_phi = cond
                 .get_idents_with_types()
                 .into_iter()
-                .map(|(name, ty)| {
-                    let ty = self.type_resolver.resolve_type_as_basic(ty);
+                .map(|(name, _ty)| {
+                    // let ty = self.type_resolver.resolve_type_as_basic(ty);
                     let phi = self
                         .builder
-                        .build_phi(ty.ptr_type(AddressSpace::default()), &name)
+                        .build_phi(self.ctx.ptr_type(AddressSpace::default()), &name)
                         .unwrap();
                     (name, phi)
                 })

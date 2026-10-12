@@ -94,7 +94,7 @@ impl ArgDeclaration {
             Self::DestructureStruct { struct_ident, .. } => ResolvedType::User {
                 name: struct_ident.clone(),
                 generics: Vec::new(),
-                loc: (0, 0),
+                loc: crate::Location::User { file: "".into(), span: 0..0 },
             },
             Self::Simple { ty, .. }
             | Self::Discard { ty, .. }
@@ -312,7 +312,7 @@ impl Expr {
                 } else {
                     ResolvedType::Tuple {
                         underlining: contents.iter().map(|expr| expr.get_retty(ctx)).collect(),
-                        loc: (0, 0),
+                        loc: crate::Location::Language,
                     }
                 }
             }
@@ -346,7 +346,7 @@ impl Expr {
             Expr::StructConstruction(strct) => ResolvedType::User {
                 name: strct.ident.clone(),
                 generics: strct.generics.clone(),
-                loc: (0, 0),
+                loc: crate::Location::User{file:"".into(), span:0..0},
             },
             Expr::BoolLiteral(_, _, _) => types::BOOL,
             Expr::If(if_) => if_.result.clone(),

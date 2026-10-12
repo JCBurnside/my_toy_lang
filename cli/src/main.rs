@@ -4,7 +4,7 @@ use clap::Parser;
 
 use compiler::types::{self, ResolvedType};
 
-use std::io::Write;
+// use std::io::Write;
 
 mod cli_args;
 
@@ -28,7 +28,6 @@ fn main() {
         ResolvedType::Function {
             arg: Box::new(types::STR),
             returns: Box::new(ResolvedType::Void),
-            loc: (0, 0),
         },
     );
 

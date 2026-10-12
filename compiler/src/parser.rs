@@ -1,4 +1,4 @@
-use crate::{ast, tokens::Token, types};
+use crate::{ast, types};
 use std::borrow::Cow;
 use winnow::{
     ascii, combinator,
@@ -25,6 +25,7 @@ struct OuterState<'input> {
     prefix: Cow<'input, str>,
     just_consumed_line:bool,
     multi_line_expr:bool,
+    file:Cow<'input, str>,
 }
 
 #[derive(Clone)]
@@ -236,17 +237,24 @@ impl winnow::stream::AsBStr for StrippedParser<'_> {
 }
 
 pub(crate) fn file(file_name:&str, src :&str) ->ast::ModuleDeclaration{
+
     let src = Stream {
         input: Located::new(StrippedParser{
             src,
             state:Default::default(),
         }),
-        state: Default::default(),
+        state: OuterState{
+            file:file_name.into(),
+            ..Default::default()
+        },
     };
 
     let decls = combinator::delimited(ignore_blank_lines, top_level_block,(ascii::space0,ignore_blank_lines)).parse(src).unwrap();
 
-    ast::ModuleDeclaration{ loc: None, name: file_name.into(), declarations: decls }
+    ast::ModuleDeclaration{ loc: crate::Location::User {
+        span:0..0,
+        file:file_name.to_string()
+    }, name: file_name.into(), declarations: decls }
 }
 
 fn parens< I, O, E>(
@@ -436,12 +444,12 @@ fn type_decl(input: &mut Stream<'_>) -> PResult<ast::TypeDefinition> {
     .parse_next(input)
 }
 
-const EQ_OP : Token<'static> = Token::Op("=");
+// const EQ_OP : Token<'static> = Token::Op("=");
 
 fn enum_decl<'input>(
     generics: Option<ast::GenericsDecl>,
 ) -> impl Parser<Stream<'input>, ast::EnumDeclaration, ContextError> {
-    combinator::trace("enum declaration", move |input: &mut Stream<'_>| {
+    combinator::trace("enum declaration", move |input: &mut Stream<'_>| -> Result<ast::EnumDeclaration, ErrMode<ContextError>> {
         let (ident, loc) =
             combinator::preceded(
                 (ascii::space0,"enum",ascii::space1), 
@@ -456,24 +464,30 @@ fn enum_decl<'input>(
                     |input: &mut Stream<'_>| {
                         let (ident, loc) = simple_ident.with_span().parse_next(input)?;
                         let _ = ascii::space0(input)?;
-                        let loc = (loc.start, loc.end);
+                        let loc = crate::Location::User {
+                            file: input.state.file.clone().into_owned(),
+                            span:loc
+                        };
                         let struct_ident = ident.clone();
                         let tuple_ident = ident.clone();
-                        combinator::alt((
+                        combinator::alt(({
+                            let loc = loc.clone();
                             struct_body.map(move |fields| ast::EnumVariant::Struct {
                                 ident: struct_ident.clone().into(),
                                 fields,
-                                loc,
-                            }),
-                            type_.map(move |ty| ast::EnumVariant::Tuple {
+                                loc:loc.clone(),
+                            })},
+                            {
+                                let loc = loc.clone();
+                                type_.map(move |ty| ast::EnumVariant::Tuple {
                                 ident: tuple_ident.clone().into(),
                                 ty,
-                                loc,
-                            }),
+                                loc:loc.clone(),
+                            })},{
                             combinator::empty.value(ast::EnumVariant::Unit {
                                 ident: ident.into(),
                                 loc,
-                            }),
+                            })},
                         ))
                         .parse_next(input)
                     },
@@ -485,7 +499,10 @@ fn enum_decl<'input>(
             ident: ident.into(),
             generics: generics.clone(),
             values,
-            loc: (loc.start, loc.end),
+            loc: crate::Location::User {
+                file:input.state.file.clone().into_owned(),
+                span:loc
+            },
         })
     })
 }
@@ -493,6 +510,7 @@ fn enum_decl<'input>(
 
 
 fn struct_body(input: &mut Stream<'_>) -> PResult<Vec<ast::FieldDecl>> {
+    let file = input.state.file.clone().into_owned();
     combinator::delimited(
         (ascii::space0,'{',ascii::multispace0),
         combinator::separated(
@@ -501,10 +519,13 @@ fn struct_body(input: &mut Stream<'_>) -> PResult<Vec<ast::FieldDecl>> {
                 simple_ident.with_span(),
                 (ascii::multispace0,':',ascii::multispace0),
                 type_
-            ).map(|((ident, loc), ty)| ast::FieldDecl {
+            ).map(move |((ident, loc), ty)| ast::FieldDecl {
                 name: ident.into(),
                 ty,
-                loc: (loc.start, loc.end),
+                loc: crate::Location::User {
+                    file:file.clone(),
+                    span:loc
+                },
             }),
             (ascii::multispace0, ',',ascii::multispace0),
         ),
@@ -519,18 +540,25 @@ fn struct_or_alias_def<'input>(
     combinator::trace(
         "struct or alias",
         move |input: &mut Stream<'_>| -> PResult<ast::TypeDefinition> {
+            let file :String = input.state.file.clone().into();
             let (ident, loc) = simple_ident.with_span().parse_next(input)?;
 
             let _ = (ascii::space0,'=',ascii::space0).void().parse_next(input)?;
-            let result = combinator::alt((
+            let result = combinator::alt(({
+
                 combinator::trace("struct", struct_body).map(|fields| {
                     ast::TypeDefinition::Struct(ast::StructDefinition {
                         ident: ident.clone().into(),
                         generics: generics.clone(),
                         values: fields,
-                        loc: (loc.start, loc.end),
+                        loc: crate::Location::User {
+                            file:file.clone(),
+                            span:loc.clone(),
+                        },
                     })
-                }),
+                })
+
+                },
                 combinator::trace("alias", type_)
                     .verify(|_| generics.is_none())
                     .context(winnow::error::StrContext::Label(
@@ -610,6 +638,7 @@ fn comma(input:&mut Stream<'_>) -> PResult<()> {
 }
 
 fn type_<'input>(input: &mut Stream<'input>) -> PResult<types::ResolvedType> {
+    let file = input.state.file.clone().into_owned();
     let result = combinator::trace(
         "type",
         combinator::alt((
@@ -627,7 +656,10 @@ fn type_<'input>(input: &mut Stream<'input>) -> PResult<types::ResolvedType> {
                 types::ResolvedType::User{
                     name: ident.into(),
                     generics:generics.unwrap_or_default(),
-                    loc: (span.start,span.end),
+                    loc: crate::Location::User  {
+                        file:file.clone(),
+                        span
+                    },
                 }
             }),
             //array
@@ -663,15 +695,18 @@ fn type_<'input>(input: &mut Stream<'input>) -> PResult<types::ResolvedType> {
                 (ascii::space0, ',', ascii::space0),
             ))
             .with_span()
-            .map(|(underlining, loc)| types::ResolvedType::Tuple {
+            .map(|(underlining, span)| types::ResolvedType::Tuple {
                 underlining,
-                loc: (loc.start, loc.end),
+                loc: crate::Location::User {
+                    file:file.clone(),
+                    span
+                },
             }),
             parens(type_),
         )),
     )
     .parse_next(input)?;
-    if let Some((loc, ret)) = combinator::trace(
+    if let Some((span, ret)) = combinator::trace(
         "type (function)",
         combinator::opt((
             combinator::delimited(ascii::space0, "->".span(), ascii::space0),
@@ -683,7 +718,6 @@ fn type_<'input>(input: &mut Stream<'input>) -> PResult<types::ResolvedType> {
         Ok(types::ResolvedType::Function {
             arg: result.into(),
             returns: ret.into(),
-            loc: (loc.start, loc.end),
         })
     } else {
         Ok(result)
@@ -691,6 +725,7 @@ fn type_<'input>(input: &mut Stream<'input>) -> PResult<types::ResolvedType> {
 }
 
 fn arg<'input>(input: &mut Stream<'input>) -> PResult<ast::ArgDeclaration> {
+    let file = input.state.file.clone().into_owned();
     let apply_ty = combinator::delimited(
         ('(', ascii::space0),
         combinator::separated_pair(arg, (ascii::space0, ':', ascii::space0), type_),
@@ -705,30 +740,31 @@ fn arg<'input>(input: &mut Stream<'input>) -> PResult<ast::ArgDeclaration> {
                 ty.replace(real_ty);
             }
             ast::ArgDeclaration::DestructureStruct {
-                loc,
-                struct_ident,
-                fields,
-                renamed_fields,
+                // loc,
+                // struct_ident,
+                // fields,
+                // renamed_fields,
+                ..
             } => todo!("not a common case.  (StructType {{ ... }} : StructType)"),
         }
         arg
     });
     let unit = ('(', ascii::space0, ')')
         .with_span()
-        .map(|((_, _space, _), loc)| {
+        .map({let file = file.clone();move |((_, _space, _), span)| {
             //todo generate warnings??
             ast::ArgDeclaration::Unit {
-                loc: (loc.start, loc.end),
+                loc: crate::Location::User  { file: file.clone(), span },
                 ty: None,
             }
-        });
+        }});
     combinator::alt((
         unit,
         apply_ty,
-        "_".span().map(|loc| ast::ArgDeclaration::Discard {
-            loc: (loc.start, loc.end),
+        "_".span().map({let file = file.clone();move |span| ast::ArgDeclaration::Discard {
+            loc: crate::Location::User  { file: file.clone(), span },
             ty: None,
-        }),
+        }}),
         combinator::delimited(('(', ascii::space0), arg, (ascii::space0, ')')),
         combinator::delimited(
             ('(', ascii::space0),
@@ -736,11 +772,11 @@ fn arg<'input>(input: &mut Stream<'input>) -> PResult<ast::ArgDeclaration> {
             (ascii::space0, ')'),
         )
         .with_span()
-        .map(|(args, loc)| ast::ArgDeclaration::DestructureTuple(args, None, (loc.start, loc.end))),
+        .map({let file = file.clone(); move |(args, span)| ast::ArgDeclaration::DestructureTuple(args, None, crate::Location::User  { file: file.clone(), span })}),
         simple_ident
             .with_span()
-            .map(|(ident, loc)| ast::ArgDeclaration::Simple {
-                loc: (loc.start, loc.end),
+            .map(move |(ident, span)| ast::ArgDeclaration::Simple {
+                loc: crate::Location::User  { file: file.clone(), span },
                 ident: ident.into(),
                 ty: None,
             }),
@@ -750,17 +786,18 @@ fn arg<'input>(input: &mut Stream<'input>) -> PResult<ast::ArgDeclaration> {
 }
 
 fn top_level_value(input: &mut Stream<'_>) -> PResult<ast::TopLevelValue> {
+    let file = input.state.file.clone().into_owned();
     let generics = combinator::opt(generics).parse_next(input)?;
     let abi = combinator::opt(
         combinator::preceded(
             ("extern", ascii::space1),
             combinator::alt((
                 r#""C""#.span().map(|span| ast::Abi {
-                    loc: (span.start, span.end),
+                    loc: crate::Location::User  { file: file.clone(), span },
                     identifier: "C".into(),
                 }),
                 r#""intrinsic""#.span().map(|span| ast::Abi {
-                    loc: (span.start, span.end),
+                    loc: crate::Location::User  { file: file.clone(), span },
                     identifier: "interinsic".into(),
                 }),
             )),
@@ -774,7 +811,7 @@ fn top_level_value(input: &mut Stream<'_>) -> PResult<ast::TopLevelValue> {
 
     (ascii::multispace0, "let").void().parse_next(input)?;
     ascii::space1(input)?;
-    let ((ident, loc), is_op) = combinator::alt((
+    let ((ident, span), is_op) = combinator::alt((
         parens(op).with_span().map(|it| (it, true)),
         simple_ident.with_span().map(|it| (it, false)),
     ))
@@ -792,7 +829,7 @@ fn top_level_value(input: &mut Stream<'_>) -> PResult<ast::TopLevelValue> {
     .parse_next(input)?;
     if let Some(_) = combinator::opt((ascii::space0, '=').void()).parse_next(input)? {
         let mut value = ast::TopLevelValue {
-            loc: (loc.start, loc.end),
+            loc: crate::Location::User { file: file.clone(), span },
             is_op,
             ident: ident.into(),
             args,
@@ -825,7 +862,7 @@ fn top_level_value(input: &mut Stream<'_>) -> PResult<ast::TopLevelValue> {
             .verify(|_| abi.is_some() && ty.is_some() && generics.is_none())
             .parse_next(input)?;
         Ok(ast::TopLevelValue {
-            loc: (loc.start, loc.end),
+            loc: crate::Location::User  { file: file.clone(), span },
             is_op,
             ident: ident.into(),
             args,
@@ -838,6 +875,7 @@ fn top_level_value(input: &mut Stream<'_>) -> PResult<ast::TopLevelValue> {
 }
 
 fn generics<'input>(input: &mut Stream<'input>) -> PResult<ast::GenericsDecl> {
+    let file = input.state.file.clone().into_owned();
     let for_loc = "for".span().parse_next(input)?;
     let decls = combinator::delimited(
         (ascii::space0, '<'),
@@ -847,7 +885,7 @@ fn generics<'input>(input: &mut Stream<'input>) -> PResult<ast::GenericsDecl> {
                 ascii::space0,
                 simple_ident
                     .with_span()
-                    .map(|(a, b)| ((b.start, b.end), a.into())),
+                    .map(|(a, b)| (crate::Location::User { file: file.clone(), span:b }, a.into())),
                 ascii::space0,
             ),
             ',',
@@ -856,15 +894,16 @@ fn generics<'input>(input: &mut Stream<'input>) -> PResult<ast::GenericsDecl> {
     )
     .parse_next(input)?;
     Ok(ast::GenericsDecl {
-        for_loc: (for_loc.start, for_loc.end),
+        for_loc: crate::Location::User { file: file.clone(), span:for_loc },
         decls,
     })
 }
 
 fn if_statement(input :&mut Stream<'_>) -> PResult<ast::If> {
+    let file = input.state.file.clone().into_owned();
     let prefix = input.state.prefix.clone();
     combinator::trace("if",winnow::combinator::seq! { ast::If{
-        loc:"if".span().map(|loc| (loc.start,loc.end)),
+        loc:"if".span().map(|span| crate::Location::User { file: file.clone(), span }),
         cond : combinator::delimited(ascii::multispace1,combinator::cut_err(expr).map(Into::into),(ascii::multispace1,"then")),
         true_branch : combinator::alt((
             combinator::preceded((ascii::space0,ascii::line_ending),block),
@@ -886,6 +925,7 @@ fn if_statement(input :&mut Stream<'_>) -> PResult<ast::If> {
 }
 
 fn statement(input: &mut Stream<'_>) -> PResult<ast::Statement> {
+    let file = input.state.file.clone().into_owned();
     let declaration = combinator::preceded(
         ("let", ascii::space1),
         combinator::cut_err((
@@ -903,7 +943,7 @@ fn statement(input: &mut Stream<'_>) -> PResult<ast::Statement> {
                     )
                 })
                 .with_span()
-                .map(|(pat, loc)| ((loc.start, loc.end), pat)),
+                .map(|(pat, loc)| (loc, pat)),
             combinator::opt(combinator::preceded(
                 (ascii::space0, ':', ascii::space0),
                 type_,
@@ -918,8 +958,8 @@ fn statement(input: &mut Stream<'_>) -> PResult<ast::Statement> {
             ),
         )),
     )
-    .map(|((loc, target), ty, value)| ast::ValueDeclaration {
-        loc,
+    .map(|((span, target), ty, value)| ast::ValueDeclaration {
+        loc:crate::Location::User { file: file.clone(), span },
         is_op: false,
         target,
         args: Vec::new(),
@@ -941,7 +981,7 @@ fn statement(input: &mut Stream<'_>) -> PResult<ast::Statement> {
                     ("return".span(),
                     combinator::cut_err(combinator::preceded(ascii::space1, expr)),
                 
-                    ).map(|(loc, expr)| ast::Statement::Return(expr.into(), (loc.start, loc.end))),
+                    ).map(|(span, expr)| ast::Statement::Return(expr.into(), crate::Location::User { file: file.clone(), span })),
                     expr.map(ast::Statement::Expr),
                 
                     )),
@@ -965,8 +1005,10 @@ fn simple_expr(input:&mut Stream<'_>) -> PResult<ast::Expr> {
         return Err(ErrMode::Backtrack(ContextError::new()));
     }
 
-    let if_ = combinator::trace("if",winnow::combinator::seq! { ast::If{
-        loc:"if".span().map(|loc| (loc.start,loc.end)),
+    let file = input.state.file.clone().into_owned();
+    let if_ ={
+        let file = file.clone(); combinator::trace("if",winnow::combinator::seq! { ast::If{
+        loc:"if".span().map(|span| crate::Location::User { file: file.clone(), span }),
         cond : combinator::delimited(ascii::multispace1,expr.map(Into::into),(ascii::multispace1,"then")),
         true_branch : combinator::alt((
             combinator::preceded((ascii::space0,ascii::line_ending,|input:&mut Stream<'_>| {
@@ -984,7 +1026,7 @@ fn simple_expr(input:&mut Stream<'_>) -> PResult<ast::Expr> {
             expr.map(|expr| ast::Block { statements:Vec::new(), implicit_ret:Some(expr.into())})
         )).map(Into::into),
     }
-    });
+    })};
     let struct_con = (
         type_.with_span(),
         combinator::delimited(
@@ -1001,25 +1043,27 @@ fn simple_expr(input:&mut Stream<'_>) -> PResult<ast::Expr> {
                         let loc = expr.get_loc();
                         (ident, (expr, loc))
                     }),
-                    simple_ident.with_span().map(|(ident, loc)| {
+                    simple_ident.with_span().map({
+                        let file = file.clone();
+                        move |(ident, span)| {
                         (
                             ident.clone(),
                             (
-                                ast::Expr::ValueRead(ident.into(), (loc.start, loc.end)),
-                                (loc.start, loc.end),
+                                ast::Expr::ValueRead(ident.into(), crate::Location::User { file: file.clone(), span:span.clone() }),
+                                crate::Location::User { file: file.clone(), span },
                             ),
                         )
-                    }),
+                    }}),
                 )),
                 (ascii::multispace0, ',', ascii::multispace0),
             ),
             (ascii::space0, '}', ascii::multispace0),
         ),
     )
-        .map(|((ty, loc), fields): (_, Vec<_>)| {
+        .map({let file = file.clone(); move |((ty, span), fields): (_, Vec<_>)| {
             if let types::ResolvedType::User { name, generics, .. } = ty {
                 ast::Expr::StructConstruction(ast::StructConstruction {
-                    loc: (loc.start, loc.end),
+                    loc: crate::Location::User { file: file.clone(), span },
                     fields: fields
                         .into_iter()
                         .map(|(ident, value)| (ident.into(), value))
@@ -1030,7 +1074,7 @@ fn simple_expr(input:&mut Stream<'_>) -> PResult<ast::Expr> {
             } else {
                 ast::Expr::Error
             }
-        });
+        }});
 
         ascii::space0(input)?;
         combinator::trace(
@@ -1040,10 +1084,10 @@ fn simple_expr(input:&mut Stream<'_>) -> PResult<ast::Expr> {
                 "()".map(|_| ast::Expr::UnitLiteral),
                 "true"
                     .span()
-                    .map(|loc| ast::Expr::BoolLiteral(true, (loc.start, loc.end))),
+                    .map({let file = file.clone(); move |span| ast::Expr::BoolLiteral(true,crate::Location::User { file: file.clone(), span })}),
                 "false"
                     .span()
-                    .map(|loc| ast::Expr::BoolLiteral(false, (loc.start, loc.end))),
+                    .map({let file = file.clone(); move |span| ast::Expr::BoolLiteral(false, crate::Location::User { file: file.clone(), span })}),
                 combinator::trace("struct construction",struct_con),
                 ascii::dec_int.map(|it: i128| ast::Expr::NumericLiteral {
                     value: it.to_string(),
@@ -1064,10 +1108,10 @@ fn simple_expr(input:&mut Stream<'_>) -> PResult<ast::Expr> {
                     (ascii::multispace0, ',', ascii::multispace0),
                 )))
                 .with_span()
-                .map(|(contents, loc)| ast::Expr::TupleLiteral {
+                .map({let file = file.clone(); move |(contents, span)| ast::Expr::TupleLiteral {
                     contents,
-                    loc: (loc.start, loc.end),
-                }),
+                    loc: crate::Location::User { file: file.clone(), span },
+                }}),
                 //array
                 combinator::trace("array construction",combinator::delimited(
                     ('[', ascii::multispace0),
@@ -1078,15 +1122,15 @@ fn simple_expr(input:&mut Stream<'_>) -> PResult<ast::Expr> {
                     )),
                     (ascii::multispace0, ']'),
                 )).with_span()
-                .map(|(contents, loc)| ast::Expr::ArrayLiteral {
+                .map({let file = file.clone();move |(contents, span)| ast::Expr::ArrayLiteral {
                     contents,
-                    loc: (loc.start, loc.end),
-                }),
+                    loc: crate::Location::User { file: file.clone(), span },
+                }}),
                 if_.map(ast::Expr::If),
                 match_.map(ast::Expr::Match),
                 ident
                     .with_span()
-                    .map(|(name, loc)| ast::Expr::ValueRead(name.into(), (loc.start, loc.end))),
+                    .map(move |(name, span)| ast::Expr::ValueRead(name.into(), crate::Location::User  { file: file.clone(), span })),
                 
                 // combinator::separated(expr,combinator::delimited(ascii::multispace0,op,ascii::multispace0))
             )),
@@ -1095,7 +1139,7 @@ fn simple_expr(input:&mut Stream<'_>) -> PResult<ast::Expr> {
 
 fn expr(input: &mut Stream<'_>) -> PResult<ast::Expr> {
     combinator::trace("expr",|input:&mut Stream<'_>| {
-    
+    let file= input.state.file.clone().into_owned();
 
     let out = simple_expr(input)?;
     let out = if let Some(args) = combinator::opt(combinator::preceded(
@@ -1121,14 +1165,14 @@ fn expr(input: &mut Stream<'_>) -> PResult<ast::Expr> {
     if let Some(op_ident) = combinator::opt(combinator::preceded(
         ascii::space0,
         op.with_span()
-            .map(|(op, loc)| (op.to_string(), (loc.start, loc.end))),
+            .map({let file = file.clone(); move |(op, span)| (op.to_string(), crate::Location::User { file: file.clone(), span })}),
     ))
     .parse_next(input)?
     {
         let mut output = vec![ShuntingYardOptions::Expr(out)];
         let mut op_stack = vec![op_ident];
         let op = combinator::delimited(ascii::space0, op.with_span(), ascii::space0)
-            .map(|(op, loc)| (op.to_string(), (loc.start, loc.end)))
+            .map(|(op, span)| (op.to_string(),crate::Location::User { file: file.clone(), span }))
             .map(ShuntingYardOptions::Op);
         let mut opts = combinator::opt(combinator::preceded(
             ascii::space0,
@@ -1173,7 +1217,7 @@ fn expr(input: &mut Stream<'_>) -> PResult<ast::Expr> {
                             };
                             output.push(ShuntingYardOptions::Op(op_back));
                         } else {
-                            op_stack.push((op_ident.clone(), loc));
+                            op_stack.push((op_ident.clone(), loc.clone()));
                             break;
                         }
                     }
@@ -1220,9 +1264,9 @@ fn expr(input: &mut Stream<'_>) -> PResult<ast::Expr> {
 }
 
 fn match_(input: &mut Stream<'_>) -> PResult<ast::Match> {
-    let loc = "match"
+    let file = input.state.file.clone().into_owned();
+    let span = "match"
         .span()
-        .map(|loc| (loc.start, loc.end))
         .parse_next(input)?;
     let on = combinator::delimited(ascii::multispace1, expr, (ascii::multispace1, "where"))
         .parse_next(input)?;
@@ -1244,7 +1288,7 @@ fn match_(input: &mut Stream<'_>) -> PResult<ast::Match> {
         todo!()
     };
     Ok(ast::Match {
-        loc,
+        loc:crate::Location::User { file, span },
         on: on.into(),
         arms,
     })
@@ -1252,8 +1296,8 @@ fn match_(input: &mut Stream<'_>) -> PResult<ast::Match> {
 
 fn arm(input: &mut Stream<'_>) -> PResult<ast::MatchArm> {
     combinator::trace("match arm",|input: &mut Stream<'_>| {
-    
-    let (loc, _, pat) = ("|".span(), ascii::space0.void(), pattern).parse_next(input)?;
+    let file = input.state.file.clone().into_owned();
+    let (span, _, pat) = ("|".span(), ascii::space0.void(), pattern).parse_next(input)?;
     let block = combinator::preceded(
         (ascii::space0, "->", ascii::space0),
         combinator::alt((
@@ -1272,13 +1316,14 @@ fn arm(input: &mut Stream<'_>) -> PResult<ast::MatchArm> {
     Ok(ast::MatchArm {
         block,
         cond: pat,
-        loc: (loc.start, loc.end),
+        loc: crate::Location::User { file, span },
     })
     }).parse_next(input)
 }
 
 fn pattern(input: &mut Stream<'_>) -> PResult<ast::Pattern> {
     combinator::trace("pattern", |input: &mut Stream<'_>| {
+        let file = input.state.file.clone().into_owned();
         let base = combinator::alt((
             // axioms
             "_".map(|_| ast::Pattern::Default),
@@ -1298,7 +1343,7 @@ fn pattern(input: &mut Stream<'_>) -> PResult<ast::Pattern> {
                 } else {
                     (None,ident)
                 };
-                ast::Pattern::EnumVariant { ty, variant, pattern: Some(pat.into()), loc: (span.start,span.end) }
+                ast::Pattern::EnumVariant { ty, variant, pattern: Some(pat.into()), loc: crate::Location::User { file: file.clone(), span } }
             }),
             // todo struct destructureing
             (
@@ -1316,7 +1361,7 @@ fn pattern(input: &mut Stream<'_>) -> PResult<ast::Pattern> {
                             simple_ident.with_span().map(|(ident, span)| {
                                 (
                                     ident.clone().into(),
-                                    ast::Pattern::Read(ident.into(), (span.start, span.end)),
+                                    ast::Pattern::Read(ident.into(), crate::Location::User { file: file.clone(), span }),
                                 )
                             }),
                         )),
@@ -1333,11 +1378,11 @@ fn pattern(input: &mut Stream<'_>) -> PResult<ast::Pattern> {
                 }),
             ident.with_span().verify(|(it,_)| it.contains("::")).map(|(ident,span)| {
                 let Some((ty,variant)) = ident.rsplit_once("::") else {unreachable!()};
-                ast::Pattern::EnumVariant { ty: Some(ty.into()), variant: variant.into(), pattern:None, loc: (span.start,span.end) }
+                ast::Pattern::EnumVariant { ty: Some(ty.into()), variant: variant.into(), pattern:None, loc: crate::Location::User { file: file.clone(), span } }
             }),
             simple_ident
                 .with_span()
-                .map(|(ident, loc)| ast::Pattern::Read(ident.into(), (loc.start, loc.end))),
+                .map(|(ident, span)| ast::Pattern::Read(ident.into(), crate::Location::User { file: file.clone(), span })),
             // more complex
             parens(combinator::separated(
                 2..,
@@ -1383,17 +1428,25 @@ mod tests {
 
     use super::*;
     use pretty_assertions::assert_eq;
-    use winnow::error::InputError;
 
     fn from_source(src: &'static str) -> Stream<'static> {
         Stateful {
             input:Located::new(StrippedParser {
                 src,
-                
                 state: Default::default(),
             }),
             
-            state: Default::default(), 
+            state: OuterState {
+                file:"test".into(),
+                ..Default::default()
+            },
+        }
+    }
+
+    fn toLoc(span : (usize,usize)) -> crate::Location {
+        crate::Location::User {
+            file:"test".into(),
+            span: span.0 .. span.1
         }
     }
 
@@ -1405,11 +1458,11 @@ if a then
         ignore_blank_lines(&mut src).unwrap();
         assert_eq!(
             Ok(ast::If { 
-                loc: (1,3),
-                cond: ast::Expr::ValueRead("a".into(), (4,5)).into(), 
+                loc: toLoc((1,3)),
+                cond: ast::Expr::ValueRead("a".into(), crate::Location::User{file:"test".into(), span:4..5}).into(), 
                 true_branch: ast::Block {
                     statements:vec![
-                        ast::Statement::Return(ast::Expr::NumericLiteral { value: "0".into() }, (15,21)),
+                        ast::Statement::Return(ast::Expr::NumericLiteral { value: "0".into() }, crate::Location::User{file:"test".into(), span:15..21}),
                     ],
                     implicit_ret:None,
                 }, 
@@ -1465,7 +1518,7 @@ if a then
             type_(&mut src),
             Ok(ResolvedType::Tuple {
                 underlining: vec![types::INT32, types::INT32],
-                loc: (0, 0)
+                loc: toLoc((0, 0))
             })
         );
 
@@ -1476,7 +1529,6 @@ if a then
             ResolvedType::Function {
                 arg: types::INT32.into(),
                 returns: types::INT32.into(),
-                loc: (0, 0),
             }
         );
         let mut src = from_source("int32->int32->int32");
@@ -1487,10 +1539,8 @@ if a then
                 returns: ResolvedType::Function {
                     arg: types::INT32.into(),
                     returns: types::INT32.into(),
-                    loc: (0, 0),
                 }
                 .into(),
-                loc: (0, 0),
             }
         );
         let mut src = from_source("int32->(int32->int32)");
@@ -1501,10 +1551,8 @@ if a then
                 returns: ResolvedType::Function {
                     arg: types::INT32.into(),
                     returns: types::INT32.into(),
-                    loc: (0, 0),
                 }
                 .into(),
-                loc: (0, 0),
             }
         );
         let mut src = from_source("(int32->int32)->int32");
@@ -1514,11 +1562,9 @@ if a then
                 arg: ResolvedType::Function {
                     arg: types::INT32.into(),
                     returns: types::INT32.into(),
-                    loc: (0, 0),
                 }
                 .into(),
                 returns: types::INT32.into(),
-                loc: (0, 0),
             }
         );
         let mut src = from_source("Generic<int32>");
@@ -1527,7 +1573,7 @@ if a then
             ResolvedType::User{ 
                 name: "Generic".into(), 
                 generics: vec![types::INT32], 
-                loc: (0,0),
+                loc: toLoc((0,0)),
             }
         )
     }
@@ -1542,12 +1588,12 @@ if a then
         let mut src = from_source("a");
 
         let read_a = expr(&mut src).unwrap();
-        assert_eq!(ast::Expr::ValueRead("a".into(), (0, 1)), read_a);
+        assert_eq!(ast::Expr::ValueRead("a".into(), toLoc((0, 1))), read_a);
 
         let mut src = from_source("(a)");
         assert_eq!(
             expr(&mut src).unwrap(),
-            ast::Expr::ValueRead("a".into(), (1, 2)),
+            ast::Expr::ValueRead("a".into(), toLoc((1, 2))),
             "`(a)` should be the same `a`"
         );
 
@@ -1562,13 +1608,13 @@ if a then
         assert_eq!(
             expr(&mut src),
             Ok(ast::Expr::FnCall(ast::FnCall{ 
-                loc: (0,1), 
+                loc: toLoc((0,1)),
                 value: ast::Expr::FnCall(ast::FnCall{ 
-                    loc: (0,1), 
-                    value: ast::Expr::ValueRead("a".into(), (0,1)).into(), 
-                    arg: Some(ast::Expr::ValueRead("b".into(), (2,3)).into())
+                    loc: toLoc((0,1)),
+                    value: ast::Expr::ValueRead("a".into(), toLoc((0,1))).into(),
+                    arg: Some(ast::Expr::ValueRead("b".into(), toLoc((2,3))).into())
                 }).into(), 
-                arg: Some(ast::Expr::ValueRead("c".into(), (4,5)).into()) 
+                arg: Some(ast::Expr::ValueRead("c".into(), toLoc((4,5))).into())
             }))
         );
 
@@ -1577,12 +1623,12 @@ if a then
         assert_eq!(
             expr(&mut src),
             Ok(ast::Expr::FnCall(ast::FnCall{ 
-                loc: (0,1), 
-                value: ast::Expr::ValueRead("a".into(), (0,1)).into(), 
+                loc: toLoc((0,1)),
+                value: ast::Expr::ValueRead("a".into(), toLoc((0,1))).into(),
                 arg: Some(ast::Expr::FnCall(ast::FnCall{ 
-                    loc: (3,4),
-                    value: (ast::Expr::ValueRead("b".into(), (3,4)).into()),
-                    arg: Some(ast::Expr::ValueRead("c".into(), (5,6)).into()) 
+                    loc: toLoc((3,4)),
+                    value: (ast::Expr::ValueRead("b".into(), toLoc((3,4))).into()),
+                    arg: Some(ast::Expr::ValueRead("c".into(), toLoc((5,6))).into())
                 }).into()), 
             }))
         );
@@ -1595,25 +1641,25 @@ if a then
 
         assert_eq!(
             Expr::BinaryOpCall(BinaryOpCall {
-                loc: (4, 5),
+                loc: toLoc((4, 5)),
                 lhs: Expr::NumericLiteral {
                     value: "100".to_string(),
                 }
                 .into(),
                 rhs: Expr::BinaryOpCall(BinaryOpCall {
-                    loc: (16, 17),
+                    loc: toLoc((16, 17)),
                     lhs: Expr::BinaryOpCall(BinaryOpCall {
-                        loc: (10, 11),
+                        loc: toLoc((10, 11)),
                         lhs: Expr::NumericLiteral {
                             value: "100".to_string(),
                         }
                         .into(),
-                        rhs: Expr::ValueRead("foo".to_string(), (12, 15)).into(),
+                        rhs: Expr::ValueRead("foo".to_string(), toLoc((12, 15))).into(),
                         operator: "*".to_string()
                     })
                     .into(),
                     rhs: Expr::BinaryOpCall(BinaryOpCall {
-                        loc: (23, 24),
+                        loc: toLoc((23, 24)),
                         lhs: Expr::NumericLiteral {
                             value: "10".to_string(),
                         }
@@ -1639,22 +1685,22 @@ if a then
         let mut parser = from_source(SRC);
         assert_eq!(
             TopLevelValue {
-                loc: (4, 8),
+                loc: crate::Location::User{file:"test".into(), span:4.. 8},
                 is_op: false,
                 ident: "main".to_owned(),
                 ty: None,
                 args: vec![ast::ArgDeclaration::Discard {
                     ty: None,
-                    loc: (9, 10)
+                    loc: crate::Location::User{file:"test".into(), span:9.. 10}
                 }],
                 value: ValueType::Function(Block {
                     statements: vec![
                         Statement::Expr(Expr::FnCall(FnCall {
-                            loc: (17, 28),
-                            value: Expr::ValueRead("print_int32".to_owned(), (17, 28)).into(),
+                            loc: toLoc((17, 28)),
+                            value: Expr::ValueRead("print_int32".to_owned(), toLoc((17, 28))).into(),
                             arg: Some(
                                 Expr::BinaryOpCall(BinaryOpCall {
-                                    loc: (34, 35),
+                                    loc: toLoc((34, 35)),
                                     operator: "+".to_owned(),
                                     lhs: Expr::NumericLiteral {
                                         value: "100".to_owned(),
@@ -1672,7 +1718,7 @@ if a then
                             Expr::NumericLiteral {
                                 value: "0".to_owned(),
                             },
-                            (46, 52)
+                            toLoc((46, 52))
                         )
                     ],
                     implicit_ret: None
@@ -1687,13 +1733,13 @@ if a then
         let mut parser = from_source(SRC_MEMBER_ACCESS);
         assert_eq!(
             ast::Expr::BinaryOpCall(BinaryOpCall {
-                loc: (8, 9),
+                loc: toLoc((8, 9)),
                 lhs: ast::Expr::BinaryOpCall(BinaryOpCall {
-                    loc: (4, 5),
+                    loc: toLoc((4, 5)),
                     lhs: ast::Expr::BinaryOpCall(BinaryOpCall {
-                        loc: (1, 2),
-                        lhs: ast::Expr::ValueRead("a".to_string(), (0, 1)).into(),
-                        rhs: ast::Expr::ValueRead("b".to_string(), (2, 3)).into(),
+                        loc: toLoc((1, 2)),
+                        lhs: ast::Expr::ValueRead("a".to_string(), toLoc((0, 1))).into(),
+                        rhs: ast::Expr::ValueRead("b".to_string(), toLoc((2, 3))).into(),
                         operator: ".".to_string()
                     })
                     .into(),
@@ -1705,9 +1751,9 @@ if a then
                 })
                 .into(),
                 rhs: ast::Expr::BinaryOpCall(BinaryOpCall {
-                    loc: (11, 12),
-                    lhs: ast::Expr::ValueRead("c".to_string(), (10, 11)).into(),
-                    rhs: ast::Expr::ValueRead("d".to_string(), (12, 13)).into(),
+                    loc: toLoc((11, 12)),
+                    lhs: ast::Expr::ValueRead("c".to_string(), toLoc((10, 11))).into(),
+                    rhs: ast::Expr::ValueRead("d".to_string(), toLoc((12, 13))).into(),
                     operator: ".".to_string()
                 })
                 .into(),
@@ -1719,17 +1765,17 @@ if a then
         let mut parser = from_source("(foo bar) && (baz quz)");
         assert_eq!(
             ast::Expr::BinaryOpCall(BinaryOpCall {
-                loc: (10, 12),
+                loc: toLoc((10, 12)),
                 lhs: ast::Expr::FnCall(FnCall {
-                    loc: (1, 4),
-                    value: ast::Expr::ValueRead("foo".to_string(), (1, 4)).into(),
-                    arg: Some(ast::Expr::ValueRead("bar".to_string(), (5, 8)).into())
+                    loc: toLoc((1, 4)),
+                    value: ast::Expr::ValueRead("foo".to_string(), toLoc((1, 4))).into(),
+                    arg: Some(ast::Expr::ValueRead("bar".to_string(), toLoc((5, 8))).into())
                 })
                 .into(),
                 rhs: ast::Expr::FnCall(FnCall {
-                    loc: (14, 17),
-                    value: ast::Expr::ValueRead("baz".to_string(), (14, 17)).into(),
-                    arg: Some(ast::Expr::ValueRead("quz".to_string(), (18, 21)).into())
+                    loc: toLoc((14, 17)),
+                    value: ast::Expr::ValueRead("baz".to_string(), toLoc((14, 17))).into(),
+                    arg: Some(ast::Expr::ValueRead("quz".to_string(), toLoc((18, 21))).into())
                 })
                 .into(),
                 operator: "&&".to_string()
@@ -1751,16 +1797,16 @@ if a then
             block(&mut src).unwrap(),
             ast::Block {
                 statements: vec![ast::Statement::Declaration(ast::ValueDeclaration {
-                    loc: (9, 10),
+                    loc: toLoc((9, 10)),
                     is_op: false,
-                    target: ast::Pattern::Read("x".into(), (9, 10)),
+                    target: ast::Pattern::Read("x".into(), toLoc((9, 10))),
                     args: Vec::new(),
                     ty: None,
                     value: ast::ValueType::Expr(ast::Expr::NumericLiteral { value: "0".into() }),
                     generictypes: None,
                     abi: None
                 }),],
-                implicit_ret: Some(ast::Expr::ValueRead("x".into(), (20, 21)).into())
+                implicit_ret: Some(ast::Expr::ValueRead("x".into(), toLoc((20, 21))).into())
             }
         )
     }
@@ -1771,7 +1817,7 @@ if a then
         let mut input = from_source(SRC);
         assert_eq!(
             ast::TopLevelValue {
-                loc: (4, 7),
+                loc: toLoc((4, 7)),
                 is_op: false,
                 ident: "foo".to_owned(),
                 ty: Some(types::INT32),
@@ -1788,25 +1834,24 @@ if a then
         ignore_blank_lines(&mut input).unwrap();
         assert_eq!(
             ast::TopLevelValue {
-                loc: (26, 29),
+                loc: toLoc((26, 29)),
                 is_op: false,
                 ident: "bar".to_owned(),
                 ty: Some(types::ResolvedType::Function {
                     arg: types::INT32.into(),
                     returns: types::INT32.into(),
-                    loc: (2, 20)
                 }),
                 args: vec![ast::ArgDeclaration::Simple {
                     ident: "quz".to_string(),
-                    loc: (30, 33),
+                    loc: toLoc((30, 33)),
                     ty: None,
                 }],
                 value: ast::ValueType::Function(ast::Block {
                     statements: vec![
                         ast::Statement::Declaration(ast::ValueDeclaration {
-                            loc: (62, 65),
+                            loc: toLoc((62, 65)),
                             is_op: false,
-                            target: ast::Pattern::Read("baz".to_owned(), (62, 65)),
+                            target: ast::Pattern::Read("baz".to_owned(), toLoc((62, 65))),
                             ty: Some(types::STR),
                             args: Vec::new(),
                             value: ast::ValueType::Expr(ast::Expr::StringLiteral(
@@ -1819,7 +1864,7 @@ if a then
                             ast::Expr::NumericLiteral {
                                 value: "2".to_owned(),
                             },
-                            (93, 99)
+                            toLoc((93, 99))
                         )
                     ],
                     implicit_ret: None
@@ -1833,7 +1878,7 @@ if a then
         ignore_blank_lines(&mut input).unwrap();
         assert_eq!(
             ast::TopLevelValue {
-                loc: (108, 112),
+                loc: toLoc((108, 112)),
                 is_op: true,
 
                 ident: "^^".to_owned(),
@@ -1842,35 +1887,33 @@ if a then
                     returns: types::ResolvedType::Function {
                         arg: types::INT32.into(),
                         returns: types::INT32.into(),
-                        loc: (6, 32)
                     }
                     .into(),
-                    loc: (6, 23)
                 }),
                 args: vec![
                     ast::ArgDeclaration::Simple {
                         ident: "lhs".to_string(),
-                        loc: (113, 116),
+                        loc: toLoc((113, 116)),
                         ty: None,
                     },
                     ast::ArgDeclaration::Simple {
                         ident: "rhs".to_string(),
-                        loc: (117, 120),
+                        loc: toLoc((117, 120)),
                         ty: None,
                     },
                 ],
                 value: ast::ValueType::Function(ast::Block {
                     statements: vec![
                         ast::Statement::Expr(ast::Expr::FnCall(ast::FnCall {
-                            loc: (153, 156),
-                            value: ast::Expr::ValueRead("bar".to_string(), (153, 156)).into(),
-                            arg: Some(ast::Expr::ValueRead("foo".to_string(), (157, 160)).into()),
+                            loc: toLoc((153, 156)),
+                            value: ast::Expr::ValueRead("bar".to_string(), toLoc((153, 156))).into(),
+                            arg: Some(ast::Expr::ValueRead("foo".to_string(), toLoc((157, 160))).into()),
                         })),
                         ast::Statement::Return(
                             ast::Expr::NumericLiteral {
                                 value: "1".to_owned(),
                             },
-                            (166, 172)
+                            toLoc((166, 172))
                         )
                     ],
                     implicit_ret: None,
@@ -1894,24 +1937,23 @@ if a then
 
         assert_eq!(
             ast::TopLevelValue {
-                loc: (4, 8),
+                loc: toLoc((4, 8)),
                 is_op: false,
 
                 ident: "main".to_owned(),
                 ty: Some(types::ResolvedType::Function {
                     arg: types::INT32.into(),
                     returns: types::INT32.into(),
-                    loc: (19, 21)
                 }),
                 args: vec![ast::ArgDeclaration::Discard {
                     ty: None,
-                    loc: (9, 10)
+                    loc: toLoc((9, 10))
                 }],
                 value: ast::ValueType::Function(ast::Block {
                     statements: vec![
                         ast::Statement::Expr(ast::Expr::FnCall(ast::FnCall {
-                            loc: (35, 44),
-                            value: ast::Expr::ValueRead("put_int32".to_string(), (35, 44)).into(),
+                            loc: toLoc((35, 44)),
+                            value: ast::Expr::ValueRead("put_int32".to_string(), toLoc((35, 44))).into(),
                             arg: Some(
                                 ast::Expr::NumericLiteral {
                                     value: "100".to_owned(),
@@ -1920,15 +1962,15 @@ if a then
                             )
                         })),
                         ast::Statement::Expr(ast::Expr::FnCall(ast::FnCall {
-                            loc: (54, 63),
-                            value: ast::Expr::ValueRead("print_str".to_string(), (54, 63)).into(),
+                            loc: toLoc((54, 63)),
+                            value: ast::Expr::ValueRead("print_str".to_string(), toLoc((54, 63))).into(),
                             arg: Some(ast::Expr::StringLiteral("v".to_string()).into())
                         })),
                         ast::Statement::Return(
                             ast::Expr::NumericLiteral {
                                 value: "32".to_string(),
                             },
-                            (73, 79)
+                            toLoc((73, 79))
                         )
                     ],
                     implicit_ret: None
@@ -1945,31 +1987,30 @@ if a then
         let mut parser = from_source("for<T> let test a : T -> T = a;");
         assert_eq!(
             ast::TopLevelValue {
-                loc: (11, 15),
+                loc: toLoc((11, 15)),
                 is_op: false,
                 ident: "test".to_owned(),
                 args: vec![ast::ArgDeclaration::Simple {
-                    loc: (16, 17),
+                    loc: toLoc((16, 17)),
                     ident: "a".to_string(),
                     ty: None,
                 }],
                 ty: Some(types::ResolvedType::Function {
                     arg: types::ResolvedType::Generic {
                         name: "T".to_string(),
-                        loc: (20, 21)
+                        loc: toLoc((20, 21))
                     }
                     .into(),
                     returns: types::ResolvedType::Generic {
                         name: "T".to_string(),
-                        loc: (25, 26)
+                        loc: toLoc((25, 26))
                     }
                     .into(),
-                    loc: (22, 24)
                 }),
-                value: ast::ValueType::Expr(ast::Expr::ValueRead("a".to_string(), (29, 30))),
+                value: ast::ValueType::Expr(ast::Expr::ValueRead("a".to_string(), toLoc((29, 30)))),
                 generics: Some(ast::GenericsDecl {
-                    for_loc: (0, 3),
-                    decls: [((4, 5), "T".to_string())].into_iter().collect(),
+                    for_loc: toLoc((0, 3)),
+                    decls: [(toLoc((4, 5)), "T".to_string())].into_iter().collect(),
                 }),
                 abi: None,
             },
@@ -1995,9 +2036,9 @@ for<T,U> type Tuple = {
                     values: vec![ast::FieldDecl {
                         name: "a".to_string(),
                         ty: types::INT32,
-                        loc: (17, 18),
+                        loc: toLoc((17, 18)),
                     }],
-                    loc: (5, 8)
+                    loc: toLoc((5, 8))
                 },
             )),
             top_level_decl(&mut parser).unwrap(),
@@ -2009,28 +2050,28 @@ for<T,U> type Tuple = {
                 ast::StructDefinition {
                     ident: "Tuple".to_string(),
                     generics: Some(ast::GenericsDecl {
-                        for_loc: (29, 32),
-                        decls: vec![((33, 34), "T".to_string()), ((35, 36), "U".to_string())],
+                        for_loc: toLoc((29, 32)),
+                        decls: vec![(toLoc((33, 34)), "T".to_string()), (toLoc((35, 36)), "U".to_string())],
                     }),
                     values: vec![
                         ast::FieldDecl {
                             name: "first".to_string(),
                             ty: types::ResolvedType::Generic {
                                 name: "T".to_string(),
-                                loc: (65, 66),
+                                loc: toLoc((65, 66)),
                             },
-                            loc: (57, 62)
+                            loc: toLoc((57, 62))
                         },
                         ast::FieldDecl {
                             name: "second".to_string(),
                             ty: types::ResolvedType::Generic {
                                 name: "U".to_string(),
-                                loc: (81, 82)
+                                loc: toLoc((81, 82))
                             },
-                            loc: (72, 78)
+                            loc: toLoc((72, 78))
                         },
                     ],
-                    loc: (43, 48)
+                    loc: toLoc((43, 48))
                 }
             )),
             top_level_decl(&mut parser).unwrap(),
@@ -2046,17 +2087,17 @@ for<T,U> type Tuple = {
         let mut parser = from_source(SRC);
         assert_eq!(
             ast::TopLevelDeclaration::Value(ast::TopLevelValue {
-                loc: (4, 7),
+                loc: toLoc((4, 7)),
                 is_op: false,
                 ident: "foo".to_owned(),
                 args: vec![
                     ast::ArgDeclaration::Simple {
-                        loc: (8, 9),
+                        loc: toLoc((8, 9)),
                         ident: "a".to_string(),
                         ty: None,
                     },
                     ast::ArgDeclaration::Simple {
-                        loc: (10, 11),
+                        loc: toLoc((10, 11)),
                         ident: "b".to_string(),
                         ty: None,
                     },
@@ -2065,28 +2106,26 @@ for<T,U> type Tuple = {
                     arg: types::ResolvedType::User {
                         name: "Bar".to_string(),
                         generics: vec![types::INT32],
-                        loc: (14, 25)
+                        loc: toLoc((14, 25))
                     }
                     .into(),
                     returns: types::ResolvedType::Function {
                         arg: types::ResolvedType::User {
                             name: "Baz".to_string(),
                             generics: vec![types::INT32, types::FLOAT64],
-                            loc: (28, 47)
+                            loc: toLoc((28, 47))
                         }
                         .into(),
                         returns: types::INT32.into(),
-                        loc: (47, 49)
                     }
                     .into(),
-                    loc: (25, 27)
                 }),
                 value: ast::ValueType::Function(ast::Block {
                     statements: vec![ast::Statement::Return(
                         ast::Expr::NumericLiteral {
                             value: "0".to_string(),
                         },
-                        (62, 68)
+                        toLoc((62, 68))
                     )],
                     implicit_ret: None
                 }),
@@ -2103,14 +2142,15 @@ for<T,U> type Tuple = {
         let mut parser = from_source(SRC);
         assert_eq!(
             ast::Expr::StructConstruction(ast::StructConstruction {
-                loc: (0, 3),
+                loc: toLoc((0, 3)),
                 fields: HashMap::from([(
                     "a".to_string(),
                     (
                         ast::Expr::NumericLiteral {
                             value: "0".to_string(),
                         },
-                        (0, 0)
+                        crate::Location::User { file:"".into(), span:0..0}
+                    
                     )
                 )]),
                 generics: Vec::new(),
@@ -2121,14 +2161,14 @@ for<T,U> type Tuple = {
         let mut parser = from_source("Generic<int32>{ a:0 }");
         assert_eq!(
             ast::Expr::StructConstruction(ast::StructConstruction {
-                loc: (0, 14),
+                loc: toLoc((0, 14)),
                 fields: HashMap::from([(
                     "a".to_string(),
                     (
                         ast::Expr::NumericLiteral {
                             value: "0".to_string(),
                         },
-                        (0, 0)
+                        crate::Location::User { file:"".into(), span:0..0}
                     )
                 )]),
                 generics: vec![types::INT32],
@@ -2150,7 +2190,7 @@ extern "C" let ex (a:int32) b = a + b;
         let ex = top_level_decl(&mut parser).unwrap();
         assert_eq!(
             ast::TopLevelDeclaration::Value(ast::TopLevelValue {
-                loc: (15, 22),
+                loc: toLoc((15, 22)),
                 is_op: false,
                 ident: "putchar".to_owned(),
                 args: Vec::new(),
@@ -2158,7 +2198,7 @@ extern "C" let ex (a:int32) b = a + b;
                 value: ast::ValueType::External,
                 generics: None,
                 abi: Some(ast::Abi {
-                    loc: (7, 10),
+                    loc: toLoc((7, 10)),
                     identifier: "C".to_string(),
                 }),
             }),
@@ -2167,31 +2207,31 @@ extern "C" let ex (a:int32) b = a + b;
         );
         assert_eq!(
             ast::TopLevelDeclaration::Value(ast::TopLevelValue {
-                loc: (56, 58),
+                loc: toLoc((56, 58)),
                 is_op: false,
                 ident: "ex".to_owned(),
                 args: vec![
                     ast::ArgDeclaration::Simple {
-                        loc: (60, 61),
+                        loc: toLoc((60, 61)),
                         ident: "a".to_string(),
                         ty: Some(types::INT32),
                     },
                     ast::ArgDeclaration::Simple {
-                        loc: (69, 70),
+                        loc: toLoc((69, 70)),
                         ident: "b".to_string(),
                         ty: None,
                     },
                 ],
                 ty: None,
                 value: ast::ValueType::Expr(ast::Expr::BinaryOpCall(ast::BinaryOpCall {
-                    loc: (75, 76),
-                    lhs: ast::Expr::ValueRead("a".to_string(), (73, 74)).into(),
-                    rhs: ast::Expr::ValueRead("b".to_string(), (77, 78)).into(),
+                    loc: toLoc((75, 76)),
+                    lhs: ast::Expr::ValueRead("a".to_string(), toLoc((73, 74))).into(),
+                    rhs: ast::Expr::ValueRead("b".to_string(), toLoc((77, 78))).into(),
                     operator: "+".to_string()
                 })),
                 generics: None,
                 abi: Some(ast::Abi {
-                    loc: (48, 51),
+                    loc: toLoc((48, 51)),
                     identifier: "C".to_string(),
                 }),
             }),
@@ -2213,17 +2253,17 @@ let cons a : int32 -> (int32,int32) = (a,0);
         };
         assert_eq!(
             &ast::TopLevelDeclaration::Value(ast::TopLevelValue {
-                loc: (4, 6),
+                loc: toLoc((4, 6)),
                 is_op: false,
                 ident: "ty".to_owned(),
                 args: vec![ast::ArgDeclaration::Discard {
                     ty: None,
-                    loc: (7, 8)
+                    loc: toLoc((7, 8))
                 }],
                 ty: Some(
                     types::ResolvedType::Tuple {
                         underlining: vec![types::INT32, types::INT32],
-                        loc: (0, 0)
+                        loc: toLoc((0, 0))
                     }
                     .fn_ty(&types::INT32)
                 ),
@@ -2238,26 +2278,26 @@ let cons a : int32 -> (int32,int32) = (a,0);
 
         assert_eq!(
             &ast::TopLevelDeclaration::Value(ast::TopLevelValue {
-                loc: (42, 46),
+                loc: toLoc((42, 46)),
                 is_op: false,
                 ident: "cons".to_owned(),
                 args: vec![ast::ArgDeclaration::Simple {
-                    loc: (47, 48),
+                    loc: toLoc((47, 48)),
                     ident: "a".to_string(),
                     ty: None
                 }],
                 ty: Some(types::INT32.fn_ty(&types::ResolvedType::Tuple {
                     underlining: vec![types::INT32, types::INT32],
-                    loc: (0, 0)
+                    loc: toLoc((0, 0))
                 })),
                 value: ast::ValueType::Expr(ast::Expr::TupleLiteral {
                     contents: vec![
-                        ast::Expr::ValueRead("a".to_string(), (77, 78)),
+                        ast::Expr::ValueRead("a".to_string(), toLoc((77, 78))),
                         ast::Expr::NumericLiteral {
                             value: "0".to_string()
                         }
                     ],
-                    loc: (76, 81)
+                    loc: toLoc((76, 81))
                 }),
                 generics: None,
                 abi: None
@@ -2270,15 +2310,15 @@ let cons a : int32 -> (int32,int32) = (a,0);
     fn match_patterns() {
         let mut src = from_source("a");
         let pattern_ = pattern(&mut src).unwrap();
-        assert_eq!(ast::Pattern::Read("a".to_string(), (0, 1)), pattern_, "a");
+        assert_eq!(ast::Pattern::Read("a".to_string(), toLoc((0, 1))), pattern_, "a");
         let mut src = from_source("_");
         let pattern_ = pattern(&mut src).unwrap();
         assert_eq!(ast::Pattern::Default, pattern_, "_");
         let mut src = from_source("(a,b)");
         assert_eq!(
             ast::Pattern::Destructure(ast::PatternDestructure::Tuple(vec![
-                ast::Pattern::Read("a".to_string(), (1, 2)),
-                ast::Pattern::Read("b".to_string(), (3, 4)),
+                ast::Pattern::Read("a".to_string(), toLoc((1, 2))),
+                ast::Pattern::Read("b".to_string(), toLoc((3, 4))),
             ])),
             pattern(&mut src).unwrap(),
             "destruct tuple"
@@ -2312,7 +2352,7 @@ let cons a : int32 -> (int32,int32) = (a,0);
                     ast::Pattern::ConstNumber("0".to_string()).into(),
                     ast::Pattern::ConstNumber("1".to_string()).into(),
                 ),
-                ast::Pattern::Read("b".to_string(), (7, 8)),
+                ast::Pattern::Read("b".to_string(), toLoc((7, 8))),
             ])),
             pattern(&mut src).unwrap(),
             "destruct tuple"
@@ -2337,11 +2377,11 @@ let annotated_arg_tuple ((x,y):(int32,int32)) = ();
         let annotated_decon = top_level_decl(&mut src).unwrap();
         assert_eq!(
             ast::TopLevelDeclaration::Value(ast::TopLevelValue {
-                loc: (5, 11),
+                loc: toLoc((5, 11)),
                 is_op: false,
                 ident: "simple".to_owned(),
                 args: vec![ast::ArgDeclaration::Simple {
-                    loc: (12, 13),
+                    loc: toLoc((12, 13)),
                     ident: "a".to_string(),
                     ty: None,
                 },],
@@ -2355,24 +2395,24 @@ let annotated_arg_tuple ((x,y):(int32,int32)) = ();
         );
         assert_eq!(
             ast::TopLevelDeclaration::Value(ast::TopLevelValue {
-                loc: (24, 33),
+                loc: toLoc((24, 33)),
                 is_op: false,
                 ident: "decon_arg".to_owned(),
                 args: vec![ast::ArgDeclaration::DestructureTuple(
                     vec![
                         ast::ArgDeclaration::Simple {
-                            loc: (35, 36),
+                            loc: toLoc((35, 36)),
                             ident: "a".to_string(),
                             ty: None,
                         },
                         ast::ArgDeclaration::Simple {
-                            loc: (37, 38),
+                            loc: toLoc((37, 38)),
                             ident: "b".to_string(),
                             ty: None,
                         },
                     ],
                     None,
-                    (34, 39)
+                    toLoc((34, 39))
                 ),],
                 ty: None,
                 value: ast::ValueType::Expr(ast::Expr::UnitLiteral),
@@ -2384,11 +2424,11 @@ let annotated_arg_tuple ((x,y):(int32,int32)) = ();
         );
         assert_eq!(
             ast::TopLevelDeclaration::Value(ast::TopLevelValue {
-                loc: (50, 57),
+                loc: toLoc((50, 57)),
                 is_op: false,
                 ident: "discard".to_owned(),
                 args: vec![ast::ArgDeclaration::Discard {
-                    loc: (58, 59),
+                    loc: toLoc((58, 59)),
                     ty: None,
                 },],
                 ty: None,
@@ -2401,11 +2441,11 @@ let annotated_arg_tuple ((x,y):(int32,int32)) = ();
         );
         assert_eq!(
             ast::TopLevelDeclaration::Value(ast::TopLevelValue {
-                loc: (70, 74),
+                loc: toLoc((70, 74)),
                 is_op: false,
                 ident: "unit".to_owned(),
                 args: vec![ast::ArgDeclaration::Unit {
-                    loc: (75, 77),
+                    loc: toLoc((75, 77)),
                     ty: None,
                 },],
                 ty: None,
@@ -2418,27 +2458,27 @@ let annotated_arg_tuple ((x,y):(int32,int32)) = ();
         );
         assert_eq!(
             ast::TopLevelDeclaration::Value(ast::TopLevelValue {
-                loc: (88, 107),
+                loc: toLoc((88, 107)),
                 is_op: false,
                 ident: "annotated_arg_tuple".to_owned(),
                 args: vec![ast::ArgDeclaration::DestructureTuple(
                     vec![
                         ast::ArgDeclaration::Simple {
-                            loc: (110, 111),
+                            loc: toLoc((110, 111)),
                             ident: "x".to_string(),
                             ty: None,
                         },
                         ast::ArgDeclaration::Simple {
-                            loc: (112, 113),
+                            loc: toLoc((112, 113)),
                             ident: "y".to_string(),
                             ty: None,
                         },
                     ],
                     Some(types::ResolvedType::Tuple {
                         underlining: vec![types::INT32, types::INT32,],
-                        loc: (115, 128)
+                        loc: toLoc((115, 128))
                     }),
-                    (109, 114)
+                    toLoc((109, 114))
                 ),],
                 ty: None,
                 value: ast::ValueType::Expr(ast::Expr::UnitLiteral),
@@ -2461,15 +2501,15 @@ let (x,y):(int32,int32) = v;
         );
         assert_eq!(
             ast::Statement::Declaration(ast::ValueDeclaration {
-                loc: (4,9),
+                loc: toLoc((4,9)),
                 is_op: false,
                 target: ast::Pattern::Destructure(ast::PatternDestructure::Tuple(vec![
-                    ast::Pattern::Read("x".to_string(), (5, 6)),
-                    ast::Pattern::Read("y".to_string(), (7, 8)),
+                    ast::Pattern::Read("x".to_string(), toLoc((5, 6))),
+                    ast::Pattern::Read("y".to_string(), toLoc((7, 8))),
                 ])),
                 args: Vec::new(),
                 ty: None,
-                value: ast::ValueType::Expr(ast::Expr::ValueRead("v".to_string(), (12, 13))),
+                value: ast::ValueType::Expr(ast::Expr::ValueRead("v".to_string(), toLoc((12, 13)))),
                 generictypes: None,
                 abi: None,
             }),
@@ -2478,18 +2518,18 @@ let (x,y):(int32,int32) = v;
         ascii::line_ending::<_, ContextError>(&mut parser);
         assert_eq!(
             ast::Statement::Declaration(ast::ValueDeclaration {
-                loc: (19, 28),
+                loc: toLoc((19, 28)),
                 is_op: false,
                 target: ast::Pattern::Destructure(ast::PatternDestructure::Tuple(vec![
                     ast::Pattern::Destructure(ast::PatternDestructure::Tuple(vec![
-                        ast::Pattern::Read("x".to_string(), (21, 22)),
-                        ast::Pattern::Read("y".to_string(), (23, 24)),
+                        ast::Pattern::Read("x".to_string(), toLoc((21, 22))),
+                        ast::Pattern::Read("y".to_string(), toLoc((23, 24))),
                     ])),
-                    ast::Pattern::Read("z".to_string(), (26, 27))
+                    ast::Pattern::Read("z".to_string(), toLoc((26, 27)))
                 ])),
                 args: Vec::new(),
                 ty: None,
-                value: ast::ValueType::Expr(ast::Expr::ValueRead("v".to_string(), (31, 32))),
+                value: ast::ValueType::Expr(ast::Expr::ValueRead("v".to_string(), toLoc((31, 32)))),
                 generictypes: None,
                 abi: None,
             }),
@@ -2499,16 +2539,16 @@ let (x,y):(int32,int32) = v;
         ascii::line_ending::<_, ContextError>(&mut parser);
         assert_eq!(
             ast::Statement::Declaration(ast::ValueDeclaration {
-                loc: (38, 45),
+                loc: toLoc((38, 45)),
                 is_op: false,
                 target: ast::Pattern::Destructure(ast::PatternDestructure::Tuple(vec![
-                    ast::Pattern::Read("x".to_string(), (39, 40)),
-                    ast::Pattern::Read("y".to_string(), (41, 42)),
-                    ast::Pattern::Read("z".to_string(), (43, 44)),
+                    ast::Pattern::Read("x".to_string(), toLoc((39, 40))),
+                    ast::Pattern::Read("y".to_string(), toLoc((41, 42))),
+                    ast::Pattern::Read("z".to_string(), toLoc((43, 44))),
                 ])),
                 args: Vec::new(),
                 ty: None,
-                value: ast::ValueType::Expr(ast::Expr::ValueRead("v".to_string(), (48, 49))),
+                value: ast::ValueType::Expr(ast::Expr::ValueRead("v".to_string(), toLoc((48, 49)))),
                 generictypes: None,
                 abi: None,
             }),
@@ -2517,18 +2557,18 @@ let (x,y):(int32,int32) = v;
         ascii::line_ending::<_, ContextError>(&mut parser);
         assert_eq!(
             ast::Statement::Declaration(ast::ValueDeclaration {
-                loc: (55, 60),
+                loc: toLoc((55, 60)),
                 is_op: false,
                 target: ast::Pattern::Destructure(ast::PatternDestructure::Tuple(vec![
-                    ast::Pattern::Read("x".to_string(), (56, 57)),
-                    ast::Pattern::Read("y".to_string(), (58, 59)),
+                    ast::Pattern::Read("x".to_string(), toLoc((56, 57))),
+                    ast::Pattern::Read("y".to_string(), toLoc((58, 59))),
                 ])),
                 args: Vec::new(),
                 ty: Some(types::ResolvedType::Tuple {
                     underlining: vec![types::INT32, types::INT32],
-                    loc: (4, 10),
+                    loc: toLoc((4, 10)),
                 }),
-                value: ast::ValueType::Expr(ast::Expr::ValueRead("v".to_string(), (77, 78))),
+                value: ast::ValueType::Expr(ast::Expr::ValueRead("v".to_string(), toLoc((77, 78)))),
                 generictypes: None,
                 abi: None,
             }),
@@ -2544,7 +2584,7 @@ let (x,y):(int32,int32) = v;
         let arr = top_level_decl(&mut arr).unwrap();
         assert_eq!(
             ast::TopLevelDeclaration::Value(ast::TopLevelValue {
-                loc: (4, 7),
+                loc: toLoc((4, 7)),
                 is_op: false,
                 ident: "arr".to_owned(),
                 args: Vec::new(),
@@ -2564,7 +2604,7 @@ let (x,y):(int32,int32) = v;
                             value: "0".to_string()
                         },
                     ],
-                    loc: (10, 19)
+                    loc: toLoc((10, 19))
                 }),
                 generics: None,
                 abi: None,
@@ -2581,7 +2621,7 @@ for<T> enum Option = | Some T | None
 for<T,E> enum Result = | Ok T | Err E
 ";
         let mut parser = from_source(SRC);
-        ignore_blank_lines(&mut parser);
+        let _ = ignore_blank_lines(&mut parser);
         let basic = top_level_decl(&mut parser).unwrap();
         assert_eq!(
             ast::TopLevelDeclaration::TypeDefinition(ast::TypeDefinition::Enum(
@@ -2591,11 +2631,11 @@ for<T,E> enum Result = | Ok T | Err E
                     values: vec![
                         ast::EnumVariant::Unit {
                             ident: "None".to_string(),
-                            loc: (16, 20)
+                            loc: crate::Location::User{file:"test".into(), span:16..20}
                         },
                         ast::EnumVariant::Tuple {
                             ident: "AnInt".to_string(),
-                            loc: (23, 28),
+                            loc: crate::Location::User{file:"test".into(), span:23..28},
                             ty: types::INT32
                         },
                         ast::EnumVariant::Struct {
@@ -2603,12 +2643,12 @@ for<T,E> enum Result = | Ok T | Err E
                             fields: vec![ast::FieldDecl {
                                 name: "a".to_string(),
                                 ty: types::INT32,
-                                loc: (46, 47)
+                                loc: toLoc((46, 47))
                             }],
-                            loc: (37, 43)
+                            loc: toLoc((37, 43))
                         }
                     ],
-                    loc: (6, 11),
+                    loc: toLoc((6, 11)),
                 }
             )),
             basic,
@@ -2621,24 +2661,24 @@ for<T,E> enum Result = | Ok T | Err E
                 ast::EnumDeclaration {
                     ident: "Option".to_string(),
                     generics: Some(ast::GenericsDecl {
-                        for_loc: (57, 60),
-                        decls: vec![((61, 62), "T".to_string())]
+                        for_loc: toLoc((57, 60)),
+                        decls: vec![(toLoc((61, 62)), "T".to_string())]
                     }),
                     values: vec![
                         ast::EnumVariant::Tuple {
                             ident: "Some".to_string(),
                             ty: types::ResolvedType::Generic {
                                 name: "T".to_string(),
-                                loc: (85, 86)
+                                loc: toLoc((85, 86))
                             },
-                            loc: (80, 84)
+                            loc: toLoc((80, 84))
                         },
                         ast::EnumVariant::Unit {
                             ident: "None".to_string(),
-                            loc: (89, 93)
+                            loc: toLoc((89, 93))
                         }
                     ],
-                    loc: (69, 75)
+                    loc: toLoc((69, 75))
                 }
             )),
             option,
@@ -2652,28 +2692,28 @@ for<T,E> enum Result = | Ok T | Err E
                 ast::EnumDeclaration {
                     ident: "Result".to_string(),
                     generics: Some(ast::GenericsDecl {
-                        for_loc: (94, 97),
-                        decls: vec![((98, 99), "T".to_string()), ((100, 101), "E".to_string()),]
+                        for_loc: toLoc((94, 97)),
+                        decls: vec![(toLoc((98, 99)), "T".to_string()), (toLoc((100, 101)), "E".to_string()),]
                     }),
                     values: vec![
                         ast::EnumVariant::Tuple {
                             ident: "Ok".to_string(),
                             ty: types::ResolvedType::Generic {
                                 name: "T".to_string(),
-                                loc: (122, 123)
+                                loc: toLoc((122, 123))
                             },
-                            loc: (119, 121)
+                            loc: toLoc((119, 121))
                         },
                         ast::EnumVariant::Tuple {
                             ident: "Err".to_string(),
                             ty: types::ResolvedType::Generic {
                                 name: "E".to_string(),
-                                loc: (130, 131)
+                                loc: toLoc((130, 131))
                             },
-                            loc: (126, 129)
+                            loc: toLoc((126, 129))
                         },
                     ],
-                    loc: (108, 114)
+                    loc: toLoc((108, 114))
                 }
             )),
             result,
@@ -2697,14 +2737,14 @@ match a where
         let ast = match_(&mut src).unwrap();
         assert_eq!(
             ast::Match {
-                loc: (1, 6),
-                on: ast::Expr::ValueRead("a".to_string(), (7, 8)).into(),
+                loc: toLoc((1, 6)),
+                on: ast::Expr::ValueRead("a".to_string(), toLoc((7, 8))).into(),
                 arms: vec![
                     ast::MatchArm {
                         block: ast::Block {
                             statements: Vec::new(),
                             implicit_ret: Some(
-                                ast::Expr::ValueRead("b".to_string(), (46, 47)).into()
+                                ast::Expr::ValueRead("b".to_string(), toLoc((46, 47))).into()
                             ),
                         },
                         cond: ast::Pattern::Destructure(ast::PatternDestructure::Struct {
@@ -2713,12 +2753,12 @@ match a where
                                 ("a".to_string(), ast::Pattern::ConstNumber("0".to_string())),
                                 (
                                     "b".to_string(),
-                                    ast::Pattern::Read("b".to_string(), (39, 40))
+                                    ast::Pattern::Read("b".to_string(), toLoc((39, 40)))
                                 ),
                             ]
                             .into(),
                         }),
-                        loc: (15, 16)
+                        loc: toLoc((15, 16))
                     },
                     ast::MatchArm {
                         block: ast::Block {
@@ -2740,24 +2780,24 @@ match a where
                                 )
                                 .into()
                             ),
-                            loc: (51, 63)
+                            loc: toLoc((51, 63))
                         },
-                        loc: (49, 50),
+                        loc: toLoc((49, 50)),
                     },
                     ast::MatchArm {
                         block: ast::Block {
                             statements: Vec::new(),
                             implicit_ret: Some(
-                                ast::Expr::ValueRead("a".to_string(), (92, 93)).into()
+                                ast::Expr::ValueRead("a".to_string(), toLoc((92, 93))).into()
                             ),
                         },
                         cond: ast::Pattern::EnumVariant {
                             ty: None,
                             variant: "Simple".to_string(),
-                            pattern: Some(ast::Pattern::Read("a".to_string(), (87, 88)).into()),
-                            loc: (80, 86),
+                            pattern: Some(ast::Pattern::Read("a".to_string(), toLoc((87, 88))).into()),
+                            loc: toLoc((80, 86)),
                         },
-                        loc: (78, 79),
+                        loc: toLoc((78, 79)),
                     },
                 ],
             },
@@ -2776,9 +2816,9 @@ match a where
         assert_eq!(
             expr(&mut src),
             Ok(ast::Expr::FnCall(ast::FnCall{ 
-                loc:(0,1), 
-                value:ast::Expr::ValueRead("a".into(),(0,1)).into(), 
-                arg: Some(ast::Expr::ValueRead("b".into(), (16,17)).into())
+                loc:toLoc((0,1)),
+                value:ast::Expr::ValueRead("a".into(),toLoc((0,1))).into(),
+                arg: Some(ast::Expr::ValueRead("b".into(), toLoc((16,17))).into())
             }))
         );
         assert!(src.is_empty());
@@ -2787,11 +2827,11 @@ match a where
         assert_eq!(
             expr(&mut src),
             Ok(ast::Expr::FnCall(ast::FnCall{ 
-                loc:(0,1), 
+                loc:toLoc((0,1)),
                 value: ast::Expr::FnCall(ast::FnCall { 
-                    value:ast::Expr::ValueRead("a".into(),(0,1)).into(), 
-                    arg: Some(ast::Expr::ValueRead("b".into(), (2,3)).into()),
-                    loc:(0,1),
+                    value:ast::Expr::ValueRead("a".into(),toLoc((0,1))).into(),
+                    arg: Some(ast::Expr::ValueRead("b".into(), toLoc((2,3))).into()),
+                    loc:toLoc((0,1)),
                 }).into(),
                 arg:Some(ast::Expr::UnitLiteral.into()),
             }))

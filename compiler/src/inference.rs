@@ -83,7 +83,7 @@ impl Context {
         } = module;
 
         ast::ModuleDeclaration {
-            loc: loc.unwrap_or_default(),
+            loc,
             name,
             decls: declarations
                 .into_iter()
@@ -397,7 +397,7 @@ impl Context {
                             .map(|base_ty| ResolvedType::User {
                                 name: base_ty,
                                 generics: Vec::new(),
-                                loc: (0, 0),
+                                loc: crate::Location::User { file:"".to_string(), span:0..0},
                             })
                             .unwrap_or(on_t.clone());
                         ast::DestructurePattern::Struct {
@@ -482,7 +482,6 @@ impl Context {
             Some(ResolvedType::Function {
                 arg: arg_t,
                 returns: result_t.clone().into(),
-                loc,
             }),
         );
         ast::FnCall {
@@ -721,7 +720,7 @@ impl Context {
                     }
                 }
             }
-            ast::ArgDeclaration::Discard { loc, ty } => (),
+            ast::ArgDeclaration::Discard { loc:_, ty:_ } => (),
             ast::ArgDeclaration::Unit { .. } => (),
         }
     }
@@ -804,7 +803,7 @@ impl Context {
                 };
                 ResolvedType::Tuple {
                     underlining: contents,
-                    loc: (0, 0),
+                    loc: crate::Location::Language,
                 }
             }
             ast::Expr::Error(_) => ResolvedType::Error,
@@ -849,7 +848,6 @@ impl Context {
                             let ResolvedType::Function {
                                 arg: lhs_ty,
                                 returns: temp,
-                                loc: _,
                             } = result
                             else {
                                 unreachable!()
@@ -857,7 +855,6 @@ impl Context {
                             let ResolvedType::Function {
                                 arg: rhs_ty,
                                 returns: result,
-                                loc: _,
                             } = temp.as_ref()
                             else {
                                 unreachable!()
@@ -886,7 +883,6 @@ impl Context {
                             let ResolvedType::Function {
                                 arg: lhs_ty,
                                 returns: temp,
-                                loc: _,
                             } = result
                             else {
                                 unreachable!()
@@ -894,7 +890,6 @@ impl Context {
                             let ResolvedType::Function {
                                 arg: rhs_ty,
                                 returns: result,
-                                loc: _,
                             } = temp.as_ref()
                             else {
                                 unreachable!()
@@ -1256,7 +1251,6 @@ impl Context {
         if let ResolvedType::Function {
             arg: arg_t,
             returns: return_t,
-            loc: _,
         } = dbg!(self.get_actual_type(value.as_mut(), None, fun_ret_ty))
         {
 
@@ -1415,7 +1409,7 @@ impl Context {
                                     .iter()
                                     .map(ast::ArgDeclaration::get_ty)
                                     .collect(),
-                                loc: (0, 0),
+                                loc: crate::Location::Language,
                             },
                         );
                     }
@@ -1657,7 +1651,6 @@ impl Context {
         if let ResolvedType::Function {
             arg: _,
             returns: fn_ret,
-            loc: _,
         } = fn_expr
         {
             if returns.is_unknown() || returns.is_error() {
@@ -1782,7 +1775,7 @@ impl Context {
                             .iter_mut()
                             .map(|expr| self.apply_equation_expr(expr, id, ty.clone()))
                             .collect(),
-                        loc: (0, 0),
+                        loc: crate::Location::Language,
                     }
                 }
             }
@@ -1815,7 +1808,6 @@ impl Context {
                         let ResolvedType::Function {
                             arg: lhs_t,
                             returns,
-                            loc: _,
                         } = result
                         else {
                             unreachable!()
@@ -1823,7 +1815,6 @@ impl Context {
                         let ResolvedType::Function {
                             arg: rhs_t,
                             returns,
-                            loc: _,
                         } = returns.as_ref()
                         else {
                             unreachable!()
@@ -1878,7 +1869,7 @@ impl Context {
                 ResolvedType::User {
                     name: "List".to_string(),
                     generics: vec![underlining],
-                    loc: (0, 0),
+                    loc: crate::Location::Language,
                 }
             }
             ast::Expr::StructConstruction(_) => todo!(),
@@ -1943,7 +1934,7 @@ impl Context {
                         }
                     }
                 }
-                ast::DestructurePattern::Struct { base_ty, fields } => {
+                ast::DestructurePattern::Struct { base_ty:_, fields } => {
                     for field in fields.values_mut() {
                         self.apply_substution_pattern(field, (eid, new_ty))
                     }
@@ -1956,7 +1947,7 @@ impl Context {
                 self.apply_substution_pattern(rhs.as_mut(), (eid, new_ty));
             }
             ast::Pattern::EnumVariant {
-                ty, pattern, loc, ..
+                ty:_, pattern, loc:_, ..
             } => {
                 if let Some(pat) = pattern {
                     self.apply_substution_pattern(pat.as_mut(), (eid, new_ty));
@@ -2052,26 +2043,32 @@ mod tests {
     };
     use pretty_assertions::assert_eq;
     use std::collections::HashMap;
+    lazy_static::lazy_static!{
+        static ref TESTING_LOC : crate::Location = crate::Location::User {
+            span:0..0,
+            file:String::from("<anon>")
+        };
+    }
 
     #[test]
     fn phase1() {
         // let foo (a:int32) = a
         let ast = super::untyped_ast::ModuleDeclaration {
-            loc: None,
+            loc:TESTING_LOC.clone(),
             name: "foo".to_string(),
             declarations: vec![super::untyped_ast::TopLevelDeclaration::Value(
                 super::untyped_ast::TopLevelValue {
-                    loc: (0, 0),
+                    loc: TESTING_LOC.clone(),
                     is_op: false,
                     ident: "foo".to_owned(),
                     args: vec![super::untyped_ast::ArgDeclaration::Simple {
-                        loc: (0, 0),
+                        loc: TESTING_LOC.clone(),
                         ident: "a".to_string(),
                         ty: Some(types::INT32),
                     }],
                     ty: None,
                     value: super::untyped_ast::ValueType::Expr(
-                        super::untyped_ast::Expr::ValueRead("a".to_string(), (0, 0)),
+                        super::untyped_ast::Expr::ValueRead("a".to_string(), TESTING_LOC.clone()),
                     ),
                     generics: None,
                     abi: None,
@@ -2088,15 +2085,15 @@ mod tests {
         assert_eq!(
             ctx.assign_ids_module(ast),
             super::ast::ModuleDeclaration {
-                loc: (0, 0),
+                loc: TESTING_LOC.clone(),
                 name: "foo".to_string(),
                 decls: vec![super::ast::TopLevelDeclaration::Value(
                     super::ast::TopLevelValue {
-                        loc: (0, 0),
+                        loc: TESTING_LOC.clone(),
                         is_op: false,
                         ident: "foo".to_string(),
                         args: vec![super::ast::ArgDeclaration::Simple {
-                            loc: (0, 0),
+                            loc: TESTING_LOC.clone(),
                             ident: "a".to_string(),
                             ty: types::INT32,
                             id: 1
@@ -2104,7 +2101,7 @@ mod tests {
                         ty: types::ResolvedType::Unknown(0),
                         value: super::ast::ValueType::Expr(super::ast::Expr::ValueRead(
                             "a".to_string(),
-                            (0, 0),
+                            TESTING_LOC.clone(),
                             2
                         )),
                         generics: None,
@@ -2120,15 +2117,15 @@ mod tests {
             file("foo", r"let foo a : bool -> int32 = if a then 0 else 1;");
         assert_eq!(
             super::ast::ModuleDeclaration {
-                loc: (0, 0),
+                loc: crate::Location::User { file: "foo".into(), span:0..0  },
                 name: "foo".to_string(),
                 decls: vec![super::ast::TopLevelDeclaration::Value(
                     super::ast::TopLevelValue {
-                        loc: (4,7),
+                        loc: crate::Location::User { file:"foo".into(), span: 4..7, },
                         is_op: false,
                         ident: "foo".to_string(),
                         args: vec![super::ast::ArgDeclaration::Simple {
-                            loc: (8,9),
+                            loc: crate::Location::User { file:"foo".into(), span:8..9 },
                             ident: "a".to_string(),
                             ty: types::BOOL,
                             id: 1
@@ -2136,7 +2133,7 @@ mod tests {
                         ty: types::BOOL.fn_ty(&types::INT32),
                         value: super::ast::ValueType::Expr(super::ast::Expr::If(
                             super::ast::If {
-                                cond: super::ast::Expr::ValueRead("a".to_string(), (31,32), 3)
+                                cond: super::ast::Expr::ValueRead("a".to_string(), crate::Location::User {file:"foo".into(), span:31..32}, 3)
                                     .into(),
                                 true_branch: super::ast::Block{
                                     statements:Vec::new(),
@@ -2159,7 +2156,7 @@ mod tests {
                                     ret_ty:ResolvedType::Unknown(1).into(),
                                 }
                                 .into(),
-                                loc: (28,30),
+                                loc: crate::Location::User { file:"foo".into(),span:28..30},
                                 id: 2,
                                 result: ResolvedType::Unknown(0),
                             }
@@ -2185,15 +2182,15 @@ let foo a = match a   where
         );
         assert_eq!(
             super::ast::ModuleDeclaration {
-                loc: (0, 0),
+                loc: crate::Location::User {file:"foo".into(), span:0..0},
                 name: "foo".to_string(),
                 decls: vec![super::ast::TopLevelDeclaration::Value(
                     super::ast::TopLevelValue {
-                        loc: (5,8),
+                        loc: crate::Location::User {file:"foo".into(), span:5..8},
                         is_op: false,
                         ident: "foo".to_string(),
                         args: vec![super::ast::ArgDeclaration::Simple {
-                            loc: (9,10),
+                            loc: crate::Location::User {file:"foo".into(), span:9..10},
                             ident: "a".to_string(),
                             ty: types::ResolvedType::Unknown(1),
                             id: 1
@@ -2201,8 +2198,8 @@ let foo a = match a   where
                         ty: types::ResolvedType::Unknown(0),
                         value: super::ast::ValueType::Expr(super::ast::Expr::Match(
                             super::ast::Match {
-                                loc: (13,18),
-                                on: super::ast::Expr::ValueRead("a".to_string(), (19,20), 3).into(),
+                                loc: crate::Location::User {file:"foo".into(),span:13..18},
+                                on: super::ast::Expr::ValueRead("a".to_string(), crate::Location::User { file:"foo".into(),span:19..20}, 3).into(),
                                 arms: vec![
                                     super::ast::MatchArm {
                                         block: Vec::new(),
@@ -2213,7 +2210,7 @@ let foo a = match a   where
                                             "0".to_string(),
                                             ResolvedType::Unknown(2),
                                         ),
-                                        loc: (33,34)
+                                        loc: crate::Location::User {file:"foo".into(), span: 33..34},
                                     },
                                     super::ast::MatchArm {
                                         block: Vec::new(),
@@ -2224,7 +2221,7 @@ let foo a = match a   where
                                             "1".to_string(),
                                             ResolvedType::Unknown(2),
                                         ),
-                                        loc: (49,50)
+                                        loc: crate::Location::User {file:"foo".into(), span:49..50}
                                     },
                                     super::ast::MatchArm {
                                         block: Vec::new(),
@@ -2235,7 +2232,7 @@ let foo a = match a   where
                                             "2".to_string(),
                                             ResolvedType::Unknown(2),
                                         ),
-                                        loc: (65,66)
+                                        loc: crate::Location::User { file:"foo".into(), span:65..66},
                                     },
                                     super::ast::MatchArm {
                                         block: Vec::new(),
@@ -2243,7 +2240,7 @@ let foo a = match a   where
                                             super::ast::Expr::CharLiteral("d".to_string()).into()
                                         ),
                                         cond: super::ast::Pattern::Default,
-                                        loc: (81,82)
+                                        loc: crate::Location::User { file:"foo".into(), span:81..82 },
                                     },
                                 ],
                                 id: 2
@@ -2261,15 +2258,15 @@ let foo a = match a   where
         let ast = file("foo","let foo a = a == 3;");
         assert_eq!(
             super::ast::ModuleDeclaration {
-                loc: (0, 0),
+                loc: crate::Location::User { file:"foo".into(), span:0..0 },
                 name: "foo".to_string(),
                 decls: vec![super::ast::TopLevelDeclaration::Value(
                     super::ast::TopLevelValue {
-                        loc: (4,7),
+                        loc: crate::Location::User { file:"foo".into(), span:4..7 },
                         is_op: false,
                         ident: "foo".to_string(),
                         args: vec![super::ast::ArgDeclaration::Simple {
-                            loc: (8,9),
+                            loc: crate::Location::User { file:"foo".into(), span:8..9 },
                             ident: "a".to_string(),
                             ty: ResolvedType::Unknown(1),
                             id: 1
@@ -2277,8 +2274,8 @@ let foo a = match a   where
                         ty: ResolvedType::Unknown(0),
                         value: super::ast::ValueType::Expr(super::ast::Expr::BinaryOpCall(
                             super::ast::BinaryOpCall {
-                                loc: (14,16),
-                                lhs: super::ast::Expr::ValueRead("a".to_string(), (12,13), 3)
+                                loc: crate::Location::User { file:"foo".into(), span:14..16 },
+                                lhs: super::ast::Expr::ValueRead("a".to_string(), crate::Location::User { file:"foo".into(), span:12..13 }, 3)
                                     .into(),
                                 rhs: super::ast::Expr::NumericLiteral {
                                     value: "3".to_string(),
@@ -2352,15 +2349,15 @@ let complex x =
         ast.decls.sort_by_key(|it| it.get_ident());
         assert_eq!(
             super::ast::ModuleDeclaration {
-                loc: (0, 0),
+                loc: crate::Location::User { file:"foo".into(), span:0..0 },
                 name: "foo".to_string(),
                 decls: vec![
                     super::ast::TopLevelDeclaration::Value(super::ast::TopLevelValue {
-                        loc: (8,21),
+                        loc: crate::Location::User { file:"foo".into(), span:8..21 },
                         is_op: false,
                         ident: "annotated_arg".to_string(),
                         args: vec![super::ast::ArgDeclaration::Simple {
-                            loc: (23,24),
+                            loc: crate::Location::User { file:"foo".into(), span:23..24 },
                             ident: "x".to_string(),
                             ty: types::INT32,
                             id: 1
@@ -2372,11 +2369,10 @@ let complex x =
                                 size: 4
                             }
                             .into(),
-                            loc: (0, 0)
                         },
                         value: super::ast::ValueType::Expr(super::ast::Expr::ArrayLiteral {
                             contents: vec![
-                                super::ast::Expr::ValueRead("x".to_string(), (35,36), 3),
+                                super::ast::Expr::ValueRead("x".to_string(), crate::Location::User { file:"foo".into(), span:35..36 }, 3),
                                 super::ast::Expr::NumericLiteral {
                                     value: "1".to_string(),
                                     id: 4,
@@ -2393,7 +2389,7 @@ let complex x =
                                     ty: types::INT32
                                 },
                             ],
-                            loc: (34,43),
+                            loc: crate::Location::User { file:"foo".into(), span:34..43},
                             id: 2
                         }),
                         generics: None,
@@ -2401,11 +2397,11 @@ let complex x =
                         id: 0
                     }),
                     super::ast::TopLevelDeclaration::Value(super::ast::TopLevelValue {
-                        loc: (50,57),
+                        loc: crate::Location::User { file:"foo".into(), span:50..57 },
                         is_op: false,
                         ident: "complex".to_string(),
                         args: vec![super::ast::ArgDeclaration::Simple {
-                            loc: (58,59),
+                            loc: crate::Location::User { file:"foo".into(), span:58..59 },
                             ident: "x".to_string(),
                             ty: types::INT32,
                             id: 8
@@ -2416,27 +2412,27 @@ let complex x =
                         }),
                         value: super::ast::ValueType::Function(vec![
                             super::ast::Statement::Expr(super::ast::Expr::FnCall(super::ast::FnCall {
-                                loc: (66, 77),
+                                loc: crate::Location::User { file:"foo".into(), span:66..77 },
                                 value: super::ast::Expr::ValueRead(
                                     "print_int32".to_string(),
-                                    (66, 77),
+                                    crate::Location::User { file:"foo".into(), span:66..77 },
                                     10
                                 )
                                 .into(),
-                                arg: super::ast::Expr::ValueRead("x".to_string(), (78,79), 9)
+                                arg: super::ast::Expr::ValueRead("x".to_string(), crate::Location::User { file:"foo".into(), span:78..79 }, 9)
                                     .into(),
                                 id: 11,
                                 returns: types::UNIT
                             })),
                             super::ast::Statement::Return(
                                 super::ast::Expr::If(super::ast::If {
-                                    loc: (92,94),
+                                    loc: crate::Location::User { file:"foo".into(), span:92..94 },
                                     cond: super::ast::Expr::BinaryOpCall(
                                         super::ast::BinaryOpCall {
-                                            loc: (97,99),
+                                            loc: crate::Location::User { file:"foo".into(), span:97..99 },
                                             lhs: super::ast::Expr::ValueRead(
                                                 "x".to_string(),
-                                                (95,96),
+                                                crate::Location::User { file:"foo".into(), span:95..96 },
                                                 14
                                             )
                                             .into(),
@@ -2458,7 +2454,7 @@ let complex x =
                                             contents: vec![
                                                 super::ast::Expr::ValueRead(
                                                     "x".to_string(),
-                                                    (108,109),
+                                                    crate::Location::User { file:"foo".into(), span:108..109 },
                                                     18
                                                 ),
                                                 super::ast::Expr::NumericLiteral {
@@ -2477,7 +2473,7 @@ let complex x =
                                                     ty: types::INT32
                                                 },
                                             ],
-                                            loc: (107,116),
+                                            loc: crate::Location::User { file:"foo".into(), span:107..116 },
                                             id: 17
                                         }
                                         .into()),
@@ -2490,16 +2486,16 @@ let complex x =
                                     else_branch: super::ast::Block {
                                         statements:Vec::new(),
                                         implicit_ret:Some(super::ast::Expr::FnCall(super::ast::FnCall {
-                                            loc: (122,135),
+                                            loc: crate::Location::User { file:"foo".into(), span:122..135 },
                                             value: super::ast::Expr::ValueRead(
                                                 "annotated_arg".to_string(),
-                                                (122,135),
+                                                crate::Location::User { file:"foo".into(), span:122..135 },
                                                 24
                                             )
                                             .into(),
                                             arg: super::ast::Expr::ValueRead(
                                                 "x".to_string(),
-                                                (136,137),
+                                                crate::Location::User { file:"foo".into(), span:136..137 },
                                                 23
                                             )
                                             .into(),
@@ -2522,7 +2518,7 @@ let complex x =
                                         size: 4
                                     }
                                 }),
-                                (85,91)
+                                crate::Location::User { file:"foo".into(), span:85..91 }
                             )
                         ]),
                         generics: None,
@@ -2575,11 +2571,11 @@ let unit_unit _ : () -> () = ();
         };
         assert_eq!(
             &super::ast::TopLevelDeclaration::Value(TopLevelValue {
-                loc: (76,83),
+                loc: crate::Location::User { file:"test".into(), span:76..83 },
                 is_op: false,
                 ident: "int_int".to_string(),
                 args: vec![super::ast::ArgDeclaration::Simple {
-                    loc: (84,85),
+                    loc: crate::Location::User { file:"test".into(), span:84..85 },
                     ident: "x".to_string(),
                     ty: types::INT32,
                     id: 4
@@ -2587,11 +2583,10 @@ let unit_unit _ : () -> () = ();
                 ty: ResolvedType::Function {
                     arg: types::INT32.into(),
                     returns: types::INT32.into(),
-                    loc: (94,96)
                 },
                 value: super::ast::ValueType::Expr(super::ast::Expr::ValueRead(
                     "x".to_string(),
-                    (105,106),
+                    crate::Location::User { file:"test".into(), span:105..106},
                     5
                 )),
                 generics: None,
@@ -2603,17 +2598,16 @@ let unit_unit _ : () -> () = ();
         );
         assert_eq!(
             &super::ast::TopLevelDeclaration::Value(TopLevelValue {
-                loc: (5,13),
+                loc: crate::Location::User{file:"test".into(), span:5..13},
                 is_op: false,
                 ident: "int_unit".to_string(),
                 args: vec![super::ast::ArgDeclaration::Discard {
-                    loc: (14,15),
+                    loc: crate::Location::User{file:"test".into(), span:14..15},
                     ty: types::INT32,
                 }],
                 ty: ResolvedType::Function {
                     arg: types::INT32.into(),
                     returns: types::UNIT.into(),
-                    loc: (24,26),
                 },
                 value: super::ast::ValueType::Expr(super::ast::Expr::UnitLiteral),
                 generics: None,
@@ -2625,17 +2619,16 @@ let unit_unit _ : () -> () = ();
         );
         assert_eq!(
             &super::ast::TopLevelDeclaration::Value(TopLevelValue {
-                loc: (41,49),
+                loc: crate::Location::User{file:"test".into(), span:41..49},
                 is_op: false,
                 ident: "unit_int".to_string(),
                 args: vec![super::ast::ArgDeclaration::Discard {
-                    loc: (50,51),
+                    loc: crate::Location::User{file:"test".into(), span:50..51},
                     ty: types::UNIT,
                 }],
                 ty: ResolvedType::Function {
                     arg: types::UNIT.into(),
                     returns: types::INT16.into(),
-                    loc: (57,59)
                 },
                 value: super::ast::ValueType::Expr(super::ast::Expr::NumericLiteral {
                     value: "0".to_string(),
@@ -2651,17 +2644,16 @@ let unit_unit _ : () -> () = ();
         );
         assert_eq!(
             &super::ast::TopLevelDeclaration::Value(TopLevelValue {
-                loc: (113,122),
+                loc: crate::Location::User{ file:"test".into(), span:113..122},
                 is_op: false,
                 ident: "unit_unit".to_string(),
                 args: vec![super::ast::ArgDeclaration::Discard {
-                    loc: (123,124),
+                    loc: crate::Location::User{ file:"test".into(), span:123..124},
                     ty: types::UNIT,
                 }],
                 ty: ResolvedType::Function {
                     arg: types::UNIT.into(),
                     returns: types::UNIT.into(),
-                    loc: (130,132)
                 },
                 value: super::ast::ValueType::Expr(super::ast::Expr::UnitLiteral),
                 generics: None,
@@ -2694,18 +2686,18 @@ let if_expr a b : bool -> int32 -> int32 = if a then b else 0;
         };
         assert_eq!(
             &super::ast::TopLevelDeclaration::Value(super::ast::TopLevelValue {
-                loc: (5,12),
+                loc: crate::Location::User{file:"".into(), span:5..12},
                 is_op: false,
                 ident: "if_expr".to_string(),
                 args: vec![
                     super::ast::ArgDeclaration::Simple {
-                        loc: (13,14),
+                        loc: crate::Location::User{file:"".into(), span:13..14},
                         ident: "a".to_string(),
                         ty: types::BOOL,
                         id: 1,
                     },
                     super::ast::ArgDeclaration::Simple {
-                        loc: (15,16),
+                        loc: crate::Location::User{file:"".into(), span:15..16},
                         ident: "b".to_string(),
                         ty: types::INT32,
                         id: 2,
@@ -2716,16 +2708,14 @@ let if_expr a b : bool -> int32 -> int32 = if a then b else 0;
                     returns: ResolvedType::Function {
                         arg: types::INT32.into(),
                         returns: types::INT32.into(),
-                        loc: (33,35)
                     }
                     .into(),
-                    loc: (24,26)
                 },
                 value: super::ast::ValueType::Expr(super::ast::Expr::If(super::ast::If {
-                    cond: super::ast::Expr::ValueRead("a".to_string(), (47,48), 4).into(),
+                    cond: super::ast::Expr::ValueRead("a".to_string(), crate::Location::User{file:"".into(), span:47..48}, 4).into(),
                     true_branch: super::ast::Block {
                         statements:Vec::new(),
-                        implicit_ret:Some(super::ast::Expr::ValueRead("b".to_string(), (54,55), 6).into()),
+                        implicit_ret:Some(super::ast::Expr::ValueRead("b".to_string(), crate::Location::User{file:"".into(), span:54..55}, 6).into()),
                         id:5,
                         ret_ty:types::INT32.into(),
                     },
@@ -2740,7 +2730,7 @@ let if_expr a b : bool -> int32 -> int32 = if a then b else 0;
                         id:7,
                         ret_ty:types::INT32.into()
                     }.into(),
-                    loc: (44,46),
+                    loc: crate::Location::User{file:"".into(), span:44..46},
                     id: 3,
                     result: types::INT32
                 })),
@@ -2776,11 +2766,11 @@ let returns a : bool -> int32 =
         };
         assert_eq!(
             &super::ast::TopLevelDeclaration::Value(super::ast::TopLevelValue {
-                loc: (5,12),
+                loc: crate::Location::User{file:"".into(), span:5..12},
                 is_op: false,
                 ident: "returns".to_string(),
                 args: vec![super::ast::ArgDeclaration::Simple {
-                    loc: (13, 14),
+                    loc: crate::Location::User{file:"".into(), span:13.. 14},
                     ident: "a".to_string(),
                     ty: types::BOOL,
                     id: 1,
@@ -2788,11 +2778,10 @@ let returns a : bool -> int32 =
                 ty: ResolvedType::Function {
                     arg: types::BOOL.into(),
                     returns: types::INT32.into(),
-                    loc: (22,24)
                 },
                 value: super::ast::ValueType::Function(vec![
                     super::ast::Statement::IfStatement(super::ast::If {
-                        cond: super::ast::Expr::ValueRead("a".to_string(), (40,41), 2).into(),
+                        cond: super::ast::Expr::ValueRead("a".to_string(), crate::Location::User{file:"".into(), span:40..41}, 2).into(),
                         true_branch: super::ast::Block {
                             statements:vec![super::ast::Statement::Return(
                                 super::ast::Expr::NumericLiteral {
@@ -2800,14 +2789,14 @@ let returns a : bool -> int32 =
                                     id: 4,
                                     ty: types::INT32
                                 },
-                                (55,61)
+                                (55,61).into()
                             )],
                             implicit_ret:None,
                             id:3,
                             ret_ty:Some(types::UNIT),
                         },
                         else_branch: None,
-                        loc: (37,39),
+                        loc: (37,39).into(),
                         id:usize::MAX,
                         result:types::UNIT,
                     }),
@@ -2817,7 +2806,7 @@ let returns a : bool -> int32 =
                             id: 5,
                             ty: types::INT32
                         },
-                        (69, 75)
+                        (69, 75).into()
                     )
                 ]),
                 generics: None,
@@ -2838,7 +2827,7 @@ let consume a = fst a;
             "fst".to_string(),
             ResolvedType::Tuple {
                 underlining: vec![types::INT32, types::INT32],
-                loc: (0, 0),
+                loc: crate::Location::User{file:"".into(), span:0..0},
             }
             .fn_ty(&types::INT32),
         )]
@@ -2866,27 +2855,27 @@ let consume a = fst a;
         };
         assert_eq!(
             &super::ast::TopLevelDeclaration::Value(super::ast::TopLevelValue {
-                loc: (118,125),
+                loc: crate::Location::User { file:"".into(), span:118..125},
                 is_op: false,
                 ident: "consume".to_string(),
                 args: vec![super::ast::ArgDeclaration::Simple {
-                    loc: (126,127),
+                    loc: crate::Location::User { file:"".into(), span:126..127},
                     ident: "a".to_string(),
                     ty: ResolvedType::Tuple {
                         underlining: vec![types::INT32, types::INT32,],
-                        loc: (0, 0)
+                        loc: crate::Location::User { file:"".into(), span:0.. 0}
                     },
                     id: 6
                 }],
                 ty: ResolvedType::Tuple {
                     underlining: vec![types::INT32, types::INT32,],
-                    loc: (0, 0)
+                    loc: crate::Location::User { file:"".into(), span:0.. 0}
                 }
                 .fn_ty(&types::INT32),
                 value: super::ast::ValueType::Expr(super::ast::Expr::FnCall(super::ast::FnCall {
-                    loc: (130,133),
-                    value: super::ast::Expr::ValueRead("fst".to_string(), (130,133), 8).into(),
-                    arg: super::ast::Expr::ValueRead("a".to_string(), (134,135), 7).into(),
+                    loc: crate::Location::User { file:"".into(), span:130..133},
+                    value: super::ast::Expr::ValueRead("fst".to_string(), crate::Location::User { file:"".into(), span:130..133}, 8).into(),
+                    arg: super::ast::Expr::ValueRead("a".to_string(), crate::Location::User { file:"".into(), span:134..135}, 7).into(),
                     id: 9,
                     returns: types::INT32,
                 })),
@@ -2900,29 +2889,29 @@ let consume a = fst a;
 
         assert_eq!(
             &super::ast::TopLevelDeclaration::Value(super::ast::TopLevelValue {
-                loc: (5,12),
+                loc: crate::Location::User{file:"".into(), span:5..12},
                 is_op: false,
                 ident: "produce".to_string(),
                 args: vec![super::ast::ArgDeclaration::Simple {
-                    loc: (14,15),
+                    loc: crate::Location::User{file:"".into(), span:14..15},
                     ident: "a".to_string(),
                     ty: types::INT32,
                     id: 1
                 }],
                 ty: types::INT32.fn_ty(&ResolvedType::Tuple {
                     underlining: vec![types::INT32, types::INT32,],
-                    loc: (0, 0)
+                    loc: crate::Location::User{file:"".into(), span:0..0}
                 }),
                 id: 0,
                 generics: None,
                 abi: None,
                 value: super::ast::ValueType::Expr(super::ast::Expr::TupleLiteral {
                     contents: vec![
-                        super::ast::Expr::ValueRead("a".to_string(), (26,27), 3),
-                        super::ast::Expr::ValueRead("a".to_string(), (28,29), 4),
+                        super::ast::Expr::ValueRead("a".to_string(), crate::Location::User{file:"".into(), span:26..27}, 3),
+                        super::ast::Expr::ValueRead("a".to_string(), crate::Location::User{file:"".into(), span:28..29}, 4),
                     ],
                     id: 2,
-                    loc: (25,30),
+                    loc: crate::Location::User{file:"".into(), span:25..30},
                 })
             }),
             produce,
@@ -2960,11 +2949,11 @@ let main _ : () -> () =
         };
         assert_eq!(
             &super::ast::TopLevelDeclaration::Value(super::ast::TopLevelValue {
-                loc: (5,6),
+                loc: crate::Location::User{file:"".into(), span:5..6},
                 is_op: false,
                 ident: "f".to_string(),
                 args: vec![super::ast::ArgDeclaration::Simple {
-                    loc: (8,9),
+                    loc: crate::Location::User{file:"".into(), span:8..9},
                     ident: "a".to_string(),
                     ty: ResolvedType::Array {
                         underlining: types::INT32.into(),
@@ -2987,18 +2976,18 @@ let main _ : () -> () =
         );
         assert_eq!(
             &super::ast::TopLevelDeclaration::Value(super::ast::TopLevelValue {
-                loc: (32,36),
+                loc: crate::Location::User{file:"".into(), span:32..36},
                 is_op: false,
                 ident: "main".to_string(),
                 args: vec![super::ast::ArgDeclaration::Discard {
-                    loc: (37, 38),
+                    loc: crate::Location::User{file:"".into(), span:37..38},
                     ty: types::UNIT,
                 },],
                 ty: types::UNIT.fn_ty(&types::UNIT),
                 value: super::ast::ValueType::Function(vec![
                     super::ast::Statement::Expr(super::ast::Expr::FnCall(super::ast::FnCall {
-                        loc: (56,57),
-                        value: super::ast::Expr::ValueRead("f".to_string(), (56,57), 9).into(),
+                        loc: crate::Location::User{file:"".into(), span:56..57},
+                        value: super::ast::Expr::ValueRead("f".to_string(), crate::Location::User{file:"".into(), span:56..57}, 9).into(),
                         arg: super::ast::Expr::ArrayLiteral {
                             contents: vec![
                                 super::ast::Expr::NumericLiteral {
@@ -3027,14 +3016,14 @@ let main _ : () -> () =
                                     ty: types::INT32
                                 },
                             ],
-                            loc: (58,69),
+                            loc: crate::Location::User{file:"".into(), span:58..69},
                             id: 3
                         }
                         .into(),
                         id: 10,
                         returns: types::UNIT
                     })),
-                    super::ast::Statement::Return(super::ast::Expr::UnitLiteral, (75,81))
+                    super::ast::Statement::Return(super::ast::Expr::UnitLiteral, crate::Location::User { file: "".into(), span:75..81})
                 ]),
                 generics: None,
                 abi: None,
@@ -3076,19 +3065,19 @@ let tuples (v:(int32,int32)) = match v where
         };
         assert_eq!(
             &super::ast::TopLevelDeclaration::Value(super::ast::TopLevelValue {
-                loc: (5,8),
+                loc: crate::Location::User{ file:"".into(), span:5..8},
                 is_op: false,
                 ident: "ors".to_string(),
                 args: vec![super::ast::ArgDeclaration::Simple {
-                    loc: (10,11),
+                    loc: crate::Location::User{ file:"".into(), span:10..11},
                     ident: "a".to_string(),
                     ty: types::INT32,
                     id: 1
                 }],
                 ty: types::INT32.fn_ty(&types::INT32),
                 value: super::ast::ValueType::Expr(super::ast::Expr::Match(super::ast::Match {
-                    loc: (21,26),
-                    on: super::ast::Expr::ValueRead("a".to_string(), (27,28), 3).into(),
+                    loc: crate::Location::User{ file:"".into(), span:21..26},
+                    on: super::ast::Expr::ValueRead("a".to_string(), crate::Location::User{ file:"".into(), span:27..28}, 3).into(),
                     arms: vec![
                         super::ast::MatchArm {
                             block: Vec::new(),
@@ -3111,20 +3100,20 @@ let tuples (v:(int32,int32)) = match v where
                                 )
                                 .into()
                             ),
-                            loc: (39,40),
+                            loc: crate::Location::User{file:"".into(), span:39..40},
                         },
                         super::ast::MatchArm {
                             block: Vec::new(),
                             ret: Some(
-                                super::ast::Expr::ValueRead("a".to_string(), (68,69), 6).into()
+                                super::ast::Expr::ValueRead("a".to_string(), crate::Location::User{file:"".into(), span:68..69}, 6).into()
                             ),
                             cond: super::ast::Pattern::Read {
                                 ident: "a".to_string(),
-                                loc: (63,64),
+                                loc: crate::Location::User{file:"".into(), span:63..64},
                                 ty: types::INT32,
                                 id: 5
                             },
-                            loc: (61,62),
+                            loc: crate::Location::User{file:"".into(), span:61..62},
                         }
                     ],
                     id: 2
@@ -3138,38 +3127,38 @@ let tuples (v:(int32,int32)) = match v where
 
         assert_eq!(
             &super::ast::TopLevelDeclaration::Value(super::ast::TopLevelValue {
-                loc: (75,81),
+                loc: crate::Location::User{file:"".into(), span:75..81},
                 is_op: false,
                 ident: "tuples".to_string(),
                 args: vec![super::ast::ArgDeclaration::Simple {
-                    loc: (83,84),
+                    loc: crate::Location::User{file:"".into(), span:83..84},
                     ident: "v".to_string(),
                     ty: ResolvedType::Tuple {
                         underlining: vec![types::INT32, types::INT32,],
-                        loc: (0, 0)
+                        loc: crate::Location::Language
                     },
                     id: 8
                 }],
                 ty: ResolvedType::Tuple {
                     underlining: vec![types::INT32, types::INT32,],
-                    loc: (0, 0)
+                    loc: crate::Location::Language
                 }
                 .fn_ty(&types::INT32),
                 value: super::ast::ValueType::Expr(super::ast::Expr::Match(super::ast::Match {
-                    loc: (102,107),
-                    on: super::ast::Expr::ValueRead("v".to_string(), (108,109), 10).into(),
+                    loc: crate::Location::User{file:"".into(), span:102..107},
+                    on: super::ast::Expr::ValueRead("v".to_string(), crate::Location::User{file:"".into(), span:108..109}, 10).into(),
                     arms: vec![
                         super::ast::MatchArm {
                             block: Vec::new(),
                             ret: Some(
-                                super::ast::Expr::ValueRead("a".to_string(), (131,132), 13).into()
+                                super::ast::Expr::ValueRead("a".to_string(), crate::Location::User{file:"".into(), span:131..132}, 13).into()
                             ),
                             cond: super::ast::Pattern::Destructure(
                                 super::ast::DestructurePattern::Tuple(
                                     vec![
                                         super::ast::Pattern::Read {
                                             ident: "a".to_string(),
-                                            loc: (123,124),
+                                            loc: crate::Location::User{file:"".into(), span:123..124},
                                             ty: types::INT32,
                                             id: 12
                                         },
@@ -3180,17 +3169,17 @@ let tuples (v:(int32,int32)) = match v where
                                     ],
                                     ResolvedType::Tuple {
                                         underlining: vec![types::INT32, types::INT32,],
-                                        loc: (0, 0)
+                                        loc:crate::Location::Language
                                     },
                                     11
                                 )
                             ),
-                            loc: (120,121)
+                            loc: crate::Location::User{file:"".into(), span:120..121}
                         },
                         super::ast::MatchArm {
                             block: Vec::new(),
                             ret: Some(
-                                super::ast::Expr::ValueRead("b".to_string(), (149,150), 16).into()
+                                super::ast::Expr::ValueRead("b".to_string(), crate::Location::User{file:"".into(), span:149..150}, 16).into()
                             ),
                             cond: super::ast::Pattern::Destructure(
                                 super::ast::DestructurePattern::Tuple(
@@ -3201,19 +3190,19 @@ let tuples (v:(int32,int32)) = match v where
                                         ),
                                         super::ast::Pattern::Read {
                                             ident: "b".to_string(),
-                                            loc: (143,144),
+                                            loc: crate::Location::User{file:"".into(), span:143..144},
                                             ty: types::INT32,
                                             id: 15
                                         },
                                     ],
                                     ResolvedType::Tuple {
                                         underlining: vec![types::INT32, types::INT32,],
-                                        loc: (0, 0)
+                                        loc: crate::Location::Language
                                     },
                                     14
                                 )
                             ),
-                            loc: (138,139)
+                            loc: crate::Location::User{file:"".into(), span:138..139}
                         },
                         super::ast::MatchArm {
                             block: Vec::new(),
@@ -3226,7 +3215,7 @@ let tuples (v:(int32,int32)) = match v where
                                 .into()
                             ),
                             cond: super::ast::Pattern::Default,
-                            loc: (156,157)
+                            loc: crate::Location::User{file:"".into(), span:156..157}
                         }
                     ],
                     id: 9,
@@ -3265,63 +3254,63 @@ let a (v:(int32,int32)) =
         use super::ast;
         assert_eq!(
             &ast::TopLevelDeclaration::Value(ast::TopLevelValue {
-                loc: (5,6),
+                loc: crate::Location::User{file:"".into(), span:5..6},
                 is_op: false,
                 ident: "a".to_string(),
                 args: vec![ast::ArgDeclaration::Simple {
                     ident: "v".to_string(),
                     ty: ResolvedType::Tuple {
                         underlining: vec![types::INT32, types::INT32,],
-                        loc: (0, 0)
+                        loc: crate::Location::Language
                     },
-                    loc: (8,9),
+                    loc: crate::Location::User{file:"".into(), span:8..9},
                     id: 1,
                 }],
                 ty: ResolvedType::Tuple {
                     underlining: vec![types::INT32, types::INT32,],
-                    loc: (0, 0)
+                    loc: crate::Location::Language
                 }
                 .fn_ty(&types::UNIT),
                 value: ast::ValueType::Function(vec![
                     ast::Statement::Declaration(ast::ValueDeclaration {
-                        loc: (35,40),
+                        loc: crate::Location::User{file:"".into(), span:35..40},
                         is_op: false,
                         target: ast::Pattern::Destructure(ast::DestructurePattern::Tuple(
                             vec![
                                 ast::Pattern::Read {
                                     ident: "x".to_string(),
                                     ty: types::INT32,
-                                    loc: (36,37),
+                                    loc: crate::Location::User{file:"".into(), span:36..37},
                                     id: 3
                                 },
                                 ast::Pattern::Read {
                                     ident: "y".to_string(),
                                     ty: types::INT32,
-                                    loc: (38,39),
+                                    loc: crate::Location::User{file:"".into(), span:38..39},
                                     id: 4
                                 },
                             ],
                             ResolvedType::Tuple {
                                 underlining: vec![types::INT32, types::INT32,],
-                                loc: (0, 0)
+                                loc: crate::Location::Language
                             },
                             2
                         )),
                         args: Vec::new(),
                         value: ast::ValueType::Expr(ast::Expr::ValueRead(
                             "v".to_string(),
-                            (43,44),
+                            crate::Location::User{file:"".into(), span:43..44},
                             6
                         )),
                         ty: ResolvedType::Tuple {
                             underlining: vec![types::INT32, types::INT32,],
-                            loc: (0, 0)
+                            loc: crate::Location::Language
                         },
                         generics: None,
                         abi: None,
                         id: 5
                     }),
-                    ast::Statement::Return(ast::Expr::UnitLiteral, (50,56))
+                    ast::Statement::Return(ast::Expr::UnitLiteral, crate::Location::User{file:"".into(), span:50..56})
                 ]),
                 generics: None,
                 abi: None,
@@ -3357,28 +3346,28 @@ let do_something a = match a where
         };
         assert_eq!(
             &super::ast::TopLevelDeclaration::Value(super::ast::TopLevelValue {
-                loc: (80,92),
+                loc: crate::Location::User{file:"".into(), span:80..92},
                 is_op: false,
                 ident: "do_something".to_string(),
                 args: vec![super::ast::ArgDeclaration::Simple {
-                    loc: (93,94),
+                    loc: crate::Location::User{file:"".into(), span:93..94},
                     ident: "a".to_string(),
                     ty: ResolvedType::User {
                         name: "IP".to_string(),
                         generics: Vec::new(),
-                        loc: (0, 0),
+                        loc: crate::Location::User{file:"".into(), span:0..0},
                     },
                     id: 1
                 },],
                 ty: ResolvedType::User {
                     name: "IP".to_string(),
                     generics: Vec::new(),
-                    loc: (0, 0),
+                    loc: crate::Location::User{file:"".into(), span:0..0},
                 }
                 .fn_ty(&types::UNIT),
                 value: super::ast::ValueType::Expr(super::ast::Expr::Match(super::ast::Match {
-                    loc: (97,102),
-                    on: super::ast::Expr::ValueRead("a".to_string(), (103,104), 3).into(),
+                    loc: crate::Location::User{file:"".into(), span:97..102},
+                    on: super::ast::Expr::ValueRead("a".to_string(), crate::Location::User{file:"".into(), span:103..104}, 3).into(),
                     arms: vec![
                         super::ast::MatchArm {
                             block: Vec::new(),
@@ -3388,7 +3377,7 @@ let do_something a = match a where
                                     base: ResolvedType::User {
                                         name: "IP".into(),
                                         generics: Vec::new(),
-                                        loc: (0, 0)
+                                        loc: crate::Location::User{file:"".into(), span:0.. 0}
                                     }
                                     .into(),
                                     ident: "IP::V4".into(),
@@ -3397,10 +3386,10 @@ let do_something a = match a where
                                         underlining: vec![
                                             types::INT8;4
                                         ],
-                                        loc: (0, 0)
+                                        loc: crate::Location::Language
                                     }
                                     .into(),
-                                    loc: (0, 0)
+                                    loc: crate::Location::User{file:"".into(), span:0.. 0}
                                 },
                                 variant: "IP::V4".to_string(),
                                 // (127, 0, 0, 1)
@@ -3428,16 +3417,16 @@ let do_something a = match a where
                                                     underlining: vec![
                                                         types::INT8;4
                                                     ],
-                                                    loc: (0, 0)
+                                                    loc: crate::Location::Language
                                                 },
                                             4
                                         )
                                     )
                                     .into()
                                 ),
-                                loc: (113,119),
+                                loc: crate::Location::User{file:"".into(), span:113..119},
                             },
-                            loc: (111,112),
+                            loc: crate::Location::User{file:"".into(), span:111..112},
                         },
                         super::ast::MatchArm {
                             block: Vec::new(),
@@ -3447,7 +3436,7 @@ let do_something a = match a where
                                     base: ResolvedType::User {
                                         name: "IP".into(),
                                         generics: Vec::new(),
-                                        loc: (0, 0)
+                                        loc: crate::Location::User{file:"".into(), span:0.. 0}
                                     }
                                     .into(),
                                     ident: "IP::V4".into(),
@@ -3459,29 +3448,29 @@ let do_something a = match a where
                                             types::INT8,
                                             types::INT8,
                                         ],
-                                        loc: (0, 0)
+                                        loc: crate::Location::Language
                                     }
                                     .into(),
-                                    loc: (0, 0)
+                                    loc: crate::Location::User{file:"".into(), span:0.. 0}
                                 },
                                 variant: "IP::V4".into(),
                                 pattern: Some(
                                     super::ast::Pattern::Read {
                                         ident: "a".into(),
-                                        loc: (148,149),
+                                        loc: crate::Location::User{file:"".into(), span:148..149},
                                         ty:  ResolvedType::Tuple {
                                                 underlining: vec![
                                                     types::INT8;4
                                                 ],
-                                                loc: (0, 0)
+                                                loc: crate::Location::Language
                                             },
                                         id: 5
                                     }
                                     .into()
                                 ),
-                                loc: (141,147)
+                                loc: crate::Location::User{file:"".into(), span:141..147}
                             },
-                            loc: (139,140),
+                            loc: crate::Location::User{file:"".into(), span:139..140},
                         },
                         super::ast::MatchArm {
                             block: Vec::new(),
@@ -3491,7 +3480,7 @@ let do_something a = match a where
                                     base: ResolvedType::User {
                                         name: "IP".into(),
                                         generics: Vec::new(),
-                                        loc: (0, 0)
+                                        loc: crate::Location::User{file:"".into(), span:0..0}
                                     }
                                     .into(),
                                     ident: "IP::V6".into(),
@@ -3505,16 +3494,16 @@ let do_something a = match a where
                                             types::INT8,
                                             types::INT8,
                                         ],
-                                        loc: (0, 0)
+                                        loc: crate::Location::Language
                                     }
                                     .into(),
-                                    loc: (0, 0)
+                                    loc: crate::Location::User{file:"".into(), span:0..0}
                                 },
                                 variant: "IP::V6".into(),
                                 pattern: Some(super::ast::Pattern::Default.into()),
-                                loc: (159,165)
+                                loc: crate::Location::User{file:"".into(), span:159..165}
                             },
-                            loc: (157,158)
+                            loc: crate::Location::User{file:"".into(), span:157..158}
                         }
                     ],
                     id: 2
@@ -3560,26 +3549,26 @@ let fun test = match test where
         };
         let expected = super::ast::TopLevelDeclaration::Value(
             super::ast::TopLevelValue {
-                loc: (
-                    2,
-                    4,
-                ),
+                loc: crate::Location::User{file:"".into(), span:
+                    2..
+                    4
+                },
                 is_op: false,
                 ident: "fun".into(),
                 args: vec![
                     super::ast::ArgDeclaration::Simple {
-                        loc: (
-                            2,
-                            8,
-                        ),
+                        loc: crate::Location::User{file:"".into(), span:
+                            2..
+                            8
+                        },
                         ident: "test".into(),
                         ty: ResolvedType::User {
                             name: "Testing".into(),
                             generics: Vec::new(),
-                            loc: (
-                                1,
-                                5,
-                            ),
+                            loc: crate::Location::User{file:"".into(), span:
+                                1..
+                                5
+                            },
                         },
                         id: 1,
                     },
@@ -3588,30 +3577,26 @@ let fun test = match test where
                     arg: ResolvedType::User {
                         name: "Testing".into(),
                         generics: Vec::new(),
-                        loc: (
-                            1,
-                            5,
-                        ),
+                        loc: crate::Location::User{file:"".into(), span:
+                            1..
+                            5
+                        },
                     }.into(),
-                    returns: types::INT8.into(),
-                    loc: (
-                        0,
-                        0,
-                    ),
+                    returns: types::INT8.into()
                 },
                 value: super::ast::ValueType::Expr(
                     super::ast::Expr::Match(
                         super::ast::Match {
-                            loc: (
-                                2,
-                                15,
-                            ),
+                            loc: crate::Location::User{file:"".into(),span:
+                                2..
+                                15
+                            },
                             on: super::ast::Expr::ValueRead(
                                 "test".into(),
-                                (
-                                    2,
-                                    21,
-                                ),
+                                crate::Location::User{file:"".into(), span:
+                                    2..
+                                    21
+                                },
                                 3,
                             ).into(),
                             arms: vec![
@@ -3629,26 +3614,26 @@ let fun test = match test where
                                             base: ResolvedType::User {
                                                 name: "Testing".into(),
                                                 generics: Vec::new(),
-                                                loc: (
-                                                    1,
+                                                loc: crate::Location::User{file:"".into(), span:
+                                                    1..
                                                     5,
-                                                ),
+                                                },
                                             }.into(),
                                             ident: "Testing::One".into(),
                                             actual: ResolvedType::Tuple {
                                                 underlining: vec![
                                                     types::INT8;2
                                                 ],
-                                                loc: (
-                                                    1,
-                                                    21,
-                                                ),
+                                                loc: crate::Location::User{file:"".into(), span:
+                                                    1..
+                                                    21
+                                                },
                                             }.into(),
                                             generics: Vec::new(),
-                                            loc: (
-                                                1,
-                                                17,
-                                            ),
+                                            loc: crate::Location::User{file:"".into(), span:
+                                                1..
+                                                17
+                                            },
                                         },
                                         variant: "Testing::One".into(),
                                         pattern: Some(
@@ -3668,34 +3653,34 @@ let fun test = match test where
                                                         underlining: vec![
                                                             types::INT8;2
                                                         ],
-                                                        loc: (
-                                                            1,
-                                                            21,
-                                                        ),
+                                                        loc: crate::Location::User{file:"".into(), span:
+                                                            1..
+                                                            21
+                                                        },
                                                     },
                                                     4,
                                                 ),
                                             ).into(),
                                         ),
-                                        loc: (
-                                            3,
+                                        loc: crate::Location::User{file:"".into(), span:
+                                            3..
                                             2,
-                                        ),
+                                        },
                                     },
-                                    loc: (
-                                        3,
+                                    loc: crate::Location::User{file:"".into(), span:
+                                        3..
                                         2,
-                                    ),
+                                    },
                                 },
                                 super::ast::MatchArm {
                                     block: Vec::new(),
                                     ret: Some(
                                         super::ast::Expr::ValueRead(
                                             "a".into(),
-                                            (
-                                                4,
+                                            crate::Location::User{file:"".into(), span:
+                                                4..
                                                 26,
-                                            ),
+                                            },
                                             8,
                                         ).into(),
                                     ),
@@ -3704,26 +3689,26 @@ let fun test = match test where
                                             base: ResolvedType::User {
                                                 name: "Testing".into(),
                                                 generics: Vec::new(),
-                                                loc: (
-                                                    1,
-                                                    5,
-                                                ),
+                                                loc: crate::Location::User{file:"".into(), span:
+                                                    1..
+                                                    5
+                                                },
                                             }.into(),
                                             ident: "Testing::One".into(),
                                             actual: ResolvedType::Tuple {
                                                 underlining: vec![
                                                     types::INT8;2
                                                 ],
-                                                loc: (
-                                                    1,
-                                                    21,
-                                                ),
+                                                loc: crate::Location::User{file:"".into(), span:
+                                                    1..
+                                                    21
+                                                },
                                             }.into(),
                                             generics: Vec::new(),
-                                            loc: (
-                                                1,
-                                                17,
-                                            ),
+                                            loc: crate::Location::User{file:"".into(), span:
+                                                1..
+                                                17
+                                            },
                                         },
                                         variant: "Testing::One".into(),
                                         pattern: Some(
@@ -3742,10 +3727,10 @@ let fun test = match test where
                                                         ),
                                                         super::ast::Pattern::Read {
                                                             ident: "a".into(),
-                                                            loc: (
-                                                                4,
+                                                            loc: crate::Location::User{file:"".into(), span:
+                                                                4..
                                                                 20,
-                                                            ),
+                                                            },
                                                             ty: types::INT8,
                                                             id: 7,
                                                         },
@@ -3754,24 +3739,24 @@ let fun test = match test where
                                                         underlining: vec![
                                                             types::INT8;2
                                                         ],
-                                                        loc: (
-                                                            1,
+                                                        loc: crate::Location::User{file:"".into(), span:
+                                                            1..
                                                             21,
-                                                        ),
+                                                        },
                                                     },
                                                     6,
                                                 ),
                                             ).into(),
                                         ),
-                                        loc: (
-                                            4,
+                                        loc: crate::Location::User{file:"".into(), span:
+                                            4..
                                             2,
-                                        ),
+                                        },
                                     },
-                                    loc: (
-                                        4,
+                                    loc: crate::Location::User{file:"".into(), span:
+                                        4..
                                         2,
-                                    ),
+                                    },
                                 },
                                 super::ast::MatchArm {
                                     block: Vec::new(),
@@ -3787,40 +3772,40 @@ let fun test = match test where
                                             base: ResolvedType::User {
                                                 name: "Testing".into(),
                                                 generics: Vec::new(),
-                                                loc: (
-                                                    1,
+                                                loc: crate::Location::User{file:"".into(), span:
+                                                    1..
                                                     5,
-                                                ),
+                                                },
                                             }.into(),
                                             ident: "Testing::One".into(),
                                             actual: ResolvedType::Tuple {
                                                 underlining: vec![
                                                     types::INT8;2
                                                 ],
-                                                loc: (
-                                                    1,
+                                                loc: crate::Location::User{file:"".into(), span:
+                                                    1..
                                                     21,
-                                                ),
+                                                },
                                             }.into(),
                                             generics: Vec::new(),
-                                            loc: (
-                                                1,
+                                            loc: crate::Location::User{file:"".into(), span:
+                                                1..
                                                 17,
-                                            ),
+                                            },
                                         },
                                         variant: "Testing::One".into(),
                                         pattern: Some(
                                             super::ast::Pattern::Default.into(),
                                         ),
-                                        loc: (
-                                            5,
+                                        loc: crate::Location::User{file:"".into(), span:
+                                            5..
                                             2,
-                                        ),
+                                        },
                                     },
-                                    loc: (
-                                        5,
+                                    loc: crate::Location::User{file:"".into(), span:
+                                        5..
                                         2,
-                                    ),
+                                    },
                                 },
                                 super::ast::MatchArm {
                                     block: Vec::new(),
@@ -3836,30 +3821,30 @@ let fun test = match test where
                                             base: ResolvedType::User {
                                                 name: "Testing".into(),
                                                 generics: Vec::new(),
-                                                loc: (
-                                                    1,
+                                                loc: crate::Location::User{file:"".into(), span:
+                                                    1..
                                                     5,
-                                                ),
+                                                },
                                             }.into(),
                                             ident: "Testing::Two".into(),
                                             actual: ResolvedType::Void.into(),
                                             generics: Vec::new(),
-                                            loc: (
-                                                1,
+                                            loc: crate::Location::User{file:"".into(), span:
+                                                1..
                                                 35,
-                                            ),
+                                            },
                                         },
                                         variant: "Testing::Two".into(),
                                         pattern: None,
-                                        loc: (
-                                            6,
+                                        loc: crate::Location::User{file:"".into(), span:
+                                            6..
                                             2,
-                                        ),
+                                        },
                                     },
-                                    loc: (
-                                        6,
+                                    loc: crate::Location::User{file:"".into(), span:
+                                        6..
                                         2,
-                                    ),
+                                    },
                                 },
                             ],
                             id: 2,

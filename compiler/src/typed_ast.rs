@@ -41,7 +41,7 @@ impl TypedModuleDeclaration {
                                 .map(ResolvedGenericsDecl::from)
                                 .map(|g| g.decls.into_iter().map(|(_, ty)| ty).collect())
                                 .unwrap_or_else(Vec::new),
-                            loc: enum_.loc,
+                            loc: enum_.loc.clone(),
                         },
                     )),
                     ast::TypeDefinition::Struct(strct) => Some((
@@ -54,7 +54,7 @@ impl TypedModuleDeclaration {
                                 .map(ResolvedGenericsDecl::from)
                                 .map(|g| g.decls.into_iter().map(|(_, ty)| ty).collect())
                                 .unwrap_or_else(Vec::new),
-                            loc: strct.loc,
+                            loc: strct.loc.clone(),
                         },
                     )),
                 },
@@ -136,7 +136,7 @@ impl TypedModuleDeclaration {
                                             ident: ident.clone(),
                                             generics: generics.clone(),
                                             fields: fields.clone(),
-                                            loc: *loc,
+                                            loc: loc.clone(),
                                         })
                                         .into(),
                                     },
@@ -210,7 +210,7 @@ impl ResolvedGenericsDecl {
             for_loc,
             decls: decls
                 .into_iter()
-                .map(|(loc, name)| (loc, ResolvedType::Generic { name, loc }))
+                .map(|(loc, name)| (loc.clone(), ResolvedType::Generic { name, loc }))
                 .collect(),
         }
     }
@@ -480,7 +480,7 @@ impl Into<ResolvedType> for &ResolvedTypeDeclaration {
                     .as_ref()
                     .map(|generics| generics.decls.iter().map(|(_, it)| it).cloned().collect())
                     .unwrap_or_default(),
-                loc: *loc,
+                loc: loc.clone(),
             },
             ResolvedTypeDeclaration::Dependent { base, actual } => actual.as_ref().into(),
         }
@@ -980,7 +980,7 @@ impl TypedArgDeclaration {
         | Self::DestructureTuple(_, _, loc)
         | Self::Discard { loc, .. }
         | Self::Unit { loc, .. }) = self;
-        *loc
+        loc.clone()
     }
     pub fn get_ident(&self) -> String {
         match self {
@@ -1013,7 +1013,7 @@ impl TypedArgDeclaration {
                     ident: "<error>".to_string(),
                     generics: None,
                     fields: Vec::new(),
-                    loc: (0, 0),
+                    loc: crate::Location::Language,
                 };
                 let struct_ty = if let Some(typ) = known_types.get(struct_ident) {
                     if let ResolvedTypeDeclaration::Struct(typ) = typ {
@@ -1673,13 +1673,14 @@ impl TypedStructConstruction {
                     if old_field.ty == field.get_ty() || old_field.ty.is_generic() {
                         new_fields.insert(name, (field, loc));
                     } else {
-                        println!(
-                            "type mismatch.  expected {} but got {} at line {} column {}",
-                            old_field.ty.to_string(),
-                            field.get_ty().to_string(),
-                            loc.0,
-                            loc.1
-                        );
+                        // println!(
+                        //     "type mismatch.  expected {} but got {} at line {} column {}",
+                        //     old_field.ty.to_string(),
+                        //     field.get_ty().to_string(),
+                        //     loc.0,
+                        //     loc.1
+                        // );
+                        //TODO! proper error reporting
                         new_fields.insert(name, (TypedExpr::ErrorNode, loc));
                     }
                 } else {
@@ -1920,20 +1921,20 @@ impl TypedExpr {
             Self::StringLiteral(_) => None,
             Self::CharLiteral(_) => None,
             Self::UnitLiteral => None,
-            Self::BinaryOpCall(bin) => Some(bin.loc),
-            Self::MemeberRead(read) => Some(read.loc),
+            Self::BinaryOpCall(bin) => Some(bin.loc.clone()),
+            Self::MemeberRead(read) => Some(read.loc.clone()),
             Self::UnaryOpCall(_) => todo!(),
-            Self::FnCall(call) => Some(call.loc),
-            Self::BoolLiteral(_, loc) | Self::ValueRead(_, _, loc) => Some(*loc),
+            Self::FnCall(call) => Some(call.loc.clone()),
+            Self::BoolLiteral(_, loc) | Self::ValueRead(_, _, loc) => Some(loc.clone()),
             Self::ArrayLiteral {
                 contents: _,
                 underlining: _,
             } => None,
             Self::ListLiteral { contents: _ } => None,
-            Self::TupleLiteral { contents: _, loc } => Some(*loc),
-            Self::StructConstruction(con) => Some(con.loc),
-            Self::IfExpr(ifexpr) => Some(ifexpr.loc),
-            Self::Match(match_) => Some(match_.loc),
+            Self::TupleLiteral { contents: _, loc } => Some(loc.clone()),
+            Self::StructConstruction(con) => Some(con.loc.clone()),
+            Self::IfExpr(ifexpr) => Some(ifexpr.loc.clone()),
+            Self::Match(match_) => Some(match_.loc.clone()),
             Self::ErrorNode => None,
         }
     }
@@ -1965,12 +1966,12 @@ impl TypedExpr {
             Self::ListLiteral { .. } => todo!(),
             Self::TupleLiteral { contents, loc: _ } => ResolvedType::Tuple {
                 underlining: contents.iter().map(Self::get_ty).collect(),
-                loc: (0, 0),
+                loc: crate::Location::Language,
             },
             Self::StructConstruction(strct) => ResolvedType::User {
                 name: strct.ident.clone(),
                 generics: strct.generics.clone(),
-                loc: strct.loc,
+                loc: strct.loc.clone(),
             },
             Self::IfExpr(ifexpr) => ifexpr.result_ty.clone(),
             Self::MemeberRead(member_read) => member_read.get_ty(),
@@ -2249,13 +2250,14 @@ impl TypedIfExpr {
         ) {
             Ok(cond) if cond.get_ty() == ResolvedType::Bool => cond,
             Ok(cond) => {
-                let loc = cond.get_loc().unwrap_or_default();
-                println!(
-                    "condition must be a boolean but got:{} \nexpresion at line:{}, col:{}",
-                    cond.get_ty().to_string(),
-                    loc.0,
-                    loc.1
-                );
+                // let loc = cond.get_loc().unwrap_or_default();
+                // println!(
+                //     "condition must be a boolean but got:{} \nexpresion at line:{}, col:{}",
+                //     cond.get_ty().to_string(),
+                //     loc.0,
+                //     loc.1
+                // );
+                //TODO! proper error reporting
                 TypedExpr::ErrorNode
             }
             Err(e) => {
@@ -2311,8 +2313,9 @@ impl TypedIfExpr {
             let cond = match TypedExpr::try_from(*cond, known_externs, known_values, known_types, Vec::new()){
                 Ok(cond) if cond.get_ty() == ResolvedType::Bool => cond,
                 Ok(cond) => {
-                    let loc = cond.get_loc().unwrap_or_default();
-                    println!("condition must be a boolean expresion at line:{}, col:{}", loc.0, loc.1);
+                    // let loc = cond.get_loc().unwrap_or_default();
+                    // println!("condition must be a boolean expresion at line:{}, col:{}", loc.0, loc.1);
+                    // TODO PROPER ERROR REPORTING
                     TypedExpr::ErrorNode
                 },
                 Err(e) => {
@@ -2344,14 +2347,15 @@ impl TypedIfExpr {
                     if expected_ty == ResolvedType::Error {
                         expected_ty = ret.get_ty();
                     } else if ret.get_ty() != expected_ty {
-                        let loc = ret.get_loc().unwrap_or_default();
-                        println!(
-                            "all branches of an if expression must match in return type.\n  expected: {},\n actual: {} \n at line:{}, col :{}",
-                            expected_ty.to_string(),
-                            ret.get_ty().to_string(),
-                            loc.0,
-                            loc.1
-                        );
+                        // let loc = ret.get_loc().unwrap_or_default();
+                        // println!(
+                        //     "all branches of an if expression must match in return type.\n  expected: {},\n actual: {} \n at line:{}, col :{}",
+                        //     expected_ty.to_string(),
+                        //     ret.get_ty().to_string(),
+                        //     loc.0,
+                        //     loc.1
+                        // );
+                        //TODO! proper error reporting 
                     }
                     ret
                 },
@@ -2404,14 +2408,15 @@ impl TypedIfExpr {
                     }
                     // not sure what to report here tbh.
                 } else if ret.get_ty() != expected_ty {
-                    let loc = ret.get_loc().unwrap_or_default();
-                    println!(
-                        "all branches of an if expression must match in return type.\n  expected: {},\n actual: {} \n at line:{}, col :{}",
-                        expected_ty.to_string(),
-                        ret.get_ty().to_string(),
-                        loc.0,
-                        loc.1
-                    );
+                    // let loc = ret.get_loc().unwrap_or_default();
+                    // println!(
+                    //     "all branches of an if expression must match in return type.\n  expected: {},\n actual: {} \n at line:{}, col :{}",
+                    //     expected_ty.to_string(),
+                    //     ret.get_ty().to_string(),
+                    //     loc.0,
+                    //     loc.1
+                    // );
+                    // TODO PROPER ERROR REPORTING
                 }
                 ret
             }
@@ -2612,7 +2617,7 @@ pub fn map_types_to_args(
     if args.is_empty() || !fun.is_generic() {
         return (fun, vec![]);
     }
-    let ResolvedType::Function { arg, returns, loc } = &fun else {
+    let ResolvedType::Function { arg, returns } = &fun else {
         unreachable!()
     };
     let arg_t = args.pop().unwrap();
@@ -2624,7 +2629,6 @@ pub fn map_types_to_args(
             ResolvedType::Function {
                 arg: arg_t.into(),
                 returns: fun.into(),
-                loc: *loc,
             },
             replaced,
         )
@@ -2634,7 +2638,6 @@ pub fn map_types_to_args(
             ResolvedType::Function {
                 arg: arg_t.into(),
                 returns: returns.into(),
-                loc: (0, 0),
             },
             replaced,
         )
@@ -3128,7 +3131,7 @@ pub struct TypedUnaryOpCall {
 }
 
 fn strip_pointers(ty: &ResolvedType) -> ResolvedType {
-    if let ResolvedType::Function { arg, returns, loc } = ty {
+    if let ResolvedType::Function { arg, returns } = ty {
         let arg = match arg.as_ref() {
             ResolvedType::Pointer { underlining } if underlining.is_function() => {
                 strip_pointers(underlining.as_ref()).into()
@@ -3144,7 +3147,6 @@ fn strip_pointers(ty: &ResolvedType) -> ResolvedType {
         ResolvedType::Function {
             arg,
             returns,
-            loc: *loc,
         }
     } else {
         ty.clone()
@@ -3263,18 +3265,19 @@ impl TypedMatch {
                             .ret
                             .as_ref()
                             .and_then(|it| it.get_loc())
-                            .unwrap_or(arm.loc);
-                        println!(
-                            "expected {}, but got {} at line:{}, col:{}",
-                            most_common.to_string(),
-                            arm.ret
-                                .as_ref()
-                                .map(|it| it.get_ty())
-                                .unwrap_or(types::UNIT)
-                                .to_string(),
-                            loc.0,
-                            loc.1
-                        );
+                            .unwrap_or(arm.loc.clone());
+                        // println!(
+                        //     "expected {}, but got {} at line:{}, col:{}",
+                        //     most_common.to_string(),
+                        //     arm.ret
+                        //         .as_ref()
+                        //         .map(|it| it.get_ty())
+                        //         .unwrap_or(types::UNIT)
+                        //         .to_string(),
+                        //     loc.0,
+                        //     loc.1
+                        // );
+                        //TODO! PROPER ERROR REPORTING
                     }
                 }
             }
@@ -3405,7 +3408,7 @@ impl TypedMatchArm {
                 }
             };
             if ret != TypedExpr::UnitLiteral {
-                let loc = ret.get_loc().unwrap_or_default();
+                let loc = ret.get_loc().unwrap_or(crate::Location::Language);
                 new_block.push(TypedStatement::Discard(ret, loc));
             }
         }
@@ -3707,7 +3710,7 @@ mod tests {
     lazy_static::lazy_static! {
         static ref PREDEFINED_VALUES : HashMap<String,ResolvedType> = {
             let mut out = HashMap::new();
-            out.insert("foo".to_string(), ResolvedType::Function { arg: types::INT32.into(), returns: types::INT32.into(), loc:(0,0) });
+            out.insert("foo".to_string(), ResolvedType::Function { arg: types::INT32.into(), returns: types::INT32.into()});
             out.insert("bar".to_string(), types::INT32);
             out
         };
@@ -3827,7 +3830,7 @@ let b value : (int32,(int32,int32)) -> int32 = match value where
         assert_eq!(
             TypedExpr::try_from(
                 Expr::BinaryOpCall(ast::BinaryOpCall {
-                    loc: (0, 0),
+                    loc:crate::Location::User { file:"".into(), span:0..0 },
                     lhs: Expr::NumericLiteral {
                         value: "1".to_string(),
                         ty: types::INT32,
@@ -3851,7 +3854,7 @@ let b value : (int32,(int32,int32)) -> int32 = match value where
             )
             .expect(""),
             TypedExpr::BinaryOpCall(super::TypedBinaryOpCall {
-                loc: (0, 0),
+                loc: crate::Location::User { file:"".into(), span:0..0 },
                 lhs: TypedExpr::IntegerLiteral {
                     value: "1".to_string(),
                     size: types::IntWidth::ThirtyTwo
@@ -3872,23 +3875,23 @@ let b value : (int32,(int32,int32)) -> int32 = match value where
 
         assert_eq!(
             TypedExpr::try_from(
-                Expr::ValueRead("bar".to_string(), (0, 0), 0),
+                Expr::ValueRead("bar".to_string(), crate::Location::User { file:"".into(), span:0..0 }, 0),
                 &HashMap::new(),
                 &PREDEFINED_VALUES,
                 &HashMap::new(),
                 Vec::new()
             )
             .expect(""),
-            TypedExpr::ValueRead("bar".to_string(), types::INT32, (0, 0)),
+            TypedExpr::ValueRead("bar".to_string(), types::INT32, crate::Location::User { file:"".into(), span:0..0 }),
             "reading a value"
         );
 
         assert_eq!(
             TypedExpr::try_from(
                 Expr::FnCall(ast::FnCall {
-                    loc: (0, 0),
-                    value: Expr::ValueRead("foo".to_string(), (0, 0), 0).into(),
-                    arg: Expr::ValueRead("bar".to_string(), (0, 0), 0).into(),
+                    loc:crate::Location::User { file:"".into(), span:0..0 },
+                    value: Expr::ValueRead("foo".to_string(),crate::Location::User { file:"".into(), span:0..0 }, 0).into(),
+                    arg: Expr::ValueRead("bar".to_string(),crate::Location::User { file:"".into(), span:0..0 }, 0).into(),
                     id: 0,
                     returns: types::INT32,
                 }),
@@ -3899,18 +3902,17 @@ let b value : (int32,(int32,int32)) -> int32 = match value where
             )
             .expect(""),
             TypedExpr::FnCall(super::TypedFnCall {
-                loc: (0, 0),
+                loc:crate::Location::User { file:"".into(), span:0..0 },
                 value: TypedExpr::ValueRead(
                     "foo".to_string(),
                     ResolvedType::Function {
                         arg: types::INT32.into(),
                         returns: types::INT32.into(),
-                        loc: (0, 0)
                     },
-                    (0, 0)
+                   crate::Location::User { file:"".into(), span:0..0 }
                 )
                 .into(),
-                arg: Some(TypedExpr::ValueRead("bar".to_string(), types::INT32, (0, 0)).into()),
+                arg: Some(TypedExpr::ValueRead("bar".to_string(), types::INT32, crate::Location::User { file:"".into(), span:0..0 }).into()),
                 arg_t: types::INT32,
                 rt: types::INT32,
                 is_extern: false,
@@ -3950,7 +3952,7 @@ let b value : (int32,(int32,int32)) -> int32 = match value where
                         ty: types::INT32,
                         id: 0
                     },
-                    (0, 0)
+                    crate::Location::User { file:"".into(), span:0..0 }
                 )]),
                 &HashMap::new(),
                 &PREDEFINED_VALUES,
@@ -3962,7 +3964,7 @@ let b value : (int32,(int32,int32)) -> int32 = match value where
                     value: "1".to_string(),
                     size: types::IntWidth::ThirtyTwo
                 },
-                (0, 0)
+                crate::Location::User { file:"".into(), span:0..0 }
             )]),
             "function body"
         );
@@ -3975,11 +3977,11 @@ let b value : (int32,(int32,int32)) -> int32 = match value where
         assert_eq!(
             TypedStatement::try_from(
                 Statement::Declaration(ast::ValueDeclaration {
-                    loc: (0, 0),
+                    loc: crate::Location::User { file:"".into(), span:0..0 },
                     is_op: false,
                     target: ast::Pattern::Read {
                         ident: "foo".to_string(),
-                        loc: (0, 0),
+                        loc: crate::Location::User { file:"".into(), span:0..0 },
                         ty: types::INT32,
                         id: 0
                     },
@@ -4000,9 +4002,9 @@ let b value : (int32,(int32,int32)) -> int32 = match value where
             )
             .expect(""),
             TypedStatement::Declaration(TypedValueDeclaration {
-                loc: (0, 0),
+                loc: crate::Location::User { file:"".into(), span:0..0 },
                 is_op: false,
-                target: TypedPattern::Read("foo".to_string(), types::INT32, (0, 0)),
+                target: TypedPattern::Read("foo".to_string(), types::INT32, crate::Location::User { file:"".into(), span:0..0 }),
                 args: Vec::new(),
                 value: TypedValueType::Expr(TypedExpr::IntegerLiteral {
                     value: "1".to_string(),
@@ -4018,15 +4020,15 @@ let b value : (int32,(int32,int32)) -> int32 = match value where
 
         assert_eq!(
             TypedStatement::try_from(
-                Statement::Return(ast::Expr::ValueRead("bar".to_string(), (0, 0), 0), (0, 0)),
+                Statement::Return(ast::Expr::ValueRead("bar".to_string(), crate::Location::User { file:"".into(), span:0..0 }, 0), crate::Location::User { file:"".into(), span:0..0 }),
                 &HashMap::new(),
                 &PREDEFINED_VALUES,
                 &HashMap::new(),
             )
             .expect(""),
             TypedStatement::Return(
-                TypedExpr::ValueRead("bar".to_string(), types::INT32, (0, 0)),
-                (0, 0)
+                TypedExpr::ValueRead("bar".to_string(), types::INT32, crate::Location::User { file:"".into(), span:0..0 }),
+                crate::Location::User { file:"".into(), span:0..0 }
             ),
             "return"
         );
@@ -4034,9 +4036,9 @@ let b value : (int32,(int32,int32)) -> int32 = match value where
         assert_eq!(
             TypedStatement::try_from(
                 Statement::FnCall(ast::FnCall {
-                    loc: (0, 0),
-                    value: ast::Expr::ValueRead("foo".to_string(), (0, 0), 0).into(),
-                    arg: ast::Expr::ValueRead("bar".to_string(), (0, 0), 0).into(),
+                    loc: crate::Location::User { file:"".into(), span:0..0 },
+                    value: ast::Expr::ValueRead("foo".to_string(), crate::Location::User { file:"".into(), span:0..0 }, 0).into(),
+                    arg: ast::Expr::ValueRead("bar".to_string(), crate::Location::User { file:"".into(), span:0..0 }, 0).into(),
                     returns: types::INT32,
                     id: 0
                 }),
@@ -4046,18 +4048,17 @@ let b value : (int32,(int32,int32)) -> int32 = match value where
             )
             .expect(""),
             TypedStatement::FnCall(super::TypedFnCall {
-                loc: (0, 0),
+                loc: crate::Location::User { file:"".into(), span:0..0 },
                 value: TypedExpr::ValueRead(
                     "foo".to_string(),
                     ResolvedType::Function {
                         arg: types::INT32.into(),
                         returns: types::INT32.into(),
-                        loc: (0, 0)
                     },
-                    (0, 0)
+                    crate::Location::User { file:"".into(), span:0..0 }
                 )
                 .into(),
-                arg: Some(TypedExpr::ValueRead("bar".to_string(), types::INT32, (0, 0)).into()),
+                arg: Some(TypedExpr::ValueRead("bar".to_string(), types::INT32, crate::Location::User { file:"".into(), span:0..0 }).into()),
                 arg_t: types::INT32,
                 rt: types::INT32,
                 is_extern: false,
@@ -4075,19 +4076,18 @@ let b value : (int32,(int32,int32)) -> int32 = match value where
         assert_eq!(
             TypedDeclaration::try_from(
                 ast::TopLevelDeclaration::Value(ast::TopLevelValue {
-                    loc: (0, 0),
+                    loc: crate::Location::User { file:"".into(), span:0..0 },
                     is_op: false,
                     ident: "test".to_string(),
                     args: vec![ast::ArgDeclaration::Simple {
                         ident: "a".to_string(),
-                        loc: (0, 0),
+                        loc: crate::Location::User { file:"".into(), span:0..0 },
                         ty: types::INT32,
                         id: 0
                     }],
                     ty: ResolvedType::Function {
                         arg: types::INT32.into(),
                         returns: types::INT32.into(),
-                        loc: (0, 0)
                     },
                     value: ast::ValueType::Function(vec![ast::Statement::Return(
                         ast::Expr::NumericLiteral {
@@ -4095,7 +4095,7 @@ let b value : (int32,(int32,int32)) -> int32 = match value where
                             ty: types::INT32,
                             id: 0
                         },
-                        (0, 0)
+                        crate::Location::User { file:"".into(), span:0..0 }
                     )]),
                     generics: None,
                     abi: None,
@@ -4108,25 +4108,24 @@ let b value : (int32,(int32,int32)) -> int32 = match value where
             )
             .expect(""),
             TypedDeclaration::Value(super::TypedTopLevelValue {
-                loc: (0, 0),
+                loc: crate::Location::User { file:"".into(), span:0..0 },
                 is_op: false,
                 ident: "test".to_string(),
                 args: vec![TypedArgDeclaration::Simple {
                     ident: "a".to_string(),
-                    loc: (0, 0),
+                    loc: crate::Location::User { file:"".into(), span:0..0 },
                     ty: types::INT32,
                 }],
                 ty: ResolvedType::Function {
                     arg: types::INT32.into(),
                     returns: types::INT32.into(),
-                    loc: (0, 0)
                 },
                 value: super::TypedValueType::Function(vec![super::TypedStatement::Return(
                     super::TypedExpr::IntegerLiteral {
                         value: "1".to_string(),
                         size: types::IntWidth::ThirtyTwo
                     },
-                    (0, 0)
+                    crate::Location::User { file:"".into(), span:0..0 }
                 )]),
                 generics: None,
                 abi: None,
@@ -4174,45 +4173,44 @@ let main _ : () -> () =
         };
         assert_eq!(
             &TypedDeclaration::Value(TypedTopLevelValue {
-                loc: (12, 16),
+                loc: crate::Location::User { file:"".into(), span:12..16 },
                 is_op: false,
                 ident: "test".to_string(),
                 args: vec![TypedArgDeclaration::Simple {
-                    loc: (17, 18),
+                    loc: crate::Location::User { file:"".into(), span:17.. 18},
                     ident: "a".to_string(),
                     ty: ResolvedType::Generic {
                         name: "T".to_string(),
-                        loc: (1, 20)
+                        loc: crate::Location::User { file:"".into(), span:21..22 },
                     }
                 }],
                 value: TypedValueType::Expr(TypedExpr::ValueRead(
                     "a".to_string(),
                     ResolvedType::Generic {
                         name: "T".to_string(),
-                        loc: (21, 22)
+                        loc: crate::Location::User { file:"".into(), span:21..22}
                     },
-                    (30, 31)
+                    crate::Location::User { file:"".into(), span:30..31}
                 )),
                 ty: ResolvedType::Function {
                     arg: ResolvedType::Generic {
                         name: "T".to_string(),
-                        loc: (1, 20),
+                        loc: crate::Location::User { file:"".into(), span:21..22},
                     }
                     .into(),
                     returns: ResolvedType::Generic {
                         name: "T".to_string(),
-                        loc: (1, 25)
+                        loc: crate::Location::User { file:"".into(), span:26..27}
                     }
                     .into(),
-                    loc: (0, 0)
                 },
                 generics: Some(ResolvedGenericsDecl {
-                    for_loc: (1, 4),
+                    for_loc: crate::Location::User { file:"".into(), span:1..4},
                     decls: vec![(
-                        (5, 6),
+                        crate::Location::User { file:"".into(), span:5..6},
                         ResolvedType::Generic {
                             name: "T".to_string(),
-                            loc: (1, 4)
+                            loc: crate::Location::User { file:"".into(), span:5..6}
                         }
                     )],
                 }),
@@ -4223,18 +4221,18 @@ let main _ : () -> () =
         );
         assert_eq!(
             &TypedDeclaration::Value(TypedTopLevelValue {
-                loc: (38, 42),
+                loc: crate::Location::User { file:"".into(), span:38.. 42},
                 is_op: false,
                 ident: "main".to_string(),
                 args: vec![TypedArgDeclaration::Discard {
-                    loc: (43, 44),
+                    loc: crate::Location::User { file:"".into(), span:43.. 44},
                     ty: types::UNIT,
                 }],
                 value: TypedValueType::Function(vec![
                     TypedStatement::Declaration(TypedValueDeclaration {
-                        loc: (66, 67),
+                        loc: crate::Location::User { file:"".into(), span:66.. 67},
                         is_op: false,
-                        target: TypedPattern::Read("x".to_string(), types::INT32, (66, 67)),
+                        target: TypedPattern::Read("x".to_string(), types::INT32, crate::Location::User { file:"".into(), span:66.. 67}),
                         args: Vec::new(),
                         value: TypedValueType::Expr(TypedExpr::IntegerLiteral {
                             value: "3".to_string(),
@@ -4246,31 +4244,30 @@ let main _ : () -> () =
                         is_curried: false,
                     }),
                     TypedStatement::Expr(TypedExpr::FnCall(TypedFnCall {
-                        loc: (85, 89),
+                        loc: crate::Location::User { file:"".into(), span:85.. 89},
                         value: TypedExpr::ValueRead(
                             "test".to_string(),
                             ResolvedType::Function {
                                 arg: ResolvedType::Generic {
                                     name: "T".to_string(),
-                                    loc: (1, 20)
+                                    loc: crate::Location::User { file:"".into(), span:1.. 20}
                                 }
                                 .into(),
                                 returns: ResolvedType::Generic {
                                     name: "T".to_string(),
-                                    loc: (1, 25)
+                                    loc: crate::Location::User { file:"".into(), span:1.. 25}
                                 }
                                 .into(),
-                                loc: (0, 0),
                             },
-                            (85, 89)
+                            crate::Location::User { file:"".into(), span:85.. 89}
                         )
                         .into(),
                         arg: Some(
-                            TypedExpr::ValueRead("x".to_string(), types::INT32, (90, 91)).into()
+                            TypedExpr::ValueRead("x".to_string(), types::INT32, crate::Location::User { file:"".into(), span:90.. 91}).into()
                         ),
                         rt: ResolvedType::Generic {
                             name: "T".to_string(),
-                            loc: (1, 25)
+                            loc: crate::Location::User { file:"".into(), span:1.. 25}
                         },
                         arg_t: types::INT32,
                         is_extern: false,
@@ -4279,7 +4276,6 @@ let main _ : () -> () =
                 ty: ResolvedType::Function {
                     arg: types::UNIT.into(),
                     returns: types::UNIT.into(),
-                    loc: (0, 0)
                 },
                 generics: None,
                 abi: None,
@@ -4328,20 +4324,20 @@ let first a : Tuple<int32,float64> -> int32 = 0;
                 StructDefinition {
                     ident: "Tuple".to_string(),
                     generics: Some(ResolvedGenericsDecl {
-                        for_loc: (1, 4),
+                        for_loc: crate::Location::User { file:"test".into(), span:1.. 4},
                         decls: vec![
                             (
-                                (5, 6),
+                                crate::Location::User { file:"test".into(), span:5.. 6},
                                 ResolvedType::Generic {
                                     name: "T".to_string(),
-                                    loc: (5, 6),
+                                    loc: crate::Location::User { file:"test".into(), span:5.. 6},
                                 },
                             ),
                             (
-                                (7, 8),
+                                crate::Location::User { file:"test".into(), span:7.. 8},
                                 ResolvedType::Generic {
                                     name: "U".to_string(),
-                                    loc: (7, 8)
+                                    loc: crate::Location::User { file:"test".into(), span:7.. 8}
                                 }
                             )
                         ]
@@ -4351,20 +4347,20 @@ let first a : Tuple<int32,float64> -> int32 = 0;
                             name: "first".to_string(),
                             ty: ResolvedType::Generic {
                                 name: "T".to_string(),
-                                loc: (37, 38),
+                                loc: crate::Location::User { file:"test".into(), span:37.. 38},
                             },
-                            loc: (29, 34)
+                            loc: crate::Location::User { file:"test".into(), span:29.. 34}
                         },
                         crate::ast::FieldDecl {
                             name: "second".to_string(),
                             ty: ResolvedType::Generic {
                                 name: "U".to_string(),
-                                loc: (3, 13)
+                                loc: crate::Location::User { file:"test".into(), span:3..13}
                             },
-                            loc: (44, 50)
+                            loc: crate::Location::User { file:"test".into(), span:44..50}
                         }
                     ],
-                    loc: (15, 20)
+                    loc: crate::Location::User { file:"test".into(), span:15..20}
                 }
             )),
             strct,
@@ -4378,16 +4374,16 @@ let first a : Tuple<int32,float64> -> int32 = 0;
         };
         assert_eq!(
             &TypedDeclaration::Value(TypedTopLevelValue {
-                loc: (63, 68),
+                loc: crate::Location::User { file:"test".into(), span:63..68},
                 is_op: false,
                 ident: "first".to_string(),
                 args: vec![TypedArgDeclaration::Simple {
-                    loc: (69, 70),
+                    loc: crate::Location::User { file:"test".into(), span:69..70},
                     ident: "a".to_string(),
                     ty: ResolvedType::User {
                         name: "Tuple".to_string(),
                         generics: vec![types::INT32, types::FLOAT64],
-                        loc: (0, 0)
+                        loc: crate::Location::User { file:"test".into(), span:0..0}
                     },
                 }],
                 value: TypedValueType::Expr(TypedExpr::IntegerLiteral {
@@ -4398,11 +4394,10 @@ let first a : Tuple<int32,float64> -> int32 = 0;
                     arg: ResolvedType::User {
                         name: "Tuple<int32,float64>".to_string(),
                         generics: Vec::new(),
-                        loc: (7, 14)
+                        loc: crate::Location::User { file:"test".into(), span:7.. 14}
                     }
                     .into(),
                     returns: types::INT32.into(),
-                    loc: (7, 36)
                 },
                 generics: None,
                 abi: None,
@@ -4419,15 +4414,15 @@ let first a : Tuple<int32,float64> -> int32 = 0;
                     crate::ast::FieldDecl {
                         name: "first".to_string(),
                         ty: types::INT32,
-                        loc: (29, 34)
+                        loc: crate::Location::User { file:"test".into(), span:29.. 34}
                     },
                     crate::ast::FieldDecl {
                         name: "second".to_string(),
                         ty: types::FLOAT64,
-                        loc: (44, 50)
+                        loc: crate::Location::User { file:"test".into(), span:44.. 50}
                     }
                 ],
-                loc: (15, 20)
+                loc: crate::Location::User { file:"test".into(), span:15.. 20}
             })),
             generated_strct,
             "generated"
@@ -4471,15 +4466,15 @@ let main x : int32 -> int32 =
         };
         assert_eq!(
             &TypedDeclaration::Value(TypedTopLevelValue {
-                loc: (12, 16),
+                loc: crate::Location::User { file:"test".into(), span:12.. 16},
                 is_op: false,
                 ident: "test".to_string(),
                 args: vec![TypedArgDeclaration::Simple {
                     ident: "a".to_string(),
-                    loc: (17, 18),
+                    loc: crate::Location::User { file:"test".into(), span:17.. 18},
                     ty: ResolvedType::Generic {
                         name: "T".to_string(),
-                        loc: (0, 0)
+                        loc: crate::Location::User { file:"test".into(), span:0.. 0}
                     },
                 }],
                 value: TypedValueType::Function(vec![TypedStatement::Return(
@@ -4487,32 +4482,31 @@ let main x : int32 -> int32 =
                         "a".to_string(),
                         ResolvedType::Generic {
                             name: "T".to_string(),
-                            loc: (0, 0)
+                            loc: crate::Location::User { file:"test".into(), span:0.. 0}
                         },
-                        (41, 42)
+                        crate::Location::User { file:"test".into(), span:41.. 42}
                     ),
-                    (34, 40)
+                    crate::Location::User { file:"test".into(), span:34.. 40}
                 )]),
                 ty: ResolvedType::Function {
                     arg: ResolvedType::Generic {
                         name: "T".to_string(),
-                        loc: (0, 0),
+                        loc: crate::Location::User { file:"test".into(), span:0.. 0},
                     }
                     .into(),
                     returns: ResolvedType::Generic {
                         name: "T".to_string(),
-                        loc: (1, 25),
+                        loc: crate::Location::User { file:"test".into(), span:1.. 25},
                     }
                     .into(),
-                    loc: (1, 23),
                 },
                 generics: Some(ResolvedGenericsDecl {
-                    for_loc: (1, 4),
+                    for_loc: crate::Location::User { file:"test".into(), span:1.. 4},
                     decls: vec![(
-                        (5, 6),
+                        crate::Location::User { file:"test".into(), span:5.. 6},
                         ResolvedType::Generic {
                             name: "T".to_string(),
-                            loc: (0, 0)
+                            loc: crate::Location::User { file:"test".into(), span:0.. 0}
                         }
                     )],
                 }),
@@ -4523,29 +4517,28 @@ let main x : int32 -> int32 =
         );
         assert_eq!(
             &TypedDeclaration::Value(TypedTopLevelValue {
-                loc: (49, 53),
+                loc: crate::Location::User { file:"test".into(), span:49.. 53},
                 is_op: false,
                 ident: "main".to_string(),
                 args: vec![TypedArgDeclaration::Simple {
                     ident: "x".to_string(),
-                    loc: (54, 55),
+                    loc: crate::Location::User { file:"test".into(), span:54.. 55},
                     ty: types::INT32,
                 }],
                 value: TypedValueType::Function(vec![
                     TypedStatement::Expr(TypedExpr::FnCall(TypedFnCall {
-                        loc: (79, 83),
+                        loc: crate::Location::User { file:"test".into(), span:79.. 83},
                         value: TypedExpr::ValueRead(
                             "test<int32>".to_string(),
                             ResolvedType::Function {
                                 arg: types::INT32.into(),
                                 returns: types::INT32.into(),
-                                loc: (0, 0)
                             },
-                            (79, 83)
+                            crate::Location::User { file:"test".into(), span:79.. 83}
                         )
                         .into(),
                         arg: Some(
-                            TypedExpr::ValueRead("x".to_string(), types::INT32, (84, 85)).into()
+                            TypedExpr::ValueRead("x".to_string(), types::INT32, crate::Location::User { file:"test".into(), span:84.. 85}).into()
                         ),
                         rt: types::INT32,
                         arg_t: types::INT32,
@@ -4556,13 +4549,12 @@ let main x : int32 -> int32 =
                             value: "0".to_string(),
                             size: types::IntWidth::ThirtyTwo
                         },
-                        (91, 97)
+                        crate::Location::User { file:"test".into(), span:91.. 97}
                     )
                 ]),
                 ty: ResolvedType::Function {
                     arg: types::INT32.into(),
                     returns: types::INT32.into(),
-                    loc: (0, 0)
                 },
                 generics: None,
                 abi: None,
@@ -4572,22 +4564,21 @@ let main x : int32 -> int32 =
         );
         assert_eq!(
             &TypedDeclaration::Value(TypedTopLevelValue {
-                loc: (12, 16),
+                loc: crate::Location::User { file:"test".into(), span:12.. 16},
                 is_op: false,
                 ident: "test<int32>".to_string(),
                 args: vec![TypedArgDeclaration::Simple {
                     ident: "a".to_string(),
-                    loc: (17, 18),
+                    loc: crate::Location::User { file:"test".into(), span:17.. 18},
                     ty: types::INT32,
                 }],
                 value: crate::typed_ast::TypedValueType::Function(vec![TypedStatement::Return(
-                    TypedExpr::ValueRead("a".to_string(), types::INT32, (41, 42)),
-                    (34, 40)
+                    TypedExpr::ValueRead("a".to_string(), types::INT32, crate::Location::User { file:"test".into(), span:41.. 42}),
+                    crate::Location::User { file:"test".into(), span:34.. 40}
                 )]),
                 ty: ResolvedType::Function {
                     arg: types::INT32.into(),
                     returns: types::INT32.into(),
-                    loc: (0, 0)
                 },
                 generics: None,
                 abi: None,
@@ -4642,29 +4633,28 @@ let statement_with_else_if a b : bool -> bool -> int32 =
         };
         assert_eq!(
             &TypedDeclaration::Value(TypedTopLevelValue {
-                loc: (5,24),
+                loc: crate::Location::User { file:"test".into(), span:5..24},
                 is_op: false,
                 ident: "expr_with_statement".to_string(),
                 args: vec![TypedArgDeclaration::Simple {
-                    loc: (25,26),
+                    loc: crate::Location::User { file:"test".into(), span:25..26},
                     ident: "a".to_string(),
                     ty: types::BOOL,
                 }],
                 value: TypedValueType::Expr(TypedExpr::IfExpr(super::TypedIf {
-                    cond: TypedExpr::ValueRead("a".to_string(), types::BOOL, (48,49)).into(),
+                    cond: TypedExpr::ValueRead("a".to_string(), types::BOOL, crate::Location::User { file:"test".into(), span:48..49}).into(),
                     result_ty: types::INT32,
                     true_branch: super::TypedBlock {
                         ret_ty: types::INT32.into(),
                         statements: vec![TypedStatement::Expr(TypedExpr::FnCall(TypedFnCall {
-                            loc: (63,66),
+                            loc: crate::Location::User { file:"test".into(), span:63..66},
                             value: TypedExpr::ValueRead(
                                 "foo".to_string(),
                                 ResolvedType::Function {
                                     arg: types::INT32.into(),
                                     returns: types::INT32.into(),
-                                    loc: (0, 0)
                                 },
-                                (63,66)
+                                crate::Location::User { file:"test".into(), span:63..66}
                             )
                             .into(),
                             arg: Some(
@@ -4689,15 +4679,14 @@ let statement_with_else_if a b : bool -> bool -> int32 =
                     else_branch: super::TypedBlock {
                         ret_ty: types::INT32.into(),
                         statements: vec![TypedStatement::Expr(TypedExpr::FnCall(TypedFnCall {
-                            loc: (97,100),
+                            loc: crate::Location::User { file:"test".into(), span:97..100},
                             value: TypedExpr::ValueRead(
                                 "foo".to_string(),
                                 ResolvedType::Function {
                                     arg: types::INT32.into(),
                                     returns: types::INT32.into(),
-                                    loc: (0, 0)
                                 },
-                                (97,100)
+                                crate::Location::User { file:"test".into(), span:97..100}
                             )
                             .into(),
                             arg: Some(
@@ -4720,12 +4709,11 @@ let statement_with_else_if a b : bool -> bool -> int32 =
                         )
                     }
                     .into(),
-                    loc: (45,47)
+                    loc: crate::Location::User { file:"test".into(), span:45..47}
                 })),
                 ty: ResolvedType::Function {
                     arg: types::BOOL.into(),
                     returns: types::INT32.into(),
-                    loc: (0, 0)
                 },
                 generics: None,
                 abi: None,
@@ -4735,17 +4723,17 @@ let statement_with_else_if a b : bool -> bool -> int32 =
         );
         assert_eq!(
             &TypedDeclaration::Value(TypedTopLevelValue {
-                loc: (119,141),
+                loc: crate::Location::User { file:"test".into(), span:119..141},
                 is_op: false,
                 ident: "statement_with_else_if".to_string(),
                 args: vec![
                     TypedArgDeclaration::Simple {
-                        loc: (142,143),
+                        loc: crate::Location::User { file:"test".into(), span:142..143},
                         ident: "a".to_string(),
                         ty: types::BOOL,
                     },
                     TypedArgDeclaration::Simple {
-                        loc: (144,145),
+                        loc: crate::Location::User { file:"test".into(), span:144..145},
                         ident: "b".to_string(),
                         ty: types::BOOL,
                     },
@@ -4755,34 +4743,32 @@ let statement_with_else_if a b : bool -> bool -> int32 =
                     returns: ResolvedType::Function {
                         arg: types::BOOL.into(),
                         returns: types::INT32.into(),
-                        loc: (0, 0)
                     }
                     .into(),
-                    loc: (0, 0)
                 },
                 value: TypedValueType::Function(vec![TypedStatement::IfBranching(super::TypedIf {
-                    cond: TypedExpr::ValueRead("a".to_string(), types::BOOL, (179,180)).into(),
+                    cond: TypedExpr::ValueRead("a".to_string(), types::BOOL, crate::Location::User { file:"test".into(), span:179..180}).into(),
                     true_branch: super::TypedBlock {
                         statements: vec![TypedStatement::Return(
                             TypedExpr::IntegerLiteral {
                                 value: "0".to_string(),
                                 size: types::IntWidth::ThirtyTwo
                             },
-                            (194,200)
+                            crate::Location::User { file:"test".into(), span:194..200}
                         )],
                         implicit_ret: None,
                         ret_ty: Some(types::UNIT),
                     },
                     else_branch: Some(super::TypedBlock {
                         statements: vec![TypedStatement::IfBranching(super::TypedIf {
-                            cond: TypedExpr::ValueRead("b".into(), types::BOOL, (216,217),).into(),
+                            cond: TypedExpr::ValueRead("b".into(), types::BOOL, crate::Location::User { file:"test".into(), span:216..217},).into(),
                             true_branch: super::TypedBlock {
                                 statements: vec![TypedStatement::Return(
                                     TypedExpr::IntegerLiteral {
                                         value: "1".to_string(),
                                         size: types::IntWidth::ThirtyTwo,
                                     },
-                                    (231,237)
+                                    crate::Location::User { file:"test".into(), span:231..237}
                                 )],
                                 implicit_ret: None,
                                 ret_ty: Some(types::UNIT),
@@ -4793,18 +4779,18 @@ let statement_with_else_if a b : bool -> bool -> int32 =
                                         value: "2".to_string(),
                                         size: types::IntWidth::ThirtyTwo,
                                     },
-                                    (258,264)
+                                    crate::Location::User { file:"test".into(), span:258..264}
                                 )],
                                 implicit_ret: None,
                                 ret_ty: Some(types::UNIT),
                             }.into(),
-                            loc:(213,215),
+                            loc:crate::Location::User { file:"test".into(), span:213..215},
                             result_ty:types::UNIT,
                         })],
                         implicit_ret: None,
                         ret_ty:Some(types::UNIT),
                     }),
-                    loc:(176,178),
+                    loc:crate::Location::User { file:"test".into(), span:176..178},
                     result_ty:types::UNIT,
                 })]),
                 generics: None,
@@ -4871,37 +4857,36 @@ let as_statement a b : int32 -> int32 -> () =
         };
         assert_eq!(
             &TypedDeclaration::Value(TypedTopLevelValue {
-                loc: (5,16),
+                loc: crate::Location::User { file:"test".into(), span:5..16},
                 is_op: false,
                 ident: "simple_expr".to_string(),
                 args: vec![
                     TypedArgDeclaration::Simple {
-                        loc: (17,18),
+                        loc: crate::Location::User { file:"test".into(), span:17..18},
                         ident: "a".to_string(),
                         ty: types::INT32,
                     },
                     TypedArgDeclaration::Simple {
-                        loc: (19,22),
+                        loc: crate::Location::User { file:"test".into(), span:19..22},
                         ident: "fun".to_string(),
                         ty: types::INT32.fn_ty(&types::INT32),
                     },
                 ],
                 value: TypedValueType::Expr(TypedExpr::Match(TypedMatch {
-                    loc: (62,67),
+                    loc: crate::Location::User { file:"test".into(), span:62..67},
                     on: TypedExpr::FnCall(TypedFnCall {
-                        loc: (68,71),
+                        loc: crate::Location::User { file:"test".into(), span:68..71},
                         value: TypedExpr::ValueRead(
                             "fun".to_string(),
                             ResolvedType::Function {
                                 arg: types::INT32.into(),
                                 returns: types::INT32.into(),
-                                loc: (0, 0)
                             },
-                            (68,71)
+                            crate::Location::User { file:"test".into(), span:68..71}
                         )
                         .into(),
                         arg: Some(
-                            TypedExpr::ValueRead("a".to_string(), types::INT32, (72,73)).into()
+                            TypedExpr::ValueRead("a".to_string(), types::INT32, crate::Location::User { file:"test".into(), span:72..73}).into()
                         ),
                         rt: types::INT32,
                         arg_t: types::INT32,
@@ -4910,7 +4895,7 @@ let as_statement a b : int32 -> int32 -> () =
                     .into(),
                     arms: vec![
                         TypedMatchArm {
-                            loc: (84,85),
+                            loc: crate::Location::User { file:"test".into(), span:84..85},
                             cond: crate::typed_ast::TypedPattern::Const(
                                 "1".to_string(),
                                 types::INT32
@@ -4925,7 +4910,7 @@ let as_statement a b : int32 -> int32 -> () =
                             )
                         },
                         TypedMatchArm {
-                            loc: (98,99),
+                            loc: crate::Location::User { file:"test".into(), span:98..99},
                             cond: crate::typed_ast::TypedPattern::Const(
                                 "2".to_string(),
                                 types::INT32
@@ -4940,20 +4925,20 @@ let as_statement a b : int32 -> int32 -> () =
                             )
                         },
                         TypedMatchArm {
-                            loc: (112,113),
+                            loc: crate::Location::User { file:"test".into(), span:112..113},
                             cond: crate::typed_ast::TypedPattern::Read(
                                 "a".to_string(),
                                 types::INT32,
-                                (114,115)
+                                crate::Location::User { file:"test".into(), span:114..115}
                             ),
                             block: Vec::new(),
                             ret: Some(
                                 TypedExpr::BinaryOpCall(TypedBinaryOpCall {
-                                    loc: (120,121),
+                                    loc: crate::Location::User { file:"test".into(), span:120..121},
                                     lhs: TypedExpr::ValueRead(
                                         "a".to_string(),
                                         types::INT32,
-                                        (119,120)
+                                        crate::Location::User { file:"test".into(), span:119..120}
                                     )
                                     .into(),
                                     rhs: TypedExpr::IntegerLiteral {
@@ -4975,14 +4960,11 @@ let as_statement a b : int32 -> int32 -> () =
                         arg: ResolvedType::Function {
                             arg: types::INT32.into(),
                             returns: types::INT32.into(),
-                            loc: (0, 0)
                         }
                         .into(),
                         returns: types::INT32.into(),
-                        loc: (0, 0)
                     }
                     .into(),
-                    loc: (0, 0)
                 },
                 generics: None,
                 abi: None,
@@ -4993,40 +4975,39 @@ let as_statement a b : int32 -> int32 -> () =
 
         assert_eq!(
             &TypedDeclaration::Value(TypedTopLevelValue {
-                loc: (129,141),
+                loc: crate::Location::User { file:"test".into(), span:129..141},
                 is_op: false,
                 ident: "nest_in_call".to_string(),
                 args: vec![
                     TypedArgDeclaration::Simple {
-                        loc: (142,143),
+                        loc: crate::Location::User { file:"test".into(), span:142..143},
                         ident: "a".to_string(),
                         ty: types::INT32,
                     },
                     TypedArgDeclaration::Simple {
-                        loc: (144, 147),
+                        loc: crate::Location::User { file:"test".into(), span:144.. 147},
                         ident: "fun".to_string(),
                         ty: types::INT32.fn_ty(&types::INT32),
                     },
                 ],
                 value: TypedValueType::Expr(TypedExpr::FnCall(TypedFnCall {
-                    loc: (187,190),
+                    loc: crate::Location::User { file:"test".into(), span:187..190},
                     value: TypedExpr::ValueRead(
                         "fun".to_string(),
                         ResolvedType::Function {
                             arg: types::INT32.into(),
                             returns: types::INT32.into(),
-                            loc: (0, 0)
                         },
-                        (187,190)
+                        crate::Location::User { file:"test".into(), span:187..190}
                     )
                     .into(),
                     arg: Some(
                         TypedExpr::Match(TypedMatch {
-                            loc: (192,197),
-                            on: TypedExpr::ValueRead("a".to_string(), types::INT32, (198,199)).into(),
+                            loc: crate::Location::User { file:"test".into(), span:192..197},
+                            on: TypedExpr::ValueRead("a".to_string(), types::INT32, crate::Location::User { file:"test".into(), span:198..199}).into(),
                             arms: vec![
                                 TypedMatchArm {
-                                    loc: (210,211),
+                                    loc: crate::Location::User { file:"test".into(), span:210..211},
                                     cond: crate::typed_ast::TypedPattern::Const(
                                         "1".to_string(),
                                         types::INT32
@@ -5041,7 +5022,7 @@ let as_statement a b : int32 -> int32 -> () =
                                     )
                                 },
                                 TypedMatchArm {
-                                    loc: (224,225),
+                                    loc: crate::Location::User { file:"test".into(), span:224..225},
                                     cond: crate::typed_ast::TypedPattern::Const(
                                         "2".to_string(),
                                         types::INT32
@@ -5056,16 +5037,16 @@ let as_statement a b : int32 -> int32 -> () =
                                     )
                                 },
                                 TypedMatchArm {
-                                    loc: (238,239),
+                                    loc: crate::Location::User { file:"test".into(), span:238..239},
                                     cond: crate::typed_ast::TypedPattern::Default,
                                     block: Vec::new(),
                                     ret: Some(
                                         TypedExpr::BinaryOpCall(TypedBinaryOpCall {
-                                            loc: (246,247),
+                                            loc: crate::Location::User { file:"test".into(), span:246..247},
                                             lhs: TypedExpr::ValueRead(
                                                 "a".to_string(),
                                                 types::INT32,
-                                                (245,246)
+                                                crate::Location::User { file:"test".into(), span:245..246}
                                             )
                                             .into(),
                                             rhs: TypedExpr::IntegerLiteral {
@@ -5093,14 +5074,11 @@ let as_statement a b : int32 -> int32 -> () =
                         arg: ResolvedType::Function {
                             arg: types::INT32.into(),
                             returns: types::INT32.into(),
-                            loc: (0, 0)
                         }
                         .into(),
                         returns: types::INT32.into(),
-                        loc: (0, 0)
                     }
                     .into(),
-                    loc: (0, 0)
                 },
                 generics: None,
                 abi: None,
@@ -5111,53 +5089,52 @@ let as_statement a b : int32 -> int32 -> () =
 
         assert_eq!(
             &TypedDeclaration::Value(TypedTopLevelValue {
-                loc: (257,269),
+                loc: crate::Location::User { file:"test".into(), span:257..269},
                 is_op: false,
                 ident: "as_statement".to_string(),
                 args: vec![
                     TypedArgDeclaration::Simple {
-                        loc: (270,271),
+                        loc: crate::Location::User { file:"test".into(), span:270..271},
                         ident: "a".to_string(),
                         ty: types::INT32,
                     },
                     TypedArgDeclaration::Simple {
-                        loc: (272,273),
+                        loc: crate::Location::User { file:"test".into(), span:272..273},
                         ident: "b".to_string(),
                         ty: types::INT32,
                     },
                 ],
                 value: TypedValueType::Function(vec![TypedStatement::Match(TypedMatch {
-                    loc: (303,308),
-                    on: TypedExpr::ValueRead("a".to_string(), types::INT32, (309,310)).into(),
+                    loc: crate::Location::User { file:"test".into(), span:303..308},
+                    on: TypedExpr::ValueRead("a".to_string(), types::INT32, crate::Location::User { file:"test".into(), span:309..310}).into(),
                     arms: vec![
                         TypedMatchArm {
-                            loc: (321,322),
+                            loc: crate::Location::User { file:"test".into(), span:321..322},
                             cond: crate::typed_ast::TypedPattern::Const(
                                 "1".to_string(),
                                 types::INT32
                             ),
                             block: vec![TypedStatement::Match(TypedMatch {
-                                loc: (337,342),
-                                on: TypedExpr::ValueRead("b".to_string(), types::INT32, (343,344))
+                                loc: crate::Location::User { file:"test".into(), span:337..342},
+                                on: TypedExpr::ValueRead("b".to_string(), types::INT32, crate::Location::User { file:"test".into(), span:343..344})
                                     .into(),
                                 arms: vec![
                                     TypedMatchArm {
-                                        loc: (359,360),
+                                        loc: crate::Location::User { file:"test".into(), span:359..360},
                                         cond: crate::typed_ast::TypedPattern::Const(
                                             "1".to_string(),
                                             types::INT32
                                         ),
                                         block: vec![TypedStatement::Discard(
                                             TypedExpr::FnCall(TypedFnCall {
-                                                loc: (366,369),
+                                                loc: crate::Location::User { file:"test".into(), span:366..369},
                                                 value: TypedExpr::ValueRead(
                                                     "foo".to_string(),
                                                     ResolvedType::Function {
                                                         arg: types::INT32.into(),
                                                         returns: types::UNIT.into(),
-                                                        loc: (0, 0)
                                                     },
-                                                    (366,369)
+                                                    crate::Location::User { file:"test".into(), span:366..369}
                                                 )
                                                 .into(),
                                                 arg: Some(
@@ -5171,26 +5148,25 @@ let as_statement a b : int32 -> int32 -> () =
                                                 arg_t: types::INT32,
                                                 is_extern: false,
                                             }),
-                                            (366,369)
+                                            crate::Location::User { file:"test".into(), span:366..369}
                                         )],
                                         ret: None
                                     },
                                     TypedMatchArm {
-                                        loc: (381,382),
+                                        loc: crate::Location::User { file:"test".into(), span:381..382},
                                         cond: crate::typed_ast::TypedPattern::Const(
                                             "2".to_string(),
                                             types::INT32
                                         ),
                                         block: vec![TypedStatement::Expr(TypedExpr::FnCall(TypedFnCall {
-                                            loc: (401,404),
+                                            loc: crate::Location::User { file:"test".into(), span:401..404},
                                             value: TypedExpr::ValueRead(
                                                 "foo".to_string(),
                                                 ResolvedType::Function {
                                                     arg: types::INT32.into(),
                                                     returns: types::UNIT.into(),
-                                                    loc: (0, 0)
                                                 },
-                                                (401,404)
+                                                crate::Location::User { file:"test".into(), span:401..404}
                                             )
                                             .into(),
                                             arg: Some(
@@ -5207,7 +5183,7 @@ let as_statement a b : int32 -> int32 -> () =
                                         ret: None
                                     },
                                     TypedMatchArm {
-                                        loc: (416,417),
+                                        loc: crate::Location::User { file:"test".into(), span:416..417},
                                         cond: crate::typed_ast::TypedPattern::Const(
                                             "3".to_string(),
                                             types::INT32
@@ -5220,7 +5196,7 @@ let as_statement a b : int32 -> int32 -> () =
                             ret: None
                         },
                         TypedMatchArm {
-                            loc: (431,432),
+                            loc: crate::Location::User { file:"test".into(), span:431..432},
                             cond: crate::typed_ast::TypedPattern::Const(
                                 "2".to_string(),
                                 types::INT32
@@ -5235,10 +5211,8 @@ let as_statement a b : int32 -> int32 -> () =
                     returns: ResolvedType::Function {
                         arg: types::INT32.into(),
                         returns: types::UNIT.into(),
-                        loc: (0, 0)
                     }
                     .into(),
-                    loc: (0, 0)
                 },
                 generics: None,
                 abi: None,
@@ -5289,11 +5263,11 @@ let not_so_simple a : int32 -> [int32;4] =
 
         assert_eq!(
             &TypedDeclaration::Value(TypedTopLevelValue {
-                loc: (5,11),
+                loc: crate::Location::User { file:"test".into(), span:5..11},
                 is_op: false,
                 ident: "simple".to_string(),
                 args: vec![TypedArgDeclaration::Discard {
-                    loc: (12,13),
+                    loc: crate::Location::User { file:"test".into(), span:12..13},
                     ty: types::UNIT
                 }],
                 value: TypedValueType::Expr(TypedExpr::ArrayLiteral {
@@ -5328,7 +5302,6 @@ let not_so_simple a : int32 -> [int32;4] =
                         size: 5
                     }
                     .into(),
-                    loc: (0, 0)
                 },
                 generics: None,
                 abi: None,
@@ -5367,11 +5340,11 @@ let main _ : () -> () =
         };
         assert_eq!(
             &TypedDeclaration::Value(TypedTopLevelValue {
-                loc: (5,6),
+                loc: crate::Location::User { file:"".into(), span:5..6},
                 is_op: false,
                 ident: "f".to_string(),
                 args: vec![TypedArgDeclaration::Simple {
-                    loc: (8,9),
+                    loc: crate::Location::User { file:"".into(), span:8..9},
                     ident: "a".to_string(),
                     ty: ResolvedType::Array {
                         underlining: types::INT32.into(),
@@ -5392,17 +5365,17 @@ let main _ : () -> () =
         );
         assert_eq!(
             &TypedDeclaration::Value(TypedTopLevelValue {
-                loc: (32,36),
+                loc: crate::Location::User { file:"".into(), span:32..36},
                 is_op: false,
                 ident: "main".to_string(),
                 args: vec![TypedArgDeclaration::Discard {
-                    loc: (37,38),
+                    loc: crate::Location::User { file:"".into(), span:37..38},
                     ty: types::UNIT,
                 },],
                 ty: types::UNIT.fn_ty(&types::UNIT),
                 value: TypedValueType::Function(vec![
                     TypedStatement::Expr(TypedExpr::FnCall(TypedFnCall {
-                        loc: (56,57),
+                        loc: crate::Location::User { file:"".into(), span:56..57},
                         value: TypedExpr::ValueRead(
                             "f".to_string(),
                             ResolvedType::Array {
@@ -5410,7 +5383,7 @@ let main _ : () -> () =
                                 size: 5
                             }
                             .fn_ty(&types::UNIT),
-                            (56,57)
+                            crate::Location::User { file:"".into(), span:56..57}
                         )
                         .into(),
                         arg: Some(
@@ -5448,7 +5421,7 @@ let main _ : () -> () =
                         },
                         is_extern: false,
                     })),
-                    TypedStatement::Return(TypedExpr::UnitLiteral, (75,81))
+                    TypedStatement::Return(TypedExpr::UnitLiteral, crate::Location::User { file:"".into(), span:75..81 }) 
                 ]),
                 generics: None,
                 abi: None,
@@ -5485,48 +5458,48 @@ let a (v:(int32,int32)) =
         };
         assert_eq!(
             &TypedDeclaration::Value(TypedTopLevelValue {
-                loc: (5,6),
+                loc: crate::Location::User { file:"".into(), span:5..6},
                 is_op: false,
                 ident: "a".to_string(),
                 args: vec![TypedArgDeclaration::Simple {
                     ident: "v".to_string(),
                     ty: ResolvedType::Tuple {
                         underlining: vec![types::INT32, types::INT32,],
-                        loc: (0, 0)
+                        loc: crate::Location::Language
                     },
-                    loc: (8,9)
+                    loc: crate::Location::User { file:"".into(), span:8..9}
                 }],
                 ty: ResolvedType::Tuple {
                     underlining: vec![types::INT32, types::INT32,],
-                    loc: (0, 0)
+                    loc: crate::Location::Language
                 }
                 .fn_ty(&types::UNIT),
                 value: TypedValueType::Function(vec![
                     TypedStatement::Declaration(TypedValueDeclaration {
-                        loc: (35,40),
+                        loc: crate::Location::User { file:"".into(), span:35..40},
                         is_op: false,
                         is_curried: false,
                         target: TypedPattern::Destructure(TypedDestructure::Tuple(vec![
-                            TypedPattern::Read("x".to_string(), types::INT32, (36,37)),
-                            TypedPattern::Read("y".to_string(), types::INT32, (38,39)),
+                            TypedPattern::Read("x".to_string(), types::INT32, crate::Location::User { file:"".into(), span:36..37}),
+                            TypedPattern::Read("y".to_string(), types::INT32, crate::Location::User { file:"".into(), span:38..39}),
                         ])),
                         args: Vec::new(),
                         value: TypedValueType::Expr(TypedExpr::ValueRead(
                             "v".to_string(),
                             ResolvedType::Tuple {
                                 underlining: vec![types::INT32, types::INT32,],
-                                loc: (0, 0)
+                                loc: crate::Location::Language
                             },
-                            (43,44)
+                            crate::Location::User { file:"".into(), span:43..44}
                         )),
                         ty: ResolvedType::Tuple {
                             underlining: vec![types::INT32, types::INT32,],
-                            loc: (0, 0)
+                            loc: crate::Location::Language
                         },
                         generictypes: None,
                         abi: None,
                     }),
-                    TypedStatement::Return(TypedExpr::UnitLiteral, (50,56))
+                    TypedStatement::Return(TypedExpr::UnitLiteral, crate::Location::User { file:"".into(), span: 50..56})
                 ]),
                 generics: None,
                 abi: None,
@@ -5574,16 +5547,16 @@ let fun a = match a where
                             ident: "A".into(),
                             ty: ResolvedType::Tuple {
                                 underlining: vec![types::INT8; 2],
-                                loc: (0, 0)
+                                loc: crate::Location::User { file:"".into(), span:0..0}
                             },
-                            loc: (15,16)
+                            loc: crate::Location::User { file:"".into(), span:15..16}
                         },
                         crate::ast::EnumVariant::Unit {
                             ident: "B".into(),
-                            loc: (31,32)
+                            loc: crate::Location::User { file:"".into(), span:31..32}
                         }
                     ],
-                    loc: (6,10),
+                    loc: crate::Location::User { file:"".into(), span:6..10},
                 }
             )),
             ty,
@@ -5591,110 +5564,110 @@ let fun a = match a where
 
         assert_eq!(
             &super::TypedDeclaration::Value(super::TypedTopLevelValue {
-                loc: (37,40),
+                loc: crate::Location::User { file:"".into(), span:37..40},
                 is_op: false,
                 ident: "fun".into(),
                 args: vec![TypedArgDeclaration::Simple {
-                    loc: (41,42),
+                    loc: crate::Location::User { file:"".into(), span:41..42},
                     ident: "a".into(),
                     ty: ResolvedType::User {
                         name: "Test".into(),
                         generics: Vec::new(),
-                        loc: (1, 5)
+                        loc: crate::Location::User { file:"".into(), span:1.. 5}
                     },
                 }],
                 ty: ResolvedType::User {
                     name: "Test".into(),
                     generics: Vec::new(),
-                    loc: (1, 5)
+                    loc: crate::Location::User { file:"".into(), span:1.. 5}
                 }
                 .fn_ty(&types::INT8),
                 value: TypedValueType::Expr(super::TypedExpr::Match(super::TypedMatch {
-                    loc: (45,50),
+                    loc: crate::Location::User { file:"".into(), span:45..50},
                     on: super::TypedExpr::ValueRead(
                         "a".into(),
                         ResolvedType::User {
                             name: "Test".into(),
                             generics: Vec::new(),
-                            loc: (6,10)
+                            loc: crate::Location::User { file:"".into(), span:6..10}
                         },
-                        (51,52)
+                        crate::Location::User { file:"".into(), span:51..52}
                     )
                     .into(),
                     arms: vec![
                         super::TypedMatchArm {
-                            loc: (59,60),
+                            loc: crate::Location::User { file:"".into(), span:59..60},
                             cond: TypedPattern::EnumVariant {
                                 ty: ResolvedType::Dependent {
                                     base: ResolvedType::User {
                                         name: "Test".into(),
                                         generics: Vec::new(),
-                                        loc: (1, 5)
+                                        loc: crate::Location::User { file:"".into(), span:1.. 5}
                                     }
                                     .into(),
                                     actual: ResolvedType::Tuple {
                                         underlining: vec![types::INT8, types::INT8],
-                                        loc: (0, 0)
+                                        loc: crate::Location::User { file:"".into(), span:0.. 0}
                                     }
                                     .into(),
                                     generics: Vec::new(),
                                     ident: "Test::A".into(),
-                                    loc: (0, 0)
+                                    loc: crate::Location::User { file:"".into(), span:0.. 0}
                                 },
                                 variant: "Test::A".into(),
                                 pattern: Some(
                                     TypedPattern::Or(
                                         TypedPattern::Destructure(TypedDestructure::Tuple(vec![
-                                            TypedPattern::Read("a".into(), types::INT8, (71,72)),
+                                            TypedPattern::Read("a".into(), types::INT8, crate::Location::User { file:"".into(), span:71..72}),
                                             TypedPattern::Const("0".into(), types::INT8),
                                         ]))
                                         .into(),
                                         TypedPattern::Destructure(TypedDestructure::Tuple(vec![
                                             TypedPattern::Const("0".into(), types::INT8),
-                                            TypedPattern::Read("a".into(), types::INT8, (81,82)),
+                                            TypedPattern::Read("a".into(), types::INT8, crate::Location::User { file:"".into(), span:81..82}),
                                         ]))
                                         .into()
                                     )
                                     .into()
                                 ),
-                                loc: (61,68)
+                                loc: crate::Location::User { file:"".into(), span:61..68}
                             },
                             block: Vec::new(),
                             ret: Some(
-                                super::TypedExpr::ValueRead("a".into(), types::INT8, (88,89))
+                                super::TypedExpr::ValueRead("a".into(), types::INT8, crate::Location::User { file:"".into(), span:88..89})
                                     .into()
                             )
                         },
                         super::TypedMatchArm {
-                            loc: (91,92),
+                            loc: crate::Location::User { file:"".into(), span:91..92},
                             cond: TypedPattern::EnumVariant {
                                 ty: ResolvedType::Dependent {
                                     base: ResolvedType::User {
                                         name: "Test".into(),
                                         generics: Vec::new(),
-                                        loc: (1, 5)
+                                        loc: crate::Location::User { file:"".into(), span:1..5}
                                     }
                                     .into(),
                                     actual: ResolvedType::Tuple {
                                         underlining: vec![types::INT8, types::INT8],
-                                        loc: (0, 0)
+                                        loc: crate::Location::User { file:"".into(), span:0..0}
                                     }
                                     .into(),
                                     generics: Vec::new(),
                                     ident: "Test::A".into(),
-                                    loc: (0, 0)
+                                    loc: crate::Location::User { file:"".into(), span:0..0}
                                 },
                                 variant: "Test::A".into(),
                                 pattern: Some(
                                     super::TypedPattern::Destructure(TypedDestructure::Tuple(
                                         vec![
-                                            TypedPattern::Read("a".into(), types::INT8, (102,103)),
-                                            TypedPattern::Read("b".into(), types::INT8, (104,105)),
+                                            TypedPattern::Read("a".into(), types::INT8, crate::Location::User { file:"".into(), span:102..103}),
+                                            TypedPattern::Read("b".into(), types::INT8, crate::Location::User { file:"".into(), span:104..105}),
                                         ]
                                     ))
                                     .into()
                                 ),
-                                loc: (93,100)
+                                loc: crate::Location::User { file:"".into(), span:93..100}
                             },
                             block: Vec::new(),
                             ret: Some(
@@ -5706,23 +5679,23 @@ let fun a = match a where
                             )
                         },
                         super::TypedMatchArm {
-                            loc: (113,114),
+                            loc: crate::Location::User { file:"".into(), span:113..114},
                             cond: TypedPattern::EnumVariant {
                                 ty: ResolvedType::Dependent {
                                     base: ResolvedType::User {
                                         name: "Test".into(),
                                         generics: Vec::new(),
-                                        loc: (1, 5)
+                                        loc: crate::Location::User { file:"".into(), span:1.. 5}
                                     }
                                     .into(),
                                     actual: ResolvedType::Void.into(),
                                     generics: Vec::new(),
                                     ident: "Test::B".into(),
-                                    loc: (0, 0)
+                                    loc: crate::Location::User { file:"".into(), span:0.. 0}
                                 },
                                 variant: "Test::B".into(),
                                 pattern: None,
-                                loc: (115,122)
+                                loc: crate::Location::User { file:"".into(), span:115..122}
                             },
                             block: Vec::new(),
                             ret: Some(

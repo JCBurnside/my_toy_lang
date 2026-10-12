@@ -12,7 +12,7 @@ pub type File = ModuleDeclaration;
 pub type Program = Vec<File>;
 #[derive(Debug, PartialEq)]
 pub struct ModuleDeclaration {
-    pub loc: Option<crate::Location>,
+    pub loc: crate::Location,
     pub name: String,
     pub declarations: Vec<TopLevelDeclaration>,
 }
@@ -106,12 +106,12 @@ impl ModuleDeclaration {
                                     .iter()
                                     .map(|(loc, name)| ResolvedType::Generic {
                                         name: name.clone(),
-                                        loc: *loc,
+                                        loc: loc.clone(),
                                     })
                                     .collect()
                             })
                             .unwrap_or_default(),
-                        loc: s.loc,
+                        loc: s.loc.clone(),
                     },
                 )]
                 .into(),
@@ -127,12 +127,12 @@ impl ModuleDeclaration {
                                     .iter()
                                     .map(|(loc, name)| ResolvedType::Generic {
                                         name: name.clone(),
-                                        loc: *loc,
+                                        loc: loc.clone(),
                                     })
                                     .collect()
                             })
                             .unwrap_or_default(),
-                        loc: e.loc,
+                        loc: e.loc.clone(),
                     };
                     let mut out = vec![(e.ident.clone(), base_ty.clone())];
 
@@ -148,7 +148,7 @@ impl ModuleDeclaration {
                                     .iter()
                                     .map(|(loc, name)| ResolvedType::Generic {
                                         name: name.clone(),
-                                        loc: *loc,
+                                        loc: loc.clone(),
                                     })
                                     .collect()
                             })
@@ -161,7 +161,7 @@ impl ModuleDeclaration {
                                     ident: new_ident.clone(),
                                     actual: ResolvedType::Void.into(),
                                     generics,
-                                    loc: *loc,
+                                    loc: loc.clone(),
                                 },
                             )),
                             EnumVariant::Tuple { ident: _, ty, loc } => out.push((
@@ -171,7 +171,7 @@ impl ModuleDeclaration {
                                     ident: new_ident,
                                     actual: ty.clone().into(),
                                     generics,
-                                    loc: *loc,
+                                    loc: loc.clone(),
                                 },
                             )),
                             EnumVariant::Struct { ident: _, loc, .. } => out.push((
@@ -182,11 +182,11 @@ impl ModuleDeclaration {
                                     actual: ResolvedType::User {
                                         name: new_ident,
                                         generics: generics.clone(),
-                                        loc: *loc,
+                                        loc: loc.clone(),
                                     }
                                     .into(),
                                     generics,
-                                    loc: *loc,
+                                    loc: loc.clone(),
                                 },
                             )),
                         }
@@ -359,7 +359,7 @@ impl TypeDefinition {
 
     pub(crate) fn bind_generics(&mut self) {
         match self {
-            TypeDefinition::Alias(_, resolved_type) => (), // todo! generic alias
+            TypeDefinition::Alias(_, _resolved_type) => (), // todo! generic alias
             TypeDefinition::Enum(EnumDeclaration {
                 generics, values, ..
             }) => {
@@ -696,14 +696,14 @@ impl Statement {
 
     pub fn get_loc(&self) -> crate::Location {
         match self {
-            Self::Declaration(decl) => decl.loc,
-            Self::Return(_, loc) => *loc,
-            Self::FnCall(call) => call.loc,
+            Self::Declaration(decl) => decl.loc.clone(),
+            Self::Return(_, loc) => loc.clone(),
+            Self::FnCall(call) => call.loc.clone(),
             Self::Pipe(_) => todo!(),
-            Self::IfStatement(if_) => if_.loc,
-            Self::Match(match_) => match_.loc,
+            Self::IfStatement(if_) => if_.loc.clone(),
+            Self::Match(match_) => match_.loc.clone(),
             Self::Expr(e) => e.get_loc(),
-            Self::Error => (0, 0),
+            Self::Error => crate::Location::User { file:"".to_string(), span:0..0},
         }
     }
 
@@ -1118,7 +1118,7 @@ impl Expr {
             | Expr::StringLiteral(_)
             | Expr::CharLiteral(_)
             | Expr::UnitLiteral
-            | Expr::Error => (0, 0),
+            | Expr::Error => crate::Location::User { file:"".to_string(), span:0..0},
             Expr::Compose { lhs, rhs } => todo!("REMOVE"),
             Expr::UnaryOpCall(UnaryOpCall { loc, .. })
             | Expr::FnCall(FnCall { loc, .. })
@@ -1130,7 +1130,7 @@ impl Expr {
             | Expr::If(If { loc, .. })
             | Expr::BoolLiteral(_, loc)
             | Expr::Match(Match { loc, .. })
-            | Expr::BinaryOpCall(BinaryOpCall { loc, .. }) => *loc,
+            | Expr::BinaryOpCall(BinaryOpCall { loc, .. }) => loc.clone(),
         }
     }
 
